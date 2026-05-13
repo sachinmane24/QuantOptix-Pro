@@ -90,6 +90,8 @@ export default function App() {
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [tradeLogs, setTradeLogs] = useState<string[]>([]);
   const [riskSettings, setRiskSettings] = useState<RiskSettings | null>(null);
+  const [editingSettings, setEditingSettings] = useState<RiskSettings | null>(null);
+  const [dailyPnL, setDailyPnL] = useState(0);
 
   // NSE / Fyers Data flow
   useEffect(() => {
@@ -133,22 +135,35 @@ export default function App() {
       const all = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setPositions(all.filter((t: any) => t.status === 'OPEN'));
       setTradeHistory(all.filter((t: any) => t.status === 'CLOSED'));
+      
+      // Calculate Daily PnL
+      const today = new Date().toDateString();
+      const closedToday = all.filter((t: any) => {
+        const d = t.closedAt?.toDate?.() || new Date();
+        return t.status === 'CLOSED' && d.toDateString() === today;
+      });
+      const closedPnl = closedToday.reduce((acc: number, t: any) => acc + (t.pnl || 0), 0);
+      const openPnl = all.filter((t: any) => t.status === 'OPEN').reduce((acc: number, t: any) => acc + (t.pnl || 0), 0);
+      setDailyPnL(closedPnl + openPnl);
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'trades'));
 
     // Sync Settings
     const unsubSettings = onSnapshot(doc(db, 'settings', user.uid), (snap) => {
       if (snap.exists()) {
-        setRiskSettings(snap.data() as RiskSettings);
+        const data = snap.data() as RiskSettings;
+        setRiskSettings(data);
+        setEditingSettings(data);
       } else {
         // Initial Settings
-        setDoc(doc(db, 'settings', user.uid), {
+        const initial = {
           userId: user.uid,
           maxCapital: 500000,
           maxTradesPerDay: 5,
           maxLossPerDay: 10000,
           riskPerTrade: 1, // 1%
           killSwitch: false
-        });
+        };
+        setDoc(doc(db, 'settings', user.uid), initial);
       }
     }, (err) => handleFirestoreError(err, OperationType.GET, `settings/${user.uid}`));
 
@@ -228,6 +243,12 @@ export default function App() {
     const estimatedMargin = positions.reduce((acc, p) => acc + (p.entry * p.qty), 0);
     if (estimatedMargin >= riskSettings.maxCapital) {
        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Max capital allocation reached`, ...prev]);
+       return;
+    }
+
+    // Check Max Loss Per Day (Drawdown)
+    if (dailyPnL <= -riskSettings.maxLossPerDay) {
+       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Daily SL Limit (${formatCurrency(riskSettings.maxLossPerDay)}) hit`, ...prev]);
        return;
     }
 
@@ -1083,19 +1104,24 @@ export default function App() {
                       
                       <div className="grid grid-cols-2 gap-6">
                          {[
-                           { label: 'Max Capital Allocation', key: 'maxCapital', min: 100000, max: 2000000, step: 50000, isCurrency: true },
-                           { label: 'Max Trades Per Day', key: 'maxTradesPerDay', min: 1, max: 50, step: 1 },
-                           { label: 'Daily SL Limit', key: 'maxLossPerDay', min: 1000, max: 50000, step: 1000, isCurrency: true },
+                           { label: 'Max Capital Allocation', key: 'maxCapital', min: 100000, max: 2000000, step: 50000, isCurrency: true, current: positions.reduce((acc, p) => acc + (p.entry * p.qty), 0) },
+                           { label: 'Max Trades Per Day', key: 'maxTradesPerDay', min: 1, max: 50, step: 1, current: [...positions, ...tradeHistory].filter(t => (t.timestamp?.toDate?.() || new Date()).toDateString() === new Date().toDateString()).length },
+                           { label: 'Daily SL Limit', key: 'maxLossPerDay', min: 1000, max: 50000, step: 1000, isCurrency: true, current: Math.abs(Math.min(0, dailyPnL)) },
                            { label: 'Risk Per Order (%)', key: 'riskPerTrade', min: 0.1, max: 5, step: 0.1, isPercent: true },
                          ].map(cfg => (
                             <div key={cfg.key} className="p-6 bg-tech-bg border border-tech-border space-y-4 group hover:border-neutral-700 transition-all">
                                <div className="flex justify-between items-center text-[9px] font-mono text-neutral-500 uppercase tracking-widest">
                                   <span>{cfg.label}</span>
-                                  <span className="text-white font-bold text-xs">
-                                     {cfg.isCurrency ? formatCurrency(riskSettings?.[cfg.key as keyof RiskSettings] as number || 0) : 
-                                      cfg.isPercent ? `${riskSettings?.[cfg.key as keyof RiskSettings]}%` : 
-                                      riskSettings?.[cfg.key as keyof RiskSettings]}
-                                  </span>
+                                  <div className="flex items-center gap-2">
+                                     {cfg.current !== undefined && (
+                                       <span className="text-neutral-600 mr-2">[USE: {cfg.isCurrency ? formatCurrency(cfg.current) : cfg.current}]</span>
+                                     )}
+                                     <span className="text-white font-bold text-xs">
+                                        {cfg.isCurrency ? formatCurrency(editingSettings?.[cfg.key as keyof RiskSettings] as number || 0) : 
+                                         cfg.isPercent ? `${editingSettings?.[cfg.key as keyof RiskSettings]}%` : 
+                                         editingSettings?.[cfg.key as keyof RiskSettings]}
+                                     </span>
+                                  </div>
                                </div>
                                <input 
                                   type="range"
@@ -1103,8 +1129,8 @@ export default function App() {
                                   max={cfg.max}
                                   step={cfg.step}
                                   disabled={riskSettings?.killSwitch}
-                                  value={riskSettings?.[cfg.key as keyof RiskSettings] as number || cfg.min}
-                                  onChange={(e) => updateRiskSettings({ [cfg.key]: parseFloat(e.target.value) })}
+                                  value={editingSettings?.[cfg.key as keyof RiskSettings] as number || cfg.min}
+                                  onChange={(e) => setEditingSettings(prev => prev ? { ...prev, [cfg.key]: parseFloat(e.target.value) } : null)}
                                   className={cn(
                                      "w-full accent-neon-green bg-tech-border h-1 appearance-none cursor-pointer",
                                      riskSettings?.killSwitch && "opacity-20 cursor-not-allowed"
@@ -1112,6 +1138,21 @@ export default function App() {
                                />
                             </div>
                          ))}
+                      </div>
+
+                      <div className="flex justify-end pt-4">
+                         <button
+                            onClick={() => editingSettings && updateRiskSettings(editingSettings)}
+                            disabled={riskSettings?.killSwitch || JSON.stringify(riskSettings) === JSON.stringify(editingSettings)}
+                            className={cn(
+                               "px-8 py-3 text-[10px] font-black uppercase tracking-[.4em] transition-all",
+                               JSON.stringify(riskSettings) !== JSON.stringify(editingSettings) 
+                                 ? "bg-neon-green text-black hover:bg-white shadow-[0_0_20px_rgba(0,255,148,0.2)]" 
+                                 : "bg-neutral-800 text-neutral-600 cursor-not-allowed"
+                            )}
+                         >
+                            Apply_Risk_Configuration
+                         </button>
                       </div>
 
                       <div className="space-y-6 pt-4 border-t border-tech-border">
