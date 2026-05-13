@@ -22,6 +22,9 @@ import {
 } from './services/nseService';
 import { analyzeTradeProbability, generateRecommendation } from './services/aiAnalysisService';
 import { 
+  sendTelegramNotification, formatTradeEntry, formatTradeExit 
+} from './services/telegramService';
+import { 
   StockData, OptionAction, Trend, MarketRegime, 
   AIProbabilityModel, TradeRecommendation, RiskSettings
 } from './types';
@@ -299,6 +302,9 @@ export default function App() {
     try {
       await addDoc(collection(db, 'trades'), newPosition);
       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER EXECUTED: ${stock.symbol} ${rec.action} @ ${rec.entryPrice} QTY: ${qty}`, ...prev]);
+      
+      // Notify Telegram
+      sendTelegramNotification(formatTradeEntry(newPosition));
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'trades');
     }
@@ -325,6 +331,9 @@ export default function App() {
       });
 
       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] POSITION CLOSED: ${pos.symbol} PNL: ${pos.pnl.toFixed(2)}`, ...prev]);
+      
+      // Notify Telegram
+      sendTelegramNotification(formatTradeExit(pos, pos.entry + (pos.pnl / pos.qty), pos.pnl));
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, 'trades');
     }

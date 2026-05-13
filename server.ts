@@ -79,6 +79,28 @@ async function startServer() {
     }
   });
 
+  // TELEGRAM NOTIFICATIONS
+  app.post("/api/notify/telegram", async (req, res) => {
+    const { message } = req.body;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+
+    if (!botToken || !chatId) {
+      return res.status(500).json({ error: "Telegram configuration missing" });
+    }
+
+    try {
+      await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        chat_id: chatId,
+        text: message,
+        parse_mode: 'HTML',
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: "Failed to send Telegram message", details: error.response?.data || error.message });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
