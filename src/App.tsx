@@ -18,7 +18,8 @@ import {
 } from 'recharts';
 import { cn, formatCurrency, formatNumber } from './lib/utils';
 import { 
-  getLiveStockData, getMarketOverview, getOptionChain, fetchLiveMarketData
+  getLiveStockData, getMarketOverview, getOptionChain, fetchLiveMarketData,
+  initializeMarketWebSocket
 } from './services/nseService';
 import { analyzeTradeProbability, generateRecommendation } from './services/aiAnalysisService';
 import { 
@@ -125,7 +126,27 @@ export default function App() {
     };
 
     loadMarketData();
-    const interval = setInterval(loadMarketData, 30000); // Pulse every 30s
+    
+    // Initialize WebSockets for real-time updates
+    initializeMarketWebSocket(
+      (updates) => {
+        setStocks(prev => {
+          const newStocks = [...prev];
+          updates.forEach(upd => {
+            const idx = newStocks.findIndex(s => s.symbol === upd.symbol);
+            if (idx !== -1) {
+              newStocks[idx] = { ...newStocks[idx], ...upd };
+            } else {
+              newStocks.push(upd);
+            }
+          });
+          return newStocks;
+        });
+      },
+      (market) => setMarketInfo({ ...market })
+    );
+
+    const interval = setInterval(loadMarketData, 30000); // Pulse every 30s as fallback
 
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -405,6 +426,7 @@ export default function App() {
             {[
               { id: 'dashboard', icon: LayoutDashboard, label: 'DASHBOARD' },
               { id: 'screener', icon: ListFilter, label: 'SCREENER' },
+              { id: 'analysis', icon: Search, label: 'ANALYSIS' },
               { id: 'trades', icon: Activity, label: 'TRADES' },
               { id: 'risk', icon: Shield, label: 'RISK' },
               { id: 'analytics', icon: BarChart3, label: 'ANALYTICS' }
@@ -784,52 +806,86 @@ export default function App() {
             </motion.div>
           )}
 
-          {activeView === 'analysis' && selectedStock && (
+          {activeView === 'analysis' && (
             <motion.div 
-              key="analysis"
+              key="analysis-container"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="grid grid-cols-1 lg:grid-cols-4 gap-6"
+              className="space-y-6"
             >
-              <div className="lg:col-span-1 space-y-6">
-                 <div className="bg-tech-surface border border-tech-border p-6 shadow-2xl">
-                    <div className="flex items-center justify-between mb-6">
-                       <h2 className="text-3xl font-black tracking-tighter text-white">{selectedStock.symbol}</h2>
-                       <span className={cn(
-                         "px-2 py-1 text-[10px] font-black font-mono",
-                         selectedStock.trend === Trend.BULLISH ? "bg-neon-green text-black" : "bg-neon-red text-white"
-                       )}>
-                         {selectedStock.trend}
-                       </span>
-                    </div>
-                    <div className="space-y-4 font-mono">
-                       <div className="flex justify-between items-baseline">
-                         <span className="text-[10px] text-neutral-500 uppercase tracking-widest">SPOT PRICE</span>
-                         <span className="text-lg font-bold text-white tracking-tighter">{formatCurrency(selectedStock.lastPrice)}</span>
-                       </div>
-                       <div className="flex justify-between items-baseline">
-                         <span className="text-[10px] text-neutral-500 uppercase tracking-widest">REL VOLUME</span>
-                         <span className="text-sm font-bold text-neon-green">{selectedStock.relVolume.toFixed(2)}x</span>
-                       </div>
-                       <div className="flex justify-between items-baseline">
-                         <span className="text-[10px] text-neutral-500 uppercase tracking-widest">RS INDEX</span>
-                         <span className="text-sm font-bold text-neutral-200">{selectedStock.relativeStrength.toFixed(2)}</span>
-                       </div>
-                    </div>
+              {!selectedStock ? (
+                <div className="bg-tech-surface border border-tech-border p-20 flex flex-col items-center justify-center text-center">
+                  <Search className="w-16 h-16 text-neutral-800 mb-6" />
+                  <h3 className="text-2xl font-black text-white mb-2">Alpha Engine Ready</h3>
+                  <p className="text-neutral-500 font-mono text-xs mb-8 uppercase tracking-widest max-w-md">No security selected for deep analysis. Select an active ticker from the dashboard or use the quick switcher below.</p>
+                  
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full max-w-2xl">
+                    {stocks.slice(0, 8).map(s => (
+                      <button 
+                        key={s.symbol}
+                        onClick={() => setSelectedStock(s)}
+                        className="bg-tech-bg border border-tech-border p-4 hover:border-neon-green transition-all group"
+                      >
+                        <div className="text-sm font-black text-white group-hover:text-neon-green">{s.symbol}</div>
+                        <div className={cn("text-[9px] font-mono", s.pChange >= 0 ? "text-neon-green" : "text-neon-red")}>
+                          {s.pChange >= 0 ? "+" : ""}{s.pChange}%
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                  {/* Existing Analysis Content */}
+                  <div className="lg:col-span-1 space-y-6">
+                     <div className="bg-tech-surface border border-tech-border p-6 shadow-2xl">
+                        <div className="flex items-center justify-between mb-6">
+                           <div className="flex flex-col">
+                              <h2 className="text-3xl font-black tracking-tighter text-white">{selectedStock.symbol}</h2>
+                              <span className="text-[10px] text-neutral-500 font-mono uppercase tracking-widest">Deep Volatility Scan</span>
+                           </div>
+                           <button 
+                             onClick={() => setSelectedStock(null)}
+                             className="text-[9px] font-mono text-neutral-600 hover:text-white uppercase"
+                           >
+                             [Change]
+                           </button>
+                        </div>
+                        <div className="space-y-4 font-mono">
+                           <div className="flex justify-between items-baseline">
+                             <span className="text-[10px] text-neutral-500 uppercase tracking-widest">SPOT PRICE</span>
+                             <span className="text-xl font-bold text-white">₹{selectedStock.lastPrice.toLocaleString()}</span>
+                           </div>
+                           <div className="flex justify-between items-baseline">
+                             <span className="text-[10px] text-neutral-500 uppercase tracking-widest">TREND_STATE</span>
+                             <span className={cn("text-xs font-black px-2 py-0.5", selectedStock.trend === Trend.BULLISH ? "bg-neon-green text-black" : "bg-neon-red")}>
+                                {selectedStock.trend}
+                             </span>
+                           </div>
+                           <div className="flex justify-between items-baseline">
+                             <span className="text-[10px] text-neutral-500 uppercase tracking-widest">REL VOLUME</span>
+                             <span className="text-sm font-bold text-neon-green">{selectedStock.relVolume.toFixed(2)}x</span>
+                           </div>
+                           <div className="flex justify-between items-baseline">
+                             <span className="text-[10px] text-neutral-500 uppercase tracking-widest">RS INDEX</span>
+                             <span className="text-sm font-bold text-neutral-200">{selectedStock.relativeStrength.toFixed(2)}</span>
+                           </div>
+                        </div>
 
-                    <div className="mt-8 pt-8 border-t border-tech-border space-y-4">
-                       <h3 className="text-[10px] font-mono font-bold uppercase text-neutral-500 tracking-[0.2em]">Quant-TF Correlation</h3>
-                       <div className="grid grid-cols-2 gap-2">
-                          {['Daily', 'Hourly', '15m', '5m'].map(tf => (
-                            <div key={tf} className="bg-tech-bg p-2 border border-tech-border flex items-center justify-between">
-                               <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest">{tf}</span>
-                               <TrendingUp size={12} className="text-neon-green" />
-                            </div>
-                          ))}
-                       </div>
-                    </div>
-                 </div>
+                        <div className="mt-8 pt-8 border-t border-tech-border space-y-4">
+                           <h3 className="text-[10px] font-mono font-bold uppercase text-neutral-500 tracking-[0.2em]">Quant-TF Correlation</h3>
+                           <div className="grid grid-cols-2 gap-2">
+                              {['Daily', 'Hourly', '15m', '5m'].map(tf => (
+                                <div key={tf} className="bg-tech-bg p-2 border border-tech-border flex items-center justify-between">
+                                   <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest">{tf}</span>
+                                   <TrendingUp size={12} className="text-neon-green" />
+                                </div>
+                              ))}
+                           </div>
+                        </div>
+                     </div>
+                  </div>
 
                  {/* Trading Recommendation */}
                  <div className={cn("bg-tech-surface border-2 p-6 shadow-[0_20px_50px_rgba(0,0,0,0.5)] relative overflow-hidden", 

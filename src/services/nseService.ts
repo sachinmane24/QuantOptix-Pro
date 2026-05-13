@@ -4,6 +4,7 @@
  */
 
 import { StockData, MarketRegime, Trend, OptionChainData } from '../types';
+import { io, Socket } from 'socket.io-client';
 
 export const FNO_STOCKS = [
   'RELIANCE', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'INFY', 'TCS', 'AXISBANK', 'KOTAKBANK',
@@ -103,7 +104,7 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
     const response = await fetch(`/api/market/quotes?${queryParams.toString()}`);
     if (!response.ok) {
       const text = await response.text();
-      console.error(`Fyers API Error (${response.status}):`, text.substring(0, 500));
+      console.error(`Fyers API Error (${response.status}):`, text);
       return null;
     }
     const data = await response.json();
@@ -177,4 +178,74 @@ export function getMarketOverview() {
     advances: 104,
     declines: 78
   };
+}
+
+let socket: Socket | null = null;
+
+export function initializeMarketWebSocket(
+  onStocksUpdate: (stocks: StockData[]) => void, 
+  onMarketUpdate: (market: any) => void
+) {
+  if (socket) return;
+  
+  socket = io();
+  
+  socket.on('market-update', (message: any) => {
+    if (!message || !message.d) return;
+    
+    // Fyers Websocket can send full data or partial.
+    // Map it to our types
+    const data = message.d;
+    
+    // Update active overview if index data present
+    const nifty = data['NSE:NIFTY50-INDEX'];
+    const bankNifty = data['NSE:NIFTYBANK-INDEX'];
+    const vix = data['NSE:INDIAVIX-INDEX'];
+
+    if (nifty || bankNifty || vix) {
+      const current = dynamicMarketOverview || getMarketOverview();
+      dynamicMarketOverview = {
+        ...current,
+        nifty: nifty ? { price: nifty.lp, change: nifty.ch, pChange: nifty.chp } : current.nifty,
+        bankNifty: bankNifty ? { price: bankNifty.lp, change: bankNifty.ch, pChange: bankNifty.chp } : current.bankNifty,
+        indiaVix: vix ? { price: vix.lp, change: vix.ch, pChange: vix.chp } : current.indiaVix,
+      };
+      onMarketUpdate(dynamicMarketOverview);
+    }
+
+    // Process stocks
+    const stockUpdates: StockData[] = [];
+    Object.keys(data).forEach(key => {
+      if (key.includes('-EQ')) {
+        const symbol = key.split(':')[1].split('-')[0];
+        const v = data[key];
+        
+        stockUpdates.push({
+          symbol,
+          name: symbol,
+          lastPrice: v.lp,
+          pChange: v.chp,
+          volume: v.v || 0,
+          relVolume: 1.0,
+          futuresOI: v.oi || 0,
+          oiChange: v.oic || 0,
+          vwap: v.avg_price || v.lp,
+          ema20: v.lp * 0.99, // Indicators usually calculated on client or separate service
+          ema50: v.lp * 0.97,
+          sector: 'Market',
+          relativeStrength: 0,
+          marketRegime: Math.abs(v.chp) > 2 ? MarketRegime.BREAKOUT : MarketRegime.SIDEWAYS,
+          trend: v.chp > 0 ? Trend.BULLISH : Trend.BEARISH,
+          rsi: 50
+        });
+      }
+    });
+
+    if (stockUpdates.length > 0) {
+      onStocksUpdate(stockUpdates);
+    }
+  });
+
+  socket.on('connect', () => console.log('[NSE WS] Connected'));
+  socket.on('disconnect', () => console.log('[NSE WS] Disconnected'));
 }
