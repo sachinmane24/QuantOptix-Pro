@@ -18,7 +18,7 @@ import {
 } from 'recharts';
 import { cn, formatCurrency, formatNumber } from './lib/utils';
 import { 
-  getLiveStockData, getMarketOverview, getOptionChain 
+  getLiveStockData, getMarketOverview, getOptionChain, fetchLiveMarketData
 } from './services/nseService';
 import { analyzeTradeProbability, generateRecommendation } from './services/aiAnalysisService';
 import { 
@@ -94,17 +94,32 @@ export default function App() {
   const [dailyPnL, setDailyPnL] = useState(0);
   const [realizedPnL, setRealizedPnL] = useState(0);
   const [unrealizedPnL, setUnrealizedPnL] = useState(0);
+  const [isFyersConnected, setIsFyersConnected] = useState(false);
 
   // NSE / Fyers Data flow
   useEffect(() => {
-    const data = getLiveStockData();
-    setStocks(data);
-    setMarketInfo(getMarketOverview());
+    const loadMarketData = async () => {
+      const realData = await fetchLiveMarketData();
+      if (realData) {
+        setStocks(realData);
+        setIsFyersConnected(true);
+      } else {
+        setStocks(getLiveStockData());
+        setIsFyersConnected(false);
+      }
+      setMarketInfo(getMarketOverview());
+    };
+
+    loadMarketData();
+    const interval = setInterval(loadMarketData, 30000); // Pulse every 30s
 
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
     });
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      clearInterval(interval);
+    };
   }, []);
 
   // Firebase Real-time Sync
@@ -400,6 +415,20 @@ export default function App() {
                 <LogIn size={14} /> SIGN_IN
               </button>
             )}
+            <div className="w-px h-8 bg-tech-border mx-2"></div>
+            <div className="flex items-center gap-3 bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono">
+              <span className="text-neutral-500 uppercase tracking-widest text-[9px]">Fyers:</span>
+              {isFyersConnected ? (
+                <span className="text-neon-green font-bold">LINKED</span>
+              ) : (
+                <a 
+                  href="/api/auth/fyers/login"
+                  className="text-amber-500 hover:text-white transition-colors flex items-center gap-1"
+                >
+                  CONNECT
+                </a>
+              )}
+            </div>
             <div className="w-px h-8 bg-tech-border mx-2"></div>
             <div className="bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono flex items-center gap-3">
               <span className="text-neutral-500 uppercase tracking-widest text-[9px]">Auto-Bot:</span>

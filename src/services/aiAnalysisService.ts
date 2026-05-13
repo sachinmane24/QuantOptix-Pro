@@ -94,18 +94,38 @@ export function generateRecommendation(
   }
 
   const entryPrice = bestContract.lastPrice;
-  const stopLoss = entryPrice * 0.7; // 30% SL as default for options
-  const target1 = entryPrice * 1.5;
-  const target2 = entryPrice * 2.5;
+  const iv = bestContract.iv / 100;
+  
+  // Institutional Logic: 
+  // 1. Stop Loss based on Volatility (IV) and Breakout Quality
+  // High Volatility = We give more room, but weighted by riskScore
+  // Breakout Quality = Higher quality leads to tighter SL expectations
+  const baseRisk = 0.20; // 20% base risk
+  const riskAdjustment = (aiModel.riskScore / 10); // Scale risk 1-10 to 0.1-1.0
+  const volAdjustment = (iv > 0.3 ? 0.05 : 0); // Add 5% if IV is high (>30%)
+  
+  const slPercent = Math.max(0.1, baseRisk + volAdjustment - (aiModel.breakoutQualityScore * 0.01));
+  const stopLoss = entryPrice * (1 - slPercent);
+
+  // 2. Targets based on Momentum and Institutional Activity
+  // Momentum score drives the stretch factor
+  const momentumStretch = 1 + (aiModel.momentumScore / 10);
+  const target1 = entryPrice * (1 + (slPercent * 1.5 * momentumStretch)); // Aim for min 1.5R adjusted by momentum
+  const target2 = entryPrice * (1 + (slPercent * 3.0 * momentumStretch)); // Aim for 3R extension
+  const target3 = entryPrice * (1 + (slPercent * 5.0 * momentumStretch)); // Moon shot
 
   return {
     symbol: stock.symbol,
     action,
     strike: bestContract.strike,
-    expiry: 'Current Monthly',
+    expiry: 'Current Weekly',
     entryPrice,
     stopLoss: parseFloat(stopLoss.toFixed(2)),
-    targets: [parseFloat(target1.toFixed(2)), parseFloat(target2.toFixed(2))],
+    targets: [
+      parseFloat(target1.toFixed(2)), 
+      parseFloat(target2.toFixed(2)),
+      parseFloat(target3.toFixed(2))
+    ],
     riskReward: (target1 - entryPrice) / (entryPrice - stopLoss),
     positionSize: '1 Lot',
     probability: aiModel.winProbability

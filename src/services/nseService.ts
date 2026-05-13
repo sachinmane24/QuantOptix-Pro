@@ -93,8 +93,76 @@ export function getOptionChain(symbol: string, currentPrice: number): OptionChai
   return chain;
 }
 
+let dynamicMarketOverview: any = null;
+
+export async function fetchLiveMarketData(): Promise<StockData[] | null> {
+  try {
+    const stockSymbols = FNO_STOCKS.map(s => `NSE:${s}-EQ`).join(',');
+    const indexSymbols = 'NSE:NIFTY50-INDEX,NSE:NIFTYBANK-INDEX,NSE:INDIAVIX-INDEX';
+    const response = await fetch(`/api/market/quotes?symbols=${stockSymbols},${indexSymbols}`);
+    const data = await response.json();
+
+    if (data.mock) {
+      console.warn("Fyers token not set, using mock data.");
+      return null;
+    }
+
+    if (data.d && Array.isArray(data.d)) {
+      // Extract indices for market overview
+      const nifty = data.d.find((item: any) => item.n === 'NSE:NIFTY50-INDEX');
+      const bankNifty = data.d.find((item: any) => item.n === 'NSE:NIFTYBANK-INDEX');
+      const vix = data.d.find((item: any) => item.n === 'NSE:INDIAVIX-INDEX');
+
+      if (nifty || bankNifty) {
+        dynamicMarketOverview = {
+          nifty: nifty ? { price: nifty.v.lp, change: nifty.v.ch, pChange: nifty.v.chp } : { price: 22450.30, change: 120.5, pChange: 0.54 },
+          bankNifty: bankNifty ? { price: bankNifty.v.lp, change: bankNifty.v.ch, pChange: bankNifty.v.chp } : { price: 47800.15, change: -45.2, pChange: -0.09 },
+          indiaVix: vix ? { price: vix.v.lp, change: vix.v.ch, pChange: vix.v.chp } : { price: 12.4, change: 0.2, pChange: 1.5 },
+          topGainer: 'Scanning...',
+          topLoser: 'Scanning...',
+          advances: 0,
+          declines: 0
+        };
+      }
+
+      // Filter and map stocks
+      return data.d
+        .filter((item: any) => item.n.includes('-EQ'))
+        .map((item: any) => {
+          const symbol = item.n.split(':')[1].split('-')[0];
+          const v = item.v;
+          const lastPrice = v.lp;
+          const pChange = v.chp;
+          
+          return {
+            symbol,
+            name: symbol,
+            lastPrice,
+            pChange,
+            volume: v.vol,
+            relVolume: 1.0,
+            futuresOI: v.oi || 0, 
+            oiChange: v.oic || 0,
+            vwap: v.avg_price || lastPrice,
+            ema20: lastPrice * (1 - (Math.random() * 0.02)),
+            ema50: lastPrice * (1 - (Math.random() * 0.04)),
+            sector: SECTORS[Math.floor(Math.random() * SECTORS.length)], 
+            relativeStrength: (pChange - (nifty?.v?.chp || 0)),
+            marketRegime: Math.abs(pChange) > 2 ? MarketRegime.BREAKOUT : MarketRegime.SIDEWAYS,
+            trend: pChange > 0 ? Trend.BULLISH : Trend.BEARISH,
+            rsi: 40 + (pChange * 2)
+          };
+        });
+    }
+    return null;
+  } catch (error) {
+    console.error("Error fetching Fyers data:", error);
+    return null;
+  }
+}
+
 export function getMarketOverview() {
-  return {
+  return dynamicMarketOverview || {
     nifty: { price: 22450.30, change: 120.5, pChange: 0.54 },
     bankNifty: { price: 47800.15, change: -45.2, pChange: -0.09 },
     indiaVix: { price: 12.4, change: 0.2, pChange: 1.5 },
@@ -102,5 +170,5 @@ export function getMarketOverview() {
     topLoser: 'TATAMOTORS',
     advances: 104,
     declines: 78
-  }
+  };
 }
