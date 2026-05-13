@@ -4,7 +4,7 @@
  */
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { StockData, OptionChainData, AIProbabilityModel, OptionAction } from "../types";
+import { StockData, OptionChainData, AIProbabilityModel, OptionAction, Trend } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 

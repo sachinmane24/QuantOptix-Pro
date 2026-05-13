@@ -1,0 +1,48 @@
+{
+  "entities": {
+    "trade": {
+      "title": "Trade",
+      "description": "Represents an individual trade execution",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner of the trade" },
+        "symbol": { "type": "string" },
+        "type": { "type": "string", "enum": ["BUY_CE", "BUY_PE"] },
+        "entry": { "type": "number" },
+        "sl": { "type": "number" },
+        "targets": { "type": "array", "items": { "type": "number" } },
+        "qty": { "type": "number" },
+        "status": { "type": "string", "enum": ["OPEN", "CLOSED"] },
+        "pnl": { "type": "number" },
+        "exit": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "closedAt": { "type": "string", "format": "date-time" },
+        "prob": { "type": "number" }
+      },
+      "required": ["userId", "symbol", "type", "entry", "sl", "qty", "status"]
+    },
+    "portfolio": {
+      "title": "Portfolio",
+      "description": "User portfolio summary and balance",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "balance": { "type": "number" },
+        "totalTrades": { "type": "number" },
+        "winRate": { "type": "number" },
+        "netPnl": { "type": "number" }
+      },
+      "required": ["userId", "balance"]
+    }
+  },
+  "firestore": {
+    "/trades/{tradeId}": {
+      "schema": "trade",
+      "description": "Collection of all trades"
+    },
+    "/portfolios/{userId}": {
+      "schema": "portfolio",
+      "description": "User portfolio information"
+    }
+  }
+}
