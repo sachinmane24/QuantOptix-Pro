@@ -92,6 +92,8 @@ export default function App() {
   const [riskSettings, setRiskSettings] = useState<RiskSettings | null>(null);
   const [editingSettings, setEditingSettings] = useState<RiskSettings | null>(null);
   const [dailyPnL, setDailyPnL] = useState(0);
+  const [realizedPnL, setRealizedPnL] = useState(0);
+  const [unrealizedPnL, setUnrealizedPnL] = useState(0);
 
   // NSE / Fyers Data flow
   useEffect(() => {
@@ -144,6 +146,8 @@ export default function App() {
       });
       const closedPnl = closedToday.reduce((acc: number, t: any) => acc + (t.pnl || 0), 0);
       const openPnl = all.filter((t: any) => t.status === 'OPEN').reduce((acc: number, t: any) => acc + (t.pnl || 0), 0);
+      setRealizedPnL(closedPnl);
+      setUnrealizedPnL(openPnl);
       setDailyPnL(closedPnl + openPnl);
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'trades'));
 
@@ -946,11 +950,41 @@ export default function App() {
               exit={{ opacity: 0 }}
               className="space-y-6"
             >
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center">
+                  <span className="text-[9px] font-mono font-bold text-neutral-500 uppercase tracking-widest mb-1">Session Performance</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className={cn("text-2xl font-black font-mono", dailyPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
+                      {dailyPnL >= 0 ? '+' : ''}{formatCurrency(dailyPnL)}
+                    </span>
+                    <span className="text-[10px] text-neutral-600 font-mono">NET_SESSION</span>
+                  </div>
+                </div>
+                <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center">
+                  <span className="text-[9px] font-mono font-bold text-neutral-500 uppercase tracking-widest mb-1">Realized PnL</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className={cn("text-xl font-black font-mono", realizedPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
+                      {realizedPnL >= 0 ? '+' : ''}{formatCurrency(realizedPnL)}
+                    </span>
+                    <span className="text-[10px] text-neutral-600 font-mono">CLOSED_POSITIONS</span>
+                  </div>
+                </div>
+                <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center border-l-4 border-l-neon-green/30">
+                  <span className="text-[9px] font-mono font-bold text-neutral-500 uppercase tracking-widest mb-1">Unrealized PnL</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className={cn("text-xl font-black font-mono", unrealizedPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
+                      {unrealizedPnL >= 0 ? '+' : ''}{formatCurrency(unrealizedPnL)}
+                    </span>
+                    <span className="text-[10px] text-neutral-600 font-mono">LIVE_EXPOSURE</span>
+                  </div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <StatCard title="Capital Deployed" value={formatCurrency(portfolio?.balance || 0)} />
+                <StatCard title="Account Balance" value={formatCurrency(portfolio?.balance || 0)} />
+                <StatCard title="Capital Deployed" value={formatCurrency(positions.reduce((acc, p) => acc + (p.entry * p.qty), 0))} />
                 <StatCard title="Active PnL" value={formatCurrency(positions.reduce((acc, p) => acc + p.pnl, 0))} change={1.2} />
                 <StatCard title="Total Gain/Loss" value={formatCurrency(portfolio?.netPnl || 0)} />
-                <StatCard title="Alpha Efficiency" value="82.4" suffix="%" />
               </div>
 
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -964,16 +998,18 @@ export default function App() {
                         <tr>
                           <th className="px-4 py-3 tracking-widest">Symbol</th>
                           <th className="px-4 py-3 tracking-widest">Type</th>
-                          <th className="px-4 py-3 tracking-widest">Entry</th>
-                          <th className="px-4 py-3 tracking-widest text-center">Qty</th>
-                          <th className="px-4 py-3 tracking-widest">PnL</th>
+                          <th className="px-4 py-3 tracking-widest text-right">Entry</th>
+                          <th className="px-4 py-3 tracking-widest text-right">SL</th>
+                          <th className="px-4 py-3 tracking-widest text-right">Targets</th>
+                          <th className="px-4 py-3 tracking-widest text-right">Margin</th>
+                          <th className="px-4 py-3 tracking-widest text-right">PnL</th>
                           <th className="px-4 py-3 tracking-widest text-right">Action</th>
                         </tr>
                       </thead>
                       <tbody className="text-[11px] divide-y divide-tech-border">
                         {positions.length === 0 ? (
                           <tr>
-                            <td colSpan={6} className="px-4 py-24 text-center text-neutral-600 uppercase tracking-widest italic font-mono">
+                            <td colSpan={8} className="px-4 py-24 text-center text-neutral-600 uppercase tracking-widest italic font-mono">
                                <div className="flex flex-col items-center gap-4">
                                   <RefreshCw className="animate-spin opacity-20" size={32} />
                                   Scanning Universe for Alpha Entry...
@@ -982,18 +1018,20 @@ export default function App() {
                           </tr>
                         ) : (
                           positions.map(pos => (
-                            <tr key={pos.id} className="hover:bg-white/5 transition-colors">
+                            <tr key={pos.id} className="hover:bg-white/5 transition-all">
                               <td className="px-4 py-3 font-bold text-white tracking-widest">{pos.symbol}</td>
                               <td className={cn("px-4 py-3 font-black", pos.type.includes('CE') ? "text-neon-green" : "text-neon-red")}>{pos.type}</td>
-                              <td className="px-4 py-3 text-neutral-400">{pos.entry}</td>
-                              <td className="px-4 py-3 text-white text-center font-bold bg-white/5">{pos.qty}</td>
-                              <td className={cn("px-4 py-3 font-black", pos.pnl >= 0 ? "text-neon-green glow-green" : "text-neon-red glow-red")}>
+                              <td className="px-4 py-3 text-neutral-400 text-right">{pos.entry}</td>
+                              <td className="px-4 py-3 text-neon-red/70 text-right">{pos.sl}</td>
+                              <td className="px-4 py-3 text-neon-green/70 text-right">{pos.targets?.join(' | ')}</td>
+                              <td className="px-4 py-3 text-white font-bold bg-white/5 text-right">{formatCurrency(pos.entry * pos.qty)}</td>
+                              <td className={cn("px-4 py-3 font-black text-right", pos.pnl >= 0 ? "text-neon-green glow-green" : "text-neon-red glow-red")}>
                                 {formatCurrency(pos.pnl)}
                               </td>
                               <td className="px-4 py-3 text-right">
                                 <button 
                                   onClick={() => closePosition(pos.id)}
-                                  className="text-neutral-500 hover:text-white uppercase text-[8px] font-black tracking-[.2em] border border-tech-border px-3 py-1 hover:border-white transition-all"
+                                  className="text-neutral-500 hover:text-white uppercase text-[8px] font-black tracking-[.2em] border border-tech-border px-3 py-1 hover:border-white transition-all focus:outline-none"
                                 >
                                   LIQUIDATE
                                 </button>
