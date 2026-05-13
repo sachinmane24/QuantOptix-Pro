@@ -13,6 +13,10 @@ async function startServer() {
   app.use(express.json());
 
   // FYERS AUTH ENDPOINTS
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "alive", time: new Date().toISOString(), env: process.env.NODE_ENV });
+  });
+
   app.get("/api/auth/fyers/login", (req, res) => {
     const clientId = process.env.FYERS_CLIENT_ID;
     const redirectUrl = process.env.FYERS_REDIRECT_URL;
@@ -62,6 +66,8 @@ async function startServer() {
     const token = process.env.FYERS_ACCESS_TOKEN;
     const { symbols } = req.query;
 
+    console.log(`[Proxy] Fetching quotes for symbols size: ${String(symbols).length}`);
+
     if (!token) {
       return res.json({ 
         mock: true, 
@@ -69,13 +75,28 @@ async function startServer() {
       });
     }
     
+    if (!symbols) {
+      return res.status(400).json({ error: "Missing symbols parameter" });
+    }
+    
     try {
-      const response = await axios.get(`https://api-t1.fyers.in/api/v3/quotes?symbols=${symbols}`, {
-        headers: { 'Authorization': `${process.env.FYERS_CLIENT_ID}:${token}` }
+      const response = await axios.get(`https://api-t1.fyers.in/api/v3/quotes`, {
+        params: { symbols },
+        headers: { 
+          'Authorization': `${process.env.FYERS_CLIENT_ID}:${token}`,
+          'Accept': 'application/json'
+        }
       });
+      console.log(`[Proxy] Fyers success: ${response.status} for ${String(symbols).substring(0, 50)}...`);
       res.json(response.data);
     } catch (error: any) {
-      res.status(500).json({ error: "Failed to fetch from FYERS", details: error.response?.data || error.message });
+      console.error("[Proxy Error] Fyers call failed:", error.response?.data || error.message);
+      console.error("[Proxy Error] Headers used:", { 'Authorization': `${process.env.FYERS_CLIENT_ID}:HIDDEN` });
+      res.status(500).json({ 
+        error: "Failed to fetch from FYERS", 
+        details: error.response?.data || error.message,
+        symbols_requested: symbols 
+      });
     }
   });
 

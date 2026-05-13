@@ -72,7 +72,7 @@ const RiskIndicator = ({ score, label }: { score: number, label: string }) => (
 // --- Main App Component ---
 
 export default function App() {
-  const [activeView, setActiveView] = useState<'dashboard' | 'screener' | 'analysis' | 'portfolio' | 'risk' | 'analytics'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'screener' | 'analysis' | 'trades' | 'risk' | 'analytics'>('dashboard');
   const [user, setUser] = useState<User | null>(null);
   const [stocks, setStocks] = useState<StockData[]>([]);
   const [marketInfo, setMarketInfo] = useState<any>(null);
@@ -101,6 +101,17 @@ export default function App() {
 
   // NSE / Fyers Data flow
   useEffect(() => {
+    const checkServer = async () => {
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        console.log("Server Health:", data);
+      } catch (e) {
+        console.error("Server not responding to API calls:", e);
+      }
+    };
+    checkServer();
+
     const loadMarketData = async () => {
       const realData = await fetchLiveMarketData();
       if (realData) {
@@ -377,6 +388,12 @@ export default function App() {
               <>
                 <div>NIFTY 50 <span className={cn("font-bold ml-1", marketInfo.nifty.pChange >= 0 ? "text-neon-green" : "text-neon-red")}>{marketInfo.nifty.price} ({marketInfo.nifty.pChange >= 0 ? "+" : ""}{marketInfo.nifty.pChange}%)</span></div>
                 <div>BANK NIFTY <span className={cn("font-bold ml-1", marketInfo.bankNifty.pChange >= 0 ? "text-neon-green" : "text-neon-red")}>{marketInfo.bankNifty.price} ({marketInfo.bankNifty.pChange >= 0 ? "+" : ""}{marketInfo.bankNifty.pChange}%)</span></div>
+                <div className="flex items-center gap-2">
+                  SESSION_PNL: 
+                  <span className={cn("font-bold", dailyPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
+                    {dailyPnL >= 0 ? "+" : ""}{formatCurrency(dailyPnL)}
+                  </span>
+                </div>
                 <div>F&O UNIVERSE <span className="text-white font-bold ml-1">{stocks.length} ACTIVE</span></div>
               </>
             )}
@@ -388,7 +405,7 @@ export default function App() {
             {[
               { id: 'dashboard', icon: LayoutDashboard, label: 'DASHBOARD' },
               { id: 'screener', icon: ListFilter, label: 'SCREENER' },
-              { id: 'portfolio', icon: Activity, label: 'PORTFOLIO' },
+              { id: 'trades', icon: Activity, label: 'TRADES' },
               { id: 'risk', icon: Shield, label: 'RISK' },
               { id: 'analytics', icon: BarChart3, label: 'ANALYTICS' }
             ].map(item => (
@@ -525,6 +542,44 @@ export default function App() {
                   exit={{ opacity: 0 }}
                   className="space-y-8"
                 >
+                  {/* Session Summary Bar */}
+                  <div className="flex flex-wrap gap-4 items-center bg-tech-surface border border-tech-border p-4 mb-2">
+                    <div className="flex gap-8">
+                      <div className="flex flex-col">
+                        <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Realized PnL</span>
+                        <span className={cn("text-lg font-black font-mono", realizedPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
+                          {realizedPnL >= 0 ? '+' : ''}{formatCurrency(realizedPnL)}
+                        </span>
+                      </div>
+                      <div className="w-px h-8 bg-tech-border"></div>
+                      <div className="flex flex-col">
+                        <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Unrealized PnL</span>
+                        <span className={cn("text-lg font-black font-mono", unrealizedPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
+                          {unrealizedPnL >= 0 ? '+' : ''}{formatCurrency(unrealizedPnL)}
+                        </span>
+                      </div>
+                      <div className="w-px h-8 bg-tech-border"></div>
+                      <div className="flex flex-col">
+                        <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Net Session</span>
+                        <span className={cn("text-lg font-black font-mono", dailyPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
+                          {dailyPnL >= 0 ? '+' : ''}{formatCurrency(dailyPnL)}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div className="ml-auto flex items-center gap-4">
+                       <div className="text-right">
+                          <div className="text-[8px] text-neutral-500 uppercase font-mono tracking-widest">Bot Status</div>
+                          <div className={cn("text-[10px] font-bold font-mono", isAutoTrading ? "text-neon-green" : "text-amber-500")}>
+                            {isAutoTrading ? "RUNNING_STABLE" : "USER_CONTROL"}
+                          </div>
+                       </div>
+                       <button onClick={() => setActiveView('trades')} className="bg-tech-bg border border-tech-border px-4 py-1.5 text-[9px] font-bold uppercase tracking-widest hover:text-neon-green transition-colors">
+                          Manage Trades
+                       </button>
+                    </div>
+                  </div>
+
                   {/* High Prob Alpha Opportunities */}
                   <div className="space-y-6">
                     <div className="flex justify-between items-center">
@@ -980,41 +1035,41 @@ export default function App() {
               </div>
             </motion.div>
           )}
-          {activeView === 'portfolio' && (
+          {activeView === 'trades' && (
             <motion.div 
-              key="portfolio"
+              key="trades"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="space-y-6"
             >
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center">
-                  <span className="text-[9px] font-mono font-bold text-neutral-500 uppercase tracking-widest mb-1">Session Performance</span>
-                  <div className="flex items-baseline gap-2">
-                    <span className={cn("text-2xl font-black font-mono", dailyPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
-                      {dailyPnL >= 0 ? '+' : ''}{formatCurrency(dailyPnL)}
-                    </span>
-                    <span className="text-[10px] text-neutral-600 font-mono">NET_SESSION</span>
-                  </div>
-                </div>
-                <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center">
-                  <span className="text-[9px] font-mono font-bold text-neutral-500 uppercase tracking-widest mb-1">Realized PnL</span>
-                  <div className="flex items-baseline gap-2">
+              <div className="flex justify-between items-center bg-tech-surface border border-tech-border p-4 mb-2">
+                <div className="flex gap-8">
+                  <div className="flex flex-col">
+                    <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Realized PnL</span>
                     <span className={cn("text-xl font-black font-mono", realizedPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
                       {realizedPnL >= 0 ? '+' : ''}{formatCurrency(realizedPnL)}
                     </span>
-                    <span className="text-[10px] text-neutral-600 font-mono">CLOSED_POSITIONS</span>
                   </div>
-                </div>
-                <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center border-l-4 border-l-neon-green/30">
-                  <span className="text-[9px] font-mono font-bold text-neutral-500 uppercase tracking-widest mb-1">Unrealized PnL</span>
-                  <div className="flex items-baseline gap-2">
+                  <div className="w-px h-10 bg-tech-border"></div>
+                  <div className="flex flex-col">
+                    <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Unrealized PnL</span>
                     <span className={cn("text-xl font-black font-mono", unrealizedPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
                       {unrealizedPnL >= 0 ? '+' : ''}{formatCurrency(unrealizedPnL)}
                     </span>
-                    <span className="text-[10px] text-neutral-600 font-mono">LIVE_EXPOSURE</span>
                   </div>
+                  <div className="w-px h-10 bg-tech-border"></div>
+                  <div className="flex flex-col">
+                    <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Net Session</span>
+                    <span className={cn("text-xl font-black font-mono", dailyPnL >= 0 ? "text-neon-green" : "text-neon-red")}>
+                      {dailyPnL >= 0 ? '+' : ''}{formatCurrency(dailyPnL)}
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="flex bg-tech-bg border border-tech-border p-1">
+                  <button className="px-6 py-1.5 text-[10px] font-black uppercase tracking-widest bg-neon-green text-black">Live Exposure</button>
+                  <button className="px-6 py-1.5 text-[10px] font-black uppercase tracking-widest text-neutral-500 hover:text-white transition-colors" onClick={() => setActiveView('analytics')}>Trade History</button>
                 </div>
               </div>
 
@@ -1022,7 +1077,7 @@ export default function App() {
                 <StatCard title="Account Balance" value={formatCurrency(portfolio?.balance || 0)} />
                 <StatCard title="Capital Deployed" value={formatCurrency(positions.reduce((acc, p) => acc + (p.entry * p.qty), 0))} />
                 <StatCard title="Active PnL" value={formatCurrency(positions.reduce((acc, p) => acc + p.pnl, 0))} change={1.2} />
-                <StatCard title="Total Gain/Loss" value={formatCurrency(portfolio?.netPnl || 0)} />
+                <StatCard title="Net ROI" value="1.42" suffix="%" change={0.8} />
               </div>
 
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">

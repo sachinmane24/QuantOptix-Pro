@@ -8,8 +8,8 @@ import { StockData, MarketRegime, Trend, OptionChainData } from '../types';
 export const FNO_STOCKS = [
   'RELIANCE', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'INFY', 'TCS', 'AXISBANK', 'KOTAKBANK',
   'TATAMOTORS', 'LT', 'BEL', 'HAL', 'TRENT', 'ADANIENT', 'ADANIPORTS', 'COFORGE',
-  'CHOLAFIN', 'BAJFINANCE', 'BHARTIARTL', 'M&M', 'SUNPHARMA', 'HINDUNILVR',
-  'ITC', 'TITAN', 'ASIANPAINT', 'ULTRACEMCO', 'NTPC', 'POWERGRID', 'ONGC', 'JSWSTEEL'
+  'CHOLAFIN', 'BAJFINANCE', 'BHARTIARTL', 'SUNPHARMA', 'HINDUNILVR',
+  'ITC', 'TITAN', 'ASIANPAINT', 'ULTRACEMCO'
 ];
 
 export const SECTORS = [
@@ -99,7 +99,13 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
   try {
     const stockSymbols = FNO_STOCKS.map(s => `NSE:${s}-EQ`).join(',');
     const indexSymbols = 'NSE:NIFTY50-INDEX,NSE:NIFTYBANK-INDEX,NSE:INDIAVIX-INDEX';
-    const response = await fetch(`/api/market/quotes?symbols=${stockSymbols},${indexSymbols}`);
+    const queryParams = new URLSearchParams({ symbols: `${stockSymbols},${indexSymbols}` });
+    const response = await fetch(`/api/market/quotes?${queryParams.toString()}`);
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`Fyers API Error (${response.status}):`, text.substring(0, 500));
+      return null;
+    }
     const data = await response.json();
 
     if (data.mock) {
