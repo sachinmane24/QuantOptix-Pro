@@ -33,6 +33,20 @@
         "netPnl": { "type": "number" }
       },
       "required": ["userId", "balance"]
+    },
+    "settings": {
+      "title": "Risk Settings",
+      "description": "User risk management parameters",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "maxCapital": { "type": "number" },
+        "maxTradesPerDay": { "type": "number" },
+        "maxLossPerDay": { "type": "number" },
+        "riskPerTrade": { "type": "number" },
+        "killSwitch": { "type": "boolean" }
+      },
+      "required": ["userId", "killSwitch"]
     }
   },
   "firestore": {
@@ -43,6 +57,10 @@
     "/portfolios/{userId}": {
       "schema": "portfolio",
       "description": "User portfolio information"
+    },
+    "/settings/{userId}": {
+      "schema": "settings",
+      "description": "User risk settings"
     }
   }
 }

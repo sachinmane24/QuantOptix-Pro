@@ -23,7 +23,7 @@ import {
 import { analyzeTradeProbability, generateRecommendation } from './services/aiAnalysisService';
 import { 
   StockData, OptionAction, Trend, MarketRegime, 
-  AIProbabilityModel, TradeRecommendation 
+  AIProbabilityModel, TradeRecommendation, RiskSettings
 } from './types';
 import { 
   auth, db, googleProvider, signInWithPopup, onAuthStateChanged, 
@@ -89,6 +89,7 @@ export default function App() {
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [tradeLogs, setTradeLogs] = useState<string[]>([]);
+  const [riskSettings, setRiskSettings] = useState<RiskSettings | null>(null);
 
   // NSE / Fyers Data flow
   useEffect(() => {
@@ -134,11 +135,35 @@ export default function App() {
       setTradeHistory(all.filter((t: any) => t.status === 'CLOSED'));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'trades'));
 
+    // Sync Settings
+    const unsubSettings = onSnapshot(doc(db, 'settings', user.uid), (snap) => {
+      if (snap.exists()) {
+        setRiskSettings(snap.data() as RiskSettings);
+      } else {
+        // Initial Settings
+        setDoc(doc(db, 'settings', user.uid), {
+          userId: user.uid,
+          maxCapital: 500000,
+          maxTradesPerDay: 5,
+          maxLossPerDay: 10000,
+          riskPerTrade: 1, // 1%
+          killSwitch: false
+        });
+      }
+    }, (err) => handleFirestoreError(err, OperationType.GET, `settings/${user.uid}`));
+
     return () => {
       unsubPort();
       unsubTrades();
+      unsubSettings();
     };
   }, [user]);
+
+  useEffect(() => {
+    if (riskSettings?.killSwitch) {
+       setIsAutoTrading(false);
+    }
+  }, [riskSettings?.killSwitch]);
 
   const handleLogin = async () => {
     try {
@@ -149,6 +174,15 @@ export default function App() {
   };
 
   const handleLogout = () => auth.signOut();
+  
+  const updateRiskSettings = async (updates: Partial<RiskSettings>) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'settings', user.uid), updates);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `settings/${user.uid}`);
+    }
+  };
 
   const handleStockSelect = async (stock: StockData) => {
     setSelectedStock(stock);
@@ -170,16 +204,41 @@ export default function App() {
   };
 
   const executeTrade = async (stock: StockData, rec: TradeRecommendation, analysis: AIProbabilityModel) => {
-    if (!user || !portfolio) return;
+    if (!user || !portfolio || !riskSettings) return;
+
+    // Reject if Kill Switch is active
+    if (riskSettings.killSwitch) {
+       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Global Kill Switch is ACTIVE`, ...prev]);
+       return;
+    }
+
+    // Check Max Trades Per Day
+    const today = new Date().toDateString();
+    const tradesToday = [...positions, ...tradeHistory].filter(t => {
+      const tDate = t.timestamp?.toDate?.() || new Date();
+      return tDate.toDateString() === today;
+    }).length;
+
+    if (tradesToday >= riskSettings.maxTradesPerDay) {
+       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Max daily trades (${riskSettings.maxTradesPerDay}) reached`, ...prev]);
+       return;
+    }
+
+    // Check Max Capital
+    const estimatedMargin = positions.reduce((acc, p) => acc + (p.entry * p.qty), 0);
+    if (estimatedMargin >= riskSettings.maxCapital) {
+       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Max capital allocation reached`, ...prev]);
+       return;
+    }
 
     // Check if already in position
     if (positions.find(p => p.symbol === stock.symbol)) return;
 
-    const riskPerTrade = (portfolio?.balance || 1000000) * 0.01; // 1% Risk
+    const riskAmount = (portfolio?.balance || 1000000) * (riskSettings.riskPerTrade / 100);
     const entry = rec.entryPrice;
     const sl = rec.stopLoss;
     const stopLossPoints = Math.abs(entry - sl);
-    const qty = Math.floor(riskPerTrade / (stopLossPoints || 1));
+    const qty = Math.floor(riskAmount / (stopLossPoints || 1));
 
     if (qty <= 0) return;
 
@@ -318,15 +377,17 @@ export default function App() {
             )}
             <div className="w-px h-8 bg-tech-border mx-2"></div>
             <div className="bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono flex items-center gap-3">
-              <span className="text-neutral-500">AUTO-TRADE:</span>
+              <span className="text-neutral-500 uppercase tracking-widest text-[9px]">Auto-Bot:</span>
               <button 
-                onClick={() => setIsAutoTrading(!isAutoTrading)}
+                onClick={() => !riskSettings?.killSwitch && setIsAutoTrading(!isAutoTrading)}
+                disabled={riskSettings?.killSwitch}
                 className={cn(
-                  "px-2 py-0.5 font-black uppercase tracking-tighter transition-all",
-                  isAutoTrading ? "bg-neon-green text-black shadow-[0_0_8px_rgba(0,255,148,0.5)]" : "bg-neutral-800 text-neutral-500"
+                  "px-3 py-0.5 font-black uppercase tracking-tighter transition-all text-[9px]",
+                  isAutoTrading ? "bg-neon-green text-black shadow-[0_0_8px_rgba(0,255,148,0.5)]" : "bg-neutral-800 text-neutral-500",
+                  riskSettings?.killSwitch && "bg-neon-red/20 text-neon-red border border-neon-red/50 cursor-not-allowed"
                 )}
               >
-                {isAutoTrading ? "ON" : "OFF"}
+                {riskSettings?.killSwitch ? "HALTED" : (isAutoTrading ? "ACTIVE" : "STANDBY")}
               </button>
             </div>
           </div>
@@ -1001,27 +1062,62 @@ export default function App() {
                className="space-y-6"
              >
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                   <div className="bg-tech-surface border border-tech-border p-8 space-y-8">
-                      <div className="flex items-center gap-4 mb-4">
-                         <Shield className="text-neon-green" size={24} />
-                         <h2 className="text-xl font-black uppercase tracking-tighter">Global Risk Management</h2>
+                   <div className="bg-tech-surface border border-tech-border p-8 space-y-8 shadow-2xl">
+                      <div className="flex items-center justify-between gap-4 mb-4">
+                         <div className="flex items-center gap-4">
+                            <Shield className="text-neon-green" size={24} />
+                            <h2 className="text-xl font-black uppercase tracking-tighter">Global Risk Management</h2>
+                         </div>
+                         <button 
+                            onClick={() => updateRiskSettings({ killSwitch: !riskSettings?.killSwitch })}
+                            className={cn(
+                               "px-6 py-2 text-[10px] font-black uppercase tracking-[.3em] transition-all border",
+                               riskSettings?.killSwitch 
+                                 ? "bg-neon-red text-white border-neon-red glow-red" 
+                                 : "bg-neutral-800 text-neutral-500 border-tech-border hover:bg-white hover:text-black hover:border-white shadow-xl"
+                            )}
+                         >
+                            {riskSettings?.killSwitch ? "KILL_SWITCH_ACTIVE" : "ARM_KILL_SWITCH"}
+                         </button>
                       </div>
                       
-                      <div className="grid grid-cols-2 gap-4">
-                         <div className="p-4 bg-tech-bg border border-tech-border space-y-2">
-                            <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Max Risk Per Trade</span>
-                            <div className="text-lg font-bold text-white font-mono">1.0%</div>
-                         </div>
-                         <div className="p-4 bg-tech-bg border border-tech-border space-y-2">
-                            <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Daily SL Limit</span>
-                            <div className="text-lg font-bold text-neon-red font-mono">3.0%</div>
-                         </div>
+                      <div className="grid grid-cols-2 gap-6">
+                         {[
+                           { label: 'Max Capital Allocation', key: 'maxCapital', min: 100000, max: 2000000, step: 50000, isCurrency: true },
+                           { label: 'Max Trades Per Day', key: 'maxTradesPerDay', min: 1, max: 50, step: 1 },
+                           { label: 'Daily SL Limit', key: 'maxLossPerDay', min: 1000, max: 50000, step: 1000, isCurrency: true },
+                           { label: 'Risk Per Order (%)', key: 'riskPerTrade', min: 0.1, max: 5, step: 0.1, isPercent: true },
+                         ].map(cfg => (
+                            <div key={cfg.key} className="p-6 bg-tech-bg border border-tech-border space-y-4 group hover:border-neutral-700 transition-all">
+                               <div className="flex justify-between items-center text-[9px] font-mono text-neutral-500 uppercase tracking-widest">
+                                  <span>{cfg.label}</span>
+                                  <span className="text-white font-bold text-xs">
+                                     {cfg.isCurrency ? formatCurrency(riskSettings?.[cfg.key as keyof RiskSettings] as number || 0) : 
+                                      cfg.isPercent ? `${riskSettings?.[cfg.key as keyof RiskSettings]}%` : 
+                                      riskSettings?.[cfg.key as keyof RiskSettings]}
+                                  </span>
+                               </div>
+                               <input 
+                                  type="range"
+                                  min={cfg.min}
+                                  max={cfg.max}
+                                  step={cfg.step}
+                                  disabled={riskSettings?.killSwitch}
+                                  value={riskSettings?.[cfg.key as keyof RiskSettings] as number || cfg.min}
+                                  onChange={(e) => updateRiskSettings({ [cfg.key]: parseFloat(e.target.value) })}
+                                  className={cn(
+                                     "w-full accent-neon-green bg-tech-border h-1 appearance-none cursor-pointer",
+                                     riskSettings?.killSwitch && "opacity-20 cursor-not-allowed"
+                                  )}
+                               />
+                            </div>
+                         ))}
                       </div>
 
-                      <div className="space-y-6 pt-4">
-                         <h3 className="text-[10px] font-mono font-bold uppercase tracking-widest text-neutral-500">Auto-Liquidation Thresholds</h3>
+                      <div className="space-y-6 pt-4 border-t border-tech-border">
+                         <h3 className="text-[10px] font-mono font-bold uppercase tracking-widest text-neutral-500">Institutional Circuit Breakers</h3>
                          {[
-                           { label: 'Drawdown Circuit Breaker', val: '5%', status: 'ARMED', color: 'bg-neon-green' },
+                           { label: 'Drawdown Circuit Breaker', val: '5%', status: riskSettings?.killSwitch ? 'TRIPPED' : 'ARMED', color: riskSettings?.killSwitch ? 'bg-neon-red' : 'bg-neon-green' },
                            { label: 'Institutional Volatility Cap', val: '35%', status: 'MONITORING', color: 'bg-amber-500' },
                            { label: 'Event-Based Pause', val: 'ENABLED', status: 'ACTIVE', color: 'bg-neon-green' }
                          ].map(rule => (

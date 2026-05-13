@@ -42,6 +42,12 @@ service cloud.firestore {
              data.balance is number;
     }
 
+    function isValidSettings(data) {
+      return data.keys().hasAll(['userId', 'killSwitch']) &&
+             data.userId == request.auth.uid &&
+             data.killSwitch is bool;
+    }
+
     // --- Collections ---
 
     match /trades/{tradeId} {
@@ -72,6 +78,12 @@ service cloud.firestore {
       allow update: if isOwner(userId) && 
                       isValidPortfolio(incoming()) && 
                       incoming().diff(existing()).affectedKeys().hasAny(['balance', 'totalTrades', 'winRate', 'netPnl']);
+    }
+
+    match /settings/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidSettings(incoming());
+      allow update: if isOwner(userId) && isValidSettings(incoming());
     }
   }
 }

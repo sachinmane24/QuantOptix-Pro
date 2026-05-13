@@ -76,3 +76,11 @@ export interface TradeRecommendation {
   positionSize: string;
   probability: number;
 }
+
+export interface RiskSettings {
+  maxCapital: number;
+  maxTradesPerDay: number;
+  maxLossPerDay: number;
+  riskPerTrade: number; // percentage
+  killSwitch: boolean;
+}
