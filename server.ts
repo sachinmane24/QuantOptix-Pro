@@ -278,7 +278,14 @@ async function startServer() {
   // Health check
   app.get("/api/health", (req, res) => {
     const allEnvKeys = Object.keys(process.env);
-    const fyersKeys = allEnvKeys.filter(k => k.toLocaleUpperCase().startsWith('FYERS_'));
+    
+    // Check for common Fyers patterns anywhere in the key name (case-insensitive)
+    const fyersKeys = allEnvKeys.filter(k => 
+      k.toLocaleUpperCase().includes('FYERS') || 
+      k.toLocaleUpperCase().includes('CLIENT_ID') ||
+      k.toLocaleUpperCase().includes('APP_ID') ||
+      k.includes('J07LANWT')
+    );
     
     res.json({ 
       status: "alive", 
@@ -288,7 +295,7 @@ async function startServer() {
       autoLoginConfigured: !!process.env.FYERS_USER_ID && !!(process.env.FYERS_TOTP_SECRET || process.env.FYERS_TOTP_SECRI) && !!process.env.FYERS_PIN,
       appUrl: process.env.APP_URL || "NOT_SET",
       fyersKeysFound: fyersKeys,
-      allAvailableKeyNames: allEnvKeys.map(k => k.substring(0, 3) + "..." + k.substring(Math.max(0, k.length - 2))),
+      allAvailableKeyNames: allEnvKeys.map(k => k.length > 4 ? k.substring(0, 3) + "..." + k.substring(k.length - 2) : k),
       manualRedirectSet: !!(process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL)
     });
   });
