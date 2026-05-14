@@ -26,7 +26,7 @@ let tradingService: PaperTradingService | null = null;
 async function performAutoLogin() {
   if (loginPromise) return loginPromise;
 
-  const clientId = process.env.FYERS_CLIENT_ID;
+  const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
   const secretKey = process.env.FYERS_SECRET_KEY || process.env.FYERS_SECRET_ID;
   const userId = process.env.FYERS_USER_ID;
   const pin = process.env.FYERS_PIN;
@@ -38,7 +38,7 @@ async function performAutoLogin() {
 
   if (!clientId || !secretKey || !userId || !pin || !totpSecret || !redirectUri) {
     const missing = [];
-    if (!clientId) missing.push("FYERS_CLIENT_ID");
+    if (!clientId) missing.push("FYERS_CLIENT_ID/APP_ID");
     if (!secretKey) missing.push("FYERS_SECRET_KEY/ID");
     if (!userId) missing.push("FYERS_USER_ID");
     if (!pin) missing.push("FYERS_PIN");
@@ -251,14 +251,16 @@ async function startServer() {
 
   // Health check
   app.get("/api/health", (req, res) => {
+    const fyersKeys = Object.keys(process.env).filter(k => k.startsWith('FYERS_'));
     res.json({ 
       status: "alive", 
       time: new Date().toISOString(), 
       tokenPresent: !!process.env.FYERS_ACCESS_TOKEN,
-      fyersConfigured: !!process.env.FYERS_CLIENT_ID && !!process.env.FYERS_SECRET_KEY,
-      autoLoginConfigured: !!process.env.FYERS_USER_ID && !!process.env.FYERS_TOTP_SECRET && !!process.env.FYERS_PIN,
+      fyersConfigured: !!(process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID) && !!(process.env.FYERS_SECRET_KEY || process.env.FYERS_SECRET_ID),
+      autoLoginConfigured: !!process.env.FYERS_USER_ID && !!(process.env.FYERS_TOTP_SECRET || process.env.FYERS_TOTP_SECRI) && !!process.env.FYERS_PIN,
       appUrl: process.env.APP_URL || "NOT_SET",
-      manualRedirectSet: !!process.env.FYERS_REDIRECT_URI
+      fyersKeysFound: fyersKeys,
+      manualRedirectSet: !!(process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL)
     });
   });
 
@@ -282,14 +284,20 @@ async function startServer() {
   });
 
   app.get("/api/auth/fyers/autologin", async (req, res) => {
-    const clientId = process.env.FYERS_CLIENT_ID;
+    const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
     const userId = process.env.FYERS_USER_ID;
-    const totpSecret = process.env.FYERS_TOTP_SECRET;
+    const totpSecret = process.env.FYERS_TOTP_SECRET || process.env.FYERS_TOTP_SECRI;
 
     if (!clientId || !userId || !totpSecret) {
       return res.status(400).json({ 
         success: false, 
-        message: "Missing credentials for auto-login. Ensure FYERS_CLIENT_ID, FYERS_USER_ID, and FYERS_TOTP_SECRET are set in environment." 
+        message: "Missing credentials for auto-login. Ensure FYERS_CLIENT_ID, FYERS_USER_ID, and FYERS_TOTP_SECRET are set in environment.",
+        debug: {
+          hasClientId: !!clientId,
+          hasUserId: !!userId,
+          hasTotp: !!totpSecret,
+          keysFound: Object.keys(process.env).filter(k => k.startsWith('FYERS_'))
+        }
       });
     }
 
@@ -303,7 +311,7 @@ async function startServer() {
   });
 
   app.get("/api/auth/fyers/login", (req, res) => {
-    const clientId = process.env.FYERS_CLIENT_ID;
+    const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
     
     // Auto-detect redirect URL if not explicitly set
     const host = req.get('host');
@@ -311,12 +319,15 @@ async function startServer() {
     const detectedAppUrl = `${protocol}://${host}`;
     
     const appUrl = process.env.APP_URL?.replace(/\/$/, "") || detectedAppUrl;
-    const redirectUrl = process.env.FYERS_REDIRECT_URI || `${appUrl}/api/auth/fyers/callback`;
+    const redirectUrl = process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL || `${appUrl}/api/auth/fyers/callback`;
     
     if (!clientId) {
       return res.status(500).json({ 
         error: "FYERS_CLIENT_ID not configured",
-        help: "Please set FYERS_CLIENT_ID in the environment secrets."
+        help: "Please set FYERS_CLIENT_ID (or FYERS_APP_ID) in the environment secrets.",
+        debug: {
+          keysFound: Object.keys(process.env).filter(k => k.startsWith('FYERS_'))
+        }
       });
     }
 
