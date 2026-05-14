@@ -102,11 +102,25 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
     const indexSymbols = 'NSE:NIFTY50-INDEX,NSE:NIFTYBANK-INDEX,NSE:INDIAVIX-INDEX';
     const queryParams = new URLSearchParams({ symbols: `${stockSymbols},${indexSymbols}` });
     const response = await fetch(`/api/market/quotes?${queryParams.toString()}`);
+    const contentType = response.headers.get("content-type");
+    
     if (!response.ok) {
       const text = await response.text();
-      console.error(`Fyers API Error (${response.status}):`, text);
+      console.error(`Fyers API Error (${response.status}):`, text.substring(0, 200));
       return null;
     }
+
+    if (!contentType || !contentType.includes("application/json")) {
+      const text = await response.text();
+      // If we see the platform's starter page, just log a warning and return null (don't error out)
+      if (text.includes("Starting Server...")) {
+        console.warn("Backend server is still starting. Retrying in background...");
+        return null;
+      }
+      console.error("Fyers API returned non-JSON response:", text.substring(0, 200));
+      return null;
+    }
+
     const data = await response.json();
 
     if (data.mock) {

@@ -887,208 +887,209 @@ export default function App() {
                      </div>
                   </div>
 
-                 {/* Trading Recommendation */}
-                 <div className={cn("bg-tech-surface border-2 p-6 shadow-[0_20px_50px_rgba(0,0,0,0.5)] relative overflow-hidden", 
-                   recommendation?.action === OptionAction.BUY_CE ? "border-neon-green/30 shadow-neon-green/5" : "border-neon-red/30 shadow-neon-red/5"
-                 )}>
-                   {loadingAnalysis ? (
-                     <div className="flex flex-col items-center justify-center min-h-[300px] gap-4">
-                        <RefreshCw className="animate-spin text-neon-green" size={32} />
-                        <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-[.2em]">Quant-AI Processing...</span>
-                     </div>
-                   ) : (
-                     <>
-                        <div className="absolute top-0 right-0 p-4 opacity-10">
-                           <Target size={48} className={cn(recommendation?.action === OptionAction.BUY_CE ? "text-neon-green" : "text-neon-red")} />
+                  <div className="lg:col-span-3 space-y-6">
+                    {/* Trading Recommendation */}
+                    <div className={cn("bg-tech-surface border-2 p-6 shadow-[0_20px_50px_rgba(0,0,0,0.5)] relative overflow-hidden", 
+                      recommendation?.action === OptionAction.BUY_CE ? "border-neon-green/30 shadow-neon-green/5" : "border-neon-red/30 shadow-neon-red/5"
+                    )}>
+                      {loadingAnalysis ? (
+                        <div className="flex flex-col items-center justify-center min-h-[300px] gap-4">
+                           <RefreshCw className="animate-spin text-neon-green" size={32} />
+                           <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-[.2em]">Quant-AI Processing...</span>
                         </div>
-                        <h3 className="text-[10px] font-mono font-extrabold uppercase text-neutral-500 tracking-[0.3em] mb-6">AI Execution Signal</h3>
-                        <div className="flex flex-col gap-1 mb-8">
-                           <span className={cn("text-4xl font-black uppercase tracking-tighter leading-none", 
-                             recommendation?.action === OptionAction.BUY_CE ? "text-neon-green glow-green" : "text-neon-red glow-red"
-                           )}>{recommendation?.action}</span>
-                           <span className="text-sm font-bold text-white font-mono tracking-tight mt-2">{selectedStock.symbol} {recommendation?.strike} {recommendation?.expiry}</span>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2 mb-8 uppercase font-mono">
-                           <div className="p-3 bg-tech-bg border border-tech-border">
-                              <span className="text-[8px] text-neutral-500 block mb-1">Entry Range</span>
-                              <span className="text-sm font-bold text-white tracking-widest">{recommendation?.entryPrice}</span>
+                      ) : (
+                        <>
+                           <div className="absolute top-0 right-0 p-4 opacity-10">
+                              <Target size={48} className={cn(recommendation?.action === OptionAction.BUY_CE ? "text-neon-green" : "text-neon-red")} />
                            </div>
-                           <div className="p-3 bg-tech-bg border border-neon-red/20 text-neon-red">
-                              <span className="text-[8px] block mb-1">Stop Loss</span>
-                              <span className="text-sm font-bold tracking-widest">{recommendation?.stopLoss}</span>
+                           <h3 className="text-[10px] font-mono font-extrabold uppercase text-neutral-500 tracking-[0.3em] mb-6">AI Execution Signal</h3>
+                           <div className="flex flex-col gap-1 mb-8">
+                              <span className={cn("text-4xl font-black uppercase tracking-tighter leading-none", 
+                                recommendation?.action === OptionAction.BUY_CE ? "text-neon-green glow-green" : "text-neon-red glow-red"
+                              )}>{recommendation?.action}</span>
+                              <span className="text-sm font-bold text-white font-mono tracking-tight mt-2">{selectedStock.symbol} {recommendation?.strike} {recommendation?.expiry}</span>
                            </div>
-                        </div>
 
-                        <div className="space-y-2 mb-8 font-mono">
-                           {recommendation?.targets.map((tgt: number, i: number) => (
-                             <div key={i} className="flex justify-between items-center bg-tech-bg p-2.5 border border-neon-green/20">
-                                <span className="text-[10px] text-neon-green font-bold uppercase tracking-widest">TARGET_{i+1}</span>
-                                <span className="text-sm font-bold text-white tracking-widest">{tgt}</span>
+                           <div className="grid grid-cols-2 gap-2 mb-8 uppercase font-mono">
+                              <div className="p-3 bg-tech-bg border border-tech-border">
+                                 <span className="text-[8px] text-neutral-500 block mb-1">Entry Range</span>
+                                 <span className="text-sm font-bold text-white tracking-widest">{recommendation?.entryPrice}</span>
+                              </div>
+                              <div className="p-3 bg-tech-bg border border-neon-red/20 text-neon-red">
+                                 <span className="text-[8px] block mb-1">Stop Loss</span>
+                                 <span className="text-sm font-bold tracking-widest">{recommendation?.stopLoss}</span>
+                              </div>
+                           </div>
+
+                           <div className="space-y-2 mb-8 font-mono">
+                              {recommendation?.targets.map((tgt: number, i: number) => (
+                                <div key={i} className="flex justify-between items-center bg-tech-bg p-2.5 border border-neon-green/20">
+                                   <span className="text-[10px] text-neon-green font-bold uppercase tracking-widest">TARGET_{i+1}</span>
+                                   <span className="text-sm font-bold text-white tracking-widest">{tgt}</span>
+                                </div>
+                              ))}
+                           </div>
+
+                           <div className="flex items-center justify-between text-[10px] font-mono font-bold tracking-widest uppercase py-4 border-t border-tech-border">
+                              <span className="text-neutral-500">PROB: <span className="text-white">{aiAnalysis?.winProbability}%</span></span>
+                              <span className="text-neon-green">R:R {recommendation?.riskReward.toFixed(2)}</span>
+                           </div>
+
+                           <button 
+                             onClick={() => executeTrade(selectedStock, recommendation!, aiAnalysis!)}
+                             disabled={!user || isAutoTrading}
+                             className={cn(
+                               "w-full py-4 font-black uppercase tracking-[.3em] text-xs transition-all flex items-center justify-center gap-3",
+                               recommendation?.action === OptionAction.BUY_CE 
+                                 ? "bg-neon-green text-black hover:bg-white shadow-[0_0_20px_rgba(0,255,148,0.3)]" 
+                                 : "bg-neon-red text-white hover:bg-white hover:text-black shadow-[0_0_20px_rgba(255,49,49,0.3)]",
+                               (!user || isAutoTrading) && "opacity-50 cursor-not-allowed grayscale"
+                             )}
+                           >
+                             {isAutoTrading ? "QUANT_BOT_HANDLING" : user ? "INITIALIZE_INSTITUTIONAL_ORDER" : "SIGN_IN_TO_TRADE"}
+                           </button>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="bg-tech-surface border border-tech-border p-8 shadow-2xl relative overflow-hidden">
+                       <div className="absolute top-0 right-0 w-64 h-64 bg-neon-green/5 blur-[100px] rounded-full pointer-events-none"></div>
+                       <div className="flex flex-col md:flex-row gap-12 items-center relative z-10">
+                          <div className="flex flex-col items-center">
+                             <div className={cn(
+                               "w-24 h-24 rounded-full border-[6px] flex items-center justify-center mb-4 transition-all duration-1000",
+                               aiAnalysis && aiAnalysis.winProbability > 75 ? "border-neon-green text-neon-green glow-green shadow-[0_0_15px_rgba(0,255,148,0.2)]" : "border-tech-border text-neutral-500"
+                             )}>
+                                <span className="text-3xl font-black">{aiAnalysis?.winProbability}%</span>
                              </div>
-                           ))}
-                        </div>
-
-                        <div className="flex items-center justify-between text-[10px] font-mono font-bold tracking-widest uppercase py-4 border-t border-tech-border">
-                           <span className="text-neutral-500">PROB: <span className="text-white">{aiAnalysis?.winProbability}%</span></span>
-                           <span className="text-neon-green">R:R {recommendation?.riskReward.toFixed(2)}</span>
-                        </div>
-
-                        <button 
-                          onClick={() => executeTrade(selectedStock, recommendation!, aiAnalysis!)}
-                          disabled={!user || isAutoTrading}
-                          className={cn(
-                            "w-full py-4 font-black uppercase tracking-[.3em] text-xs transition-all flex items-center justify-center gap-3",
-                            recommendation?.action === OptionAction.BUY_CE 
-                              ? "bg-neon-green text-black hover:bg-white shadow-[0_0_20px_rgba(0,255,148,0.3)]" 
-                              : "bg-neon-red text-white hover:bg-white hover:text-black shadow-[0_0_20px_rgba(255,49,49,0.3)]",
-                            (!user || isAutoTrading) && "opacity-50 cursor-not-allowed grayscale"
-                          )}
-                        >
-                          {isAutoTrading ? "QUANT_BOT_HANDLING" : user ? "INITIALIZE_INSTITUTIONAL_ORDER" : "SIGN_IN_TO_TRADE"}
-                        </button>
-                     </>
-                   )}
-                 </div>
-              </div>
-
-              <div className="lg:col-span-3 space-y-6">
-                 <div className="bg-tech-surface border border-tech-border p-8 shadow-2xl relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-64 h-64 bg-neon-green/5 blur-[100px] rounded-full pointer-events-none"></div>
-                    <div className="flex flex-col md:flex-row gap-12 items-center relative z-10">
-                       <div className="flex flex-col items-center">
-                          <div className={cn(
-                            "w-24 h-24 rounded-full border-[6px] flex items-center justify-center mb-4 transition-all duration-1000",
-                            aiAnalysis && aiAnalysis.winProbability > 75 ? "border-neon-green text-neon-green glow-green shadow-[0_0_15px_rgba(0,255,148,0.2)]" : "border-tech-border text-neutral-500"
-                          )}>
-                             <span className="text-3xl font-black">{aiAnalysis?.winProbability}%</span>
+                             <span className="text-[10px] uppercase font-mono font-bold text-neutral-500 tracking-[0.3em] text-center">Alpha Probability</span>
                           </div>
-                          <span className="text-[10px] uppercase font-mono font-bold text-neutral-500 tracking-[0.3em] text-center">Alpha Probability</span>
-                       </div>
 
-                       <div className="flex-1 grid grid-cols-2 md:grid-cols-4 gap-6 w-full">
-                          <RiskIndicator label="MOMENTUM_STR" score={aiAnalysis?.momentumScore || 0} />
-                          <RiskIndicator label="INSTITUTIONAL_FLW" score={aiAnalysis?.institutionalActivityScore || 0} />
-                          <RiskIndicator label="BREAKOUT_QUAL" score={aiAnalysis?.breakoutQualityScore || 0} />
-                          <RiskIndicator label="AGGREGATED_RISK" score={aiAnalysis?.riskScore || 0} />
+                          <div className="flex-1 grid grid-cols-2 md:grid-cols-4 gap-6 w-full">
+                             <RiskIndicator label="MOMENTUM_STR" score={aiAnalysis?.momentumScore || 0} />
+                             <RiskIndicator label="INSTITUTIONAL_FLW" score={aiAnalysis?.institutionalActivityScore || 0} />
+                             <RiskIndicator label="BREAKOUT_QUAL" score={aiAnalysis?.breakoutQualityScore || 0} />
+                             <RiskIndicator label="AGGREGATED_RISK" score={aiAnalysis?.riskScore || 0} />
+                          </div>
                        </div>
-                    </div>
-                    {aiAnalysis && (
-                      <div className="mt-10 p-5 bg-[#0b0e14] border border-tech-border">
-                         <p className="text-xs text-neutral-300 leading-loose uppercase font-mono tracking-wider italic">
-                           <Zap size={14} className="inline mr-3 text-neon-green fill-neon-green" />
-                           {aiAnalysis.summary}
-                         </p>
-                      </div>
-                    )}
-                 </div>
-
-                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="bg-tech-surface border border-tech-border overflow-hidden h-[500px] flex flex-col shadow-xl">
-                       <div className="p-4 border-b border-tech-border bg-[#1a1d23] flex justify-between items-center">
-                          <h3 className="text-[10px] font-bold text-white uppercase tracking-[0.3em] flex items-center gap-3">
-                             <Layers size={16} className="text-sky-400" />
-                             Institutional OI Profile
-                          </h3>
-                       </div>
-                       <div className="flex-1 overflow-auto custom-scrollbar uppercase">
-                          <table className="w-full text-[10px] font-mono">
-                             <thead className="sticky top-0 bg-[#0B0E14] border-b border-tech-border z-10">
-                                <tr>
-                                   <th className="px-4 py-4 text-neutral-500 tracking-widest text-left uppercase">CE_VOL</th>
-                                   <th className="px-4 py-4 text-white text-center font-black uppercase tracking-widest">Strike</th>
-                                   <th className="px-4 py-4 text-neutral-500 tracking-widest text-right uppercase">PE_VOL</th>
-                                </tr>
-                             </thead>
-                             <tbody className="divide-y divide-tech-border">
-                                {Array.from({ length: 11 }).map((_, i) => {
-                                  const baseStrike = Math.round(selectedStock.lastPrice / 50) * 50;
-                                  const strike = baseStrike - 250 + i * 50;
-                                  const ce = optionChain.find(o => o.strike === strike && o.type === 'CE');
-                                  const pe = optionChain.find(o => o.strike === strike && o.type === 'PUT');
-                                  const isAtm = strike === baseStrike;
-                                  
-                                  return (
-                                    <tr key={strike} className={cn("hover:bg-white/5 transition-colors", isAtm && "bg-neon-green/5")}>
-                                       <td className="px-4 py-3">
-                                          <div className="flex items-center gap-3">
-                                             <div className="h-1.5 bg-sky-500 shadow-[0_0_8px_rgba(14,165,233,0.3)] transition-all duration-700" style={{ width: `${Math.min(100, (ce?.oi || 0) / 1000)}%` }} />
-                                             <span className="text-neutral-400">{formatNumber(ce?.oi || 0)}</span>
-                                          </div>
-                                       </td>
-                                       <td className="px-4 py-3 text-center font-black text-white bg-tech-bg/80 border-x border-tech-border">{strike}</td>
-                                       <td className="px-4 py-3">
-                                          <div className="flex items-center justify-end gap-3">
-                                             <span className="text-neutral-400">{formatNumber(pe?.oi || 0)}</span>
-                                             <div className="h-1.5 bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.3)] transition-all duration-700" style={{ width: `${Math.min(100, (pe?.oi || 0) / 1000)}%` }} />
-                                          </div>
-                                       </td>
-                                    </tr>
-                                  );
-                                })}
-                             </tbody>
-                          </table>
-                       </div>
+                       {aiAnalysis && (
+                         <div className="mt-10 p-5 bg-[#0b0e14] border border-tech-border">
+                            <p className="text-xs text-neutral-300 leading-loose uppercase font-mono tracking-wider italic">
+                              <Zap size={14} className="inline mr-3 text-neon-green fill-neon-green" />
+                              {aiAnalysis.summary}
+                            </p>
+                         </div>
+                       )}
                     </div>
 
-                    <div className="bg-tech-surface border border-tech-border flex flex-col shadow-xl">
-                       <div className="p-4 border-b border-tech-border bg-[#1a1d23] flex gap-6">
-                          <button className="text-[10px] font-mono font-bold text-neon-green tracking-[0.2em] uppercase border-b-2 border-neon-green pb-1 shadow-neon-green">IV_VECTOR</button>
-                          <button className="text-[10px] font-mono font-bold text-neutral-500 tracking-[0.2em] uppercase hover:text-white transition-colors pb-1">OI_DELTA</button>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                       <div className="bg-tech-surface border border-tech-border overflow-hidden h-[500px] flex flex-col shadow-xl">
+                          <div className="p-4 border-b border-tech-border bg-[#1a1d23] flex justify-between items-center">
+                             <h3 className="text-[10px] font-bold text-white uppercase tracking-[0.3em] flex items-center gap-3">
+                                <Layers size={16} className="text-sky-400" />
+                                Institutional OI Profile
+                             </h3>
+                          </div>
+                          <div className="flex-1 overflow-auto custom-scrollbar uppercase">
+                             <table className="w-full text-[10px] font-mono">
+                                <thead className="sticky top-0 bg-[#0B0E14] border-b border-tech-border z-10">
+                                   <tr>
+                                      <th className="px-4 py-4 text-neutral-500 tracking-widest text-left uppercase">CE_VOL</th>
+                                      <th className="px-4 py-4 text-white text-center font-black uppercase tracking-widest">Strike</th>
+                                      <th className="px-4 py-4 text-neutral-500 tracking-widest text-right uppercase">PE_VOL</th>
+                                   </tr>
+                                </thead>
+                                <tbody className="divide-y divide-tech-border">
+                                   {Array.from({ length: 11 }).map((_, i) => {
+                                     const baseStrike = Math.round(selectedStock.lastPrice / 50) * 50;
+                                     const strike = baseStrike - 250 + i * 50;
+                                     const ce = optionChain.find(o => o.strike === strike && o.type === 'CE');
+                                     const pe = optionChain.find(o => o.strike === strike && o.type === 'PUT');
+                                     const isAtm = strike === baseStrike;
+                                     
+                                     return (
+                                       <tr key={strike} className={cn("hover:bg-white/5 transition-colors", isAtm && "bg-neon-green/5")}>
+                                          <td className="px-4 py-3">
+                                             <div className="flex items-center gap-3">
+                                                <div className="h-1.5 bg-sky-500 shadow-[0_0_8px_rgba(14,165,233,0.3)] transition-all duration-700" style={{ width: `${Math.min(100, (ce?.oi || 0) / 1000)}%` }} />
+                                                <span className="text-neutral-400">{formatNumber(ce?.oi || 0)}</span>
+                                             </div>
+                                          </td>
+                                          <td className="px-4 py-3 text-center font-black text-white bg-tech-bg/80 border-x border-tech-border">{strike}</td>
+                                          <td className="px-4 py-3">
+                                             <div className="flex items-center justify-end gap-3">
+                                                <span className="text-neutral-400">{formatNumber(pe?.oi || 0)}</span>
+                                                <div className="h-1.5 bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.3)] transition-all duration-700" style={{ width: `${Math.min(100, (pe?.oi || 0) / 1000)}%` }} />
+                                             </div>
+                                          </td>
+                                       </tr>
+                                     );
+                                   })}
+                                </tbody>
+                             </table>
+                          </div>
                        </div>
-                       <div className="flex-1 p-8 h-[400px]">
-                          <ResponsiveContainer width="100%" height="100%">
-                             <AreaChart data={[
-                               { time: '10:00', iv: 18.2 },
-                               { time: '11:00', iv: 19.5 },
-                               { time: '12:00', iv: 18.8 },
-                               { time: '13:00', iv: 20.4 },
-                               { time: '14:00', iv: 22.1 },
-                               { time: '15:00', iv: 21.8 },
-                             ]}>
-                                <defs>
-                                  <linearGradient id="colorIv" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#00FF94" stopOpacity={0.4}/>
-                                    <stop offset="95%" stopColor="#00FF94" stopOpacity={0}/>
-                                  </linearGradient>
-                                </defs>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#242831" vertical={false} />
-                                <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
-                                <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
-                                <Tooltip 
-                                  contentStyle={{ backgroundColor: '#0B0E14', border: '1px solid #242831', fontSize: '10px', borderRadius: '0px', fontFamily: 'JetBrains Mono' }}
-                                  itemStyle={{ color: '#00FF94' }}
-                                />
-                                <Area type="stepAfter" dataKey="iv" stroke="#00FF94" fillOpacity={1} fill="url(#colorIv)" strokeWidth={2} />
-                             </AreaChart>
-                          </ResponsiveContainer>
-                       </div>
-                       <div className="p-4 border-t border-tech-border bg-tech-bg/50 text-[9px] text-neon-green font-mono font-black text-center tracking-[.4em] uppercase">
-                          System Alert: High Velocity Volatility Expansion Confirmed
+
+                       <div className="bg-tech-surface border border-tech-border flex flex-col shadow-xl">
+                          <div className="p-4 border-b border-tech-border bg-[#1a1d23] flex gap-6">
+                             <button className="text-[10px] font-mono font-bold text-neon-green tracking-[0.2em] uppercase border-b-2 border-neon-green pb-1 shadow-neon-green">IV_VECTOR</button>
+                             <button className="text-[10px] font-mono font-bold text-neutral-500 tracking-[0.2em] uppercase hover:text-white transition-colors pb-1">OI_DELTA</button>
+                          </div>
+                          <div className="flex-1 p-8 h-[400px]">
+                             <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart data={[
+                                  { time: '10:00', iv: 18.2 },
+                                  { time: '11:00', iv: 19.5 },
+                                  { time: '12:00', iv: 18.8 },
+                                  { time: '13:00', iv: 20.4 },
+                                  { time: '14:00', iv: 22.1 },
+                                  { time: '15:00', iv: 21.8 },
+                                ]}>
+                                   <defs>
+                                     <linearGradient id="colorIv" x1="0" y1="0" x2="0" y2="1">
+                                       <stop offset="5%" stopColor="#00FF94" stopOpacity={0.4}/>
+                                       <stop offset="95%" stopColor="#00FF94" stopOpacity={0}/>
+                                     </linearGradient>
+                                   </defs>
+                                   <CartesianGrid strokeDasharray="3 3" stroke="#242831" vertical={false} />
+                                   <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
+                                   <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
+                                   <Tooltip 
+                                     contentStyle={{ backgroundColor: '#0B0E14', border: '1px solid #242831', fontSize: '10px', borderRadius: '0px', fontFamily: 'JetBrains Mono' }}
+                                     itemStyle={{ color: '#00FF94' }}
+                                   />
+                                   <Area type="stepAfter" dataKey="iv" stroke="#00FF94" fillOpacity={1} fill="url(#colorIv)" strokeWidth={2} />
+                                </AreaChart>
+                             </ResponsiveContainer>
+                          </div>
+                          <div className="p-4 border-t border-tech-border bg-tech-bg/50 text-[9px] text-neon-green font-mono font-black text-center tracking-[.4em] uppercase">
+                             System Alert: High Velocity Volatility Expansion Confirmed
+                          </div>
                        </div>
                     </div>
-                 </div>
 
-                 {/* Indicators Grid */}
-                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {[
-                      { label: 'RSI(14)_INDEX', value: selectedStock.rsi.toFixed(2), status: selectedStock.rsi > 70 ? 'OVERBOUGHT' : selectedStock.rsi < 30 ? 'OVERSOLD' : 'STABLE' },
-                      { label: 'VWAP_VECTOR', value: formatCurrency(selectedStock.vwap), status: selectedStock.lastPrice > selectedStock.vwap ? 'BULLISH' : 'BEARISH' },
-                      { label: 'EMA_20_SIG', value: formatCurrency(selectedStock.ema20), status: selectedStock.lastPrice > selectedStock.ema20 ? 'SUPP_ENABLED' : 'RES_ACTIVE' },
-                      { label: 'PCR_L_VOL', value: '1.24', status: 'C_UNWINDING' },
-                    ].map((idx, i) => (
-                      <div key={i} className="bg-tech-surface border border-tech-border p-5 relative group overflow-hidden">
-                         <div className="absolute top-0 left-0 w-1 h-full bg-tech-border group-hover:bg-neon-green transition-colors"></div>
-                         <div className="text-[9px] font-mono font-bold text-neutral-500 mb-2 tracking-widest uppercase">{idx.label}</div>
-                         <div className="text-sm font-black text-white mb-1.5 font-mono">{idx.value}</div>
-                         <div className={cn("text-[9px] font-black tracking-widest uppercase", 
-                           idx.status.includes('BULLISH') || idx.status === 'SUPP_ENABLED' ? "text-neon-green" :
-                           idx.status.includes('BEARISH') || idx.status === 'RES_ACTIVE' ? "text-neon-red" : "text-amber-500"
-                         )}>{idx.status}</div>
-                      </div>
-                    ))}
-                 </div>
-              </div>
+                    {/* Indicators Grid */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                       {[
+                         { label: 'RSI(14)_INDEX', value: selectedStock.rsi.toFixed(2), status: selectedStock.rsi > 70 ? 'OVERBOUGHT' : selectedStock.rsi < 30 ? 'OVERSOLD' : 'STABLE' },
+                         { label: 'VWAP_VECTOR', value: formatCurrency(selectedStock.vwap), status: selectedStock.lastPrice > selectedStock.vwap ? 'BULLISH' : 'BEARISH' },
+                         { label: 'EMA_20_SIG', value: formatCurrency(selectedStock.ema20), status: selectedStock.lastPrice > selectedStock.ema20 ? 'SUPP_ENABLED' : 'RES_ACTIVE' },
+                         { label: 'PCR_L_VOL', value: '1.24', status: 'C_UNWINDING' },
+                       ].map((idx, i) => (
+                         <div key={i} className="bg-tech-surface border border-tech-border p-5 relative group overflow-hidden">
+                            <div className="absolute top-0 left-0 w-1 h-full bg-tech-border group-hover:bg-neon-green transition-colors"></div>
+                            <div className="text-[9px] font-mono font-bold text-neutral-500 mb-2 tracking-widest uppercase">{idx.label}</div>
+                            <div className="text-sm font-black text-white mb-1.5 font-mono">{idx.value}</div>
+                            <div className={cn("text-[9px] font-black tracking-widest uppercase", 
+                              idx.status.includes('BULLISH') || idx.status === 'SUPP_ENABLED' ? "text-neon-green" :
+                              idx.status.includes('BEARISH') || idx.status === 'RES_ACTIVE' ? "text-neon-red" : "text-amber-500"
+                            )}>{idx.status}</div>
+                         </div>
+                       ))}
+                    </div>
+                  </div>
+                </div>
+              )}
             </motion.div>
           )}
           {activeView === 'trades' && (

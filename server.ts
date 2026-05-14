@@ -5,10 +5,123 @@ import axios from "axios";
 import dotenv from "dotenv";
 import { Server } from "socket.io";
 import http from "http";
+import crypto from "crypto";
+// @ts-ignore
+import { authenticator } from "otplib";
 // @ts-ignore
 import fyers from "fyers-api-v3";
 
 dotenv.config();
+
+let loginPromise: Promise<string | null> | null = null;
+
+/**
+ * Automates the login flow for Fyers V3 using TOTP and PIN.
+ * This skips the manual redirect flow.
+ */
+async function performAutoLogin() {
+  if (loginPromise) return loginPromise;
+
+  const clientId = process.env.FYERS_CLIENT_ID;
+  const secretKey = process.env.FYERS_SECRET_KEY;
+  const userId = process.env.FYERS_USER_ID;
+  const pin = process.env.FYERS_PIN;
+  const totpSecret = process.env.FYERS_TOTP_SECRET;
+  const redirectUri = process.env.FYERS_REDIRECT_URI;
+
+  if (!clientId || !secretKey || !userId || !pin || !totpSecret || !redirectUri) {
+    console.log("[AutoLogin] Missing automated login credentials (USER_ID, PIN, TOTP_SECRET, etc.). Skipping...");
+    return null;
+  }
+
+  loginPromise = (async () => {
+    try {
+      console.log("[AutoLogin] Starting automated session for USER:", userId);
+
+      // Step 1: Send Login OTP (Internal AppID 2 for Web Login)
+      const loginStep1 = await axios.post("https://api-t1.fyers.in/api/v3/send-login-otp-v2", {
+        fy_id: userId,
+        app_id: "2"
+      });
+
+      if (loginStep1.data.s !== "ok") {
+        throw new Error(`Step 1 Failed: ${loginStep1.data.message || "Unknown error"}`);
+      }
+      const requestKey = loginStep1.data.request_key;
+
+      // Step 2: Verify TOTP
+      const totpVal = authenticator.generate(totpSecret);
+      const loginStep2 = await axios.post("https://api-t1.fyers.in/api/v3/verify-login-otp-v2", {
+        fy_id: userId,
+        app_id: "2",
+        otp: totpVal,
+        request_key: requestKey
+      });
+
+      if (loginStep2.data.s !== "ok") {
+        throw new Error(`Step 2 Failed: ${loginStep2.data.message || "Unknown error"}`);
+      }
+      const requestKey2 = loginStep2.data.request_key;
+
+      // Step 3: Verify PIN
+      const loginStep3 = await axios.post("https://api-t1.fyers.in/api/v3/verify-login-pin-v2", {
+        fy_id: userId,
+        app_id: "2",
+        pin: pin,
+        request_key: requestKey2
+      });
+
+      if (loginStep3.data.s !== "ok") {
+        throw new Error(`Step 3 Failed: ${loginStep3.data.message || "Unknown error"}`);
+      }
+      const webToken = loginStep3.data.data.access_token;
+
+      // Step 4: Authorize our CUSTOM APP using the session token
+      const authCodeResponse = await axios.post("https://api-t1.fyers.in/api/v3/generate-authcode", {
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: "code",
+        state: "auto_login"
+      }, {
+        headers: {
+          'Authorization': `Bearer ${webToken}`
+        }
+      });
+
+      if (authCodeResponse.data.s !== "ok") {
+        throw new Error(`Step 4 Failed: ${authCodeResponse.data.message || "Unknown error"}`);
+      }
+      const authCode = authCodeResponse.data.data.authorization_code;
+
+      // Step 5: Exchange auth_code for Access Token
+      const appIdHash = crypto.createHash('sha256').update(`${clientId}:${secretKey}`).digest('hex');
+      const tokenResponse = await axios.post('https://api-t1.fyers.in/api/v3/validate-authcode', {
+        grant_type: 'authorization_code',
+        appIdHash: appIdHash,
+        code: authCode
+      });
+
+      if (tokenResponse.data.s !== "ok") {
+        throw new Error(`Step 5 Failed: ${tokenResponse.data.message || "Unknown error"}`);
+      }
+
+      const finalAccessToken = tokenResponse.data.access_token;
+      console.log("[AutoLogin] Access token generated successfully!");
+      
+      // Cache it in env for the proxy to use
+      process.env.FYERS_ACCESS_TOKEN = finalAccessToken;
+      return finalAccessToken;
+
+    } catch (error: any) {
+      console.error("[AutoLogin] Failed with error:", error.response?.data || error.message);
+      return null;
+    } finally {
+      loginPromise = null;
+    }
+  })();
+
+  return loginPromise;
+}
 
 async function startServer() {
   const app = express();
@@ -28,11 +141,20 @@ async function startServer() {
     res.json({ status: "alive", time: new Date().toISOString(), env: process.env.NODE_ENV });
   });
 
+  app.get("/api/auth/fyers/autologin", async (req, res) => {
+    const token = await performAutoLogin();
+    if (token) {
+      res.json({ success: true, message: "Auto-login successful", token: token.substring(0, 10) + "..." });
+    } else {
+      res.status(500).json({ success: false, message: "Auto-login failed. Check server logs." });
+    }
+  });
+
   app.get("/api/auth/fyers/login", (req, res) => {
     const clientId = process.env.FYERS_CLIENT_ID;
-    const redirectUrl = process.env.FYERS_REDIRECT_URL;
+    const redirectUrl = process.env.FYERS_REDIRECT_URI;
     if (!clientId || !redirectUrl) {
-      return res.status(500).json({ error: "FYERS_CLIENT_ID or FYERS_REDIRECT_URL not configured" });
+      return res.status(500).json({ error: "FYERS_CLIENT_ID or FYERS_REDIRECT_URI not configured" });
     }
     const fyersAuthUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUrl)}&response_type=code&state=sample_state`;
     res.redirect(fyersAuthUrl);
@@ -41,13 +163,13 @@ async function startServer() {
   app.get("/api/auth/fyers/callback", async (req, res) => {
     const { auth_code } = req.query;
     const clientId = process.env.FYERS_CLIENT_ID;
-    const secretId = process.env.FYERS_SECRET_ID;
+    const secretId = process.env.FYERS_SECRET_KEY;
 
     if (!auth_code) return res.status(400).send("No auth code provided");
 
     try {
-      // Exchange code for access token
-      const appIdHash = Buffer.from(`${clientId}:${secretId}`).toString('base64');
+      // Exchange code for access token using SHA256 hash
+      const appIdHash = crypto.createHash('sha256').update(`${clientId}:${secretId}`).digest('hex');
       const response = await axios.post('https://api-t1.fyers.in/api/v3/validate-authcode', {
         grant_type: 'authorization_code',
         appIdHash: appIdHash,
@@ -74,8 +196,13 @@ async function startServer() {
 
   // Proxy for FYERS Data
   app.get("/api/market/quotes", async (req, res) => {
-    const token = process.env.FYERS_ACCESS_TOKEN;
+    let token = process.env.FYERS_ACCESS_TOKEN;
     const { symbols } = req.query;
+
+    if (!token && process.env.FYERS_TOTP_SECRET) {
+      console.log("[Proxy] Token missing but credentials found. Attempting auto-login...");
+      token = await performAutoLogin() || undefined;
+    }
 
     console.log(`[Proxy] Fetching quotes for symbols size: ${String(symbols).length}`);
 
@@ -91,30 +218,46 @@ async function startServer() {
     }
     
     try {
-      const fyersModel = new fyers.fyersModel();
-      fyersModel.setAppId(process.env.FYERS_CLIENT_ID);
-      fyersModel.setAccessToken(token);
+      const clientId = process.env.FYERS_CLIENT_ID;
+      if (!clientId) {
+        return res.status(500).json({ error: "FYERS_CLIENT_ID not configured" });
+      }
+
+      // Compute correct Authorization header for Fyers V3
+      // Format: APP_ID:ACCESS_TOKEN
+      // If token already contains ':', use as is, else prepend clientId
+      let authHeader = token;
+      if (!token.includes(":")) {
+        authHeader = `${clientId}:${token}`;
+      }
       
-      // Ensure symbols is a string (join if array)
       const symbolsStr = Array.isArray(symbols) ? symbols.join(",") : String(symbols);
-      const response = await fyersModel.get_quotes(symbolsStr);
+      console.log(`[Proxy] Requesting quotes via Axios for: ${symbolsStr.substring(0, 50)}...`);
       
-      if (response && response.s === "error") {
-        console.error("[Proxy Error] Fyers lib error:", response);
+      const response = await axios.get(`https://api-t1.fyers.in/data/quotes?symbols=${symbolsStr}`, {
+        headers: {
+          'Authorization': authHeader
+        },
+        timeout: 10000
+      });
+      
+      if (response.data && response.data.s === "error") {
+        console.error("[Proxy Error] Fyers API error details:", JSON.stringify(response.data));
         return res.status(500).json({ 
           error: "Failed to fetch from FYERS lib", 
-          details: response,
+          details: response.data.message || response.data,
           symbols_requested: symbols 
         });
       }
 
-      console.log(`[Proxy] Fyers success via lib for ${String(symbols).substring(0, 50)}...`);
-      res.json(response);
+      console.log(`[Proxy] Fyers success for ${symbolsStr.split(',').length} symbols`);
+      res.json(response.data);
     } catch (error: any) {
-      console.error("[Proxy Error] Fyers call failed:", error.message);
+      const errorMsg = error.response?.data?.message || error.message;
+      console.error("[Proxy Error] Fyers call failed:", errorMsg);
       res.status(500).json({ 
         error: "Failed to fetch from FYERS", 
-        details: error.message,
+        details: errorMsg,
         symbols_requested: symbols 
       });
     }
@@ -152,7 +295,8 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    // Refine fallback to NOT intercept API calls
+    app.get(/^\/(?!api).*/, (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
@@ -207,6 +351,7 @@ async function startServer() {
 
   setupFyersSocket();
 
+
   io.on("connection", (socket) => {
     console.log("[Socket.io] Client connected:", socket.id);
     socket.on("disconnect", () => {
@@ -216,6 +361,19 @@ async function startServer() {
 
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    
+    // Try auto-login AFTER server is listening
+    if (!process.env.FYERS_ACCESS_TOKEN && process.env.FYERS_TOTP_SECRET) {
+      console.log("[Server Startup] Triggering automated login...");
+      performAutoLogin().then((token) => {
+          if (token) {
+            console.log("[Server Startup] Automated login successful. Initializing sockets.");
+            setupFyersSocket();
+          } else {
+            console.log("[Server Startup] Automated login failed or credentials missing.");
+          }
+      });
+    }
   });
 }
 
