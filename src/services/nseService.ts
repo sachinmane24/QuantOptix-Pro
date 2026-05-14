@@ -198,11 +198,19 @@ let socket: Socket | null = null;
 
 export function initializeMarketWebSocket(
   onStocksUpdate: (stocks: StockData[]) => void, 
-  onMarketUpdate: (market: any) => void
+  onMarketUpdate: (market: any) => void,
+  onTradeSignal?: (signal: any) => void
 ) {
   if (socket) return;
   
   socket = io();
+
+  if (onTradeSignal) {
+    socket.on('trade-signal', (signal: any) => {
+      console.log('[Scanner] New Trade Signal:', signal);
+      onTradeSignal(signal);
+    });
+  }
   
   socket.on('market-update', (message: any) => {
     if (!message || !message.d) return;

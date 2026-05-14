@@ -10,10 +10,12 @@ import crypto from "crypto";
 import { authenticator } from "otplib";
 // @ts-ignore
 import fyers from "fyers-api-v3";
+import { ScannerService } from "./src/services/scannerService.ts";
 
 dotenv.config();
 
 let loginPromise: Promise<string | null> | null = null;
+let scannerService: ScannerService | null = null;
 
 /**
  * Automates the login flow for Fyers V3 using TOTP and PIN.
@@ -132,6 +134,8 @@ async function startServer() {
       methods: ["GET", "POST"]
     }
   });
+
+  scannerService = new ScannerService(io);
   const PORT = 3000;
 
   app.use(express.json());
@@ -333,6 +337,17 @@ async function startServer() {
       fyersData.on("message", (message: any) => {
         // Broadcast to all connected socket.io clients
         io.emit("market-update", message);
+
+        // Pipe to scanner
+        if (scannerService && message.symbol && message.ltp) {
+          scannerService.handleTick(
+            message.symbol, 
+            message.ltp, 
+            message.high_price || message.ltp, 
+            message.low_price || message.ltp, 
+            message.v || message.vol_traded_today || 0
+          );
+        }
       });
 
       fyersData.on("error", (err: any) => {
@@ -344,6 +359,11 @@ async function startServer() {
       });
 
       fyersData.connect(clientId, token);
+      
+      // Start scanner if token exists
+      if (scannerService) {
+        scannerService.start();
+      }
     } catch (error) {
       console.error("[Fyers WS] Setup error:", error);
     }

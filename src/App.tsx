@@ -25,6 +25,7 @@ import { analyzeTradeProbability, generateRecommendation } from './services/aiAn
 import { 
   sendTelegramNotification, formatTradeEntry, formatTradeExit 
 } from './services/telegramService';
+import { ScannerAlerts } from './components/ScannerAlerts';
 import { 
   StockData, OptionAction, Trend, MarketRegime, 
   AIProbabilityModel, TradeRecommendation, RiskSettings
@@ -99,6 +100,7 @@ export default function App() {
   const [realizedPnL, setRealizedPnL] = useState(0);
   const [unrealizedPnL, setUnrealizedPnL] = useState(0);
   const [isFyersConnected, setIsFyersConnected] = useState(false);
+  const [scannerSignals, setScannerSignals] = useState<any[]>([]);
 
   // NSE / Fyers Data flow
   useEffect(() => {
@@ -143,7 +145,21 @@ export default function App() {
           return newStocks;
         });
       },
-      (market) => setMarketInfo({ ...market })
+      (market) => setMarketInfo({ ...market }),
+      (signal) => {
+        setScannerSignals(prev => {
+          const newSignal = {
+            id: Math.random().toString(36).substr(2, 9),
+            symbol: signal.symbol,
+            type: signal.type,
+            price: signal.price,
+            time: new Date().toLocaleTimeString(),
+            strength: signal.strength || 2
+          };
+          // Keep only last 10 signals
+          return [newSignal, ...prev].slice(0, 10);
+        });
+      }
     );
 
     const interval = setInterval(loadMarketData, 30000); // Pulse every 30s as fallback
@@ -523,32 +539,13 @@ export default function App() {
           </div>
           
           <div className="flex-1 p-6 overflow-y-auto">
-            <h3 className="text-[10px] uppercase text-neutral-500 font-bold mb-4 tracking-[0.2em]">AI Probability Feed</h3>
-            <div className="space-y-3">
-              {stocks.filter(s => s.trend !== Trend.SIDEWAYS).slice(0, 6).map(s => (
-                <div 
-                  key={s.symbol} 
-                  className={cn(
-                    "p-3 bg-tech-surface border-l-2 cursor-pointer hover:bg-neutral-800 transition-colors",
-                    s.trend === Trend.BULLISH ? "border-neon-green" : "border-neon-red"
-                  )}
-                  onClick={() => handleStockSelect(s)}
-                >
-                  <div className="flex justify-between items-start mb-1">
-                    <span className="text-xs font-bold text-white">{s.symbol}</span>
-                    <span className={cn(
-                      "text-[9px] px-1.5 py-0.5 font-bold font-mono tracking-tighter",
-                      s.trend === Trend.BULLISH ? "bg-neon-green/20 text-neon-green" : "bg-neon-red/20 text-neon-red"
-                    )}>
-                      {(70 + Math.random() * 25).toFixed(0)}% PROB
-                    </span>
-                  </div>
-                  <div className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">
-                    {s.trend === Trend.BULLISH ? "Long Buildup Confirmed" : "Short Buildup Detected"}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <ScannerAlerts 
+              signals={scannerSignals} 
+              onSelect={(symbol) => {
+                const stock = stocks.find(s => s.symbol === symbol);
+                if (stock) handleStockSelect(stock);
+              }}
+            />
           </div>
         </aside>
 
