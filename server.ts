@@ -27,21 +27,23 @@ async function performAutoLogin() {
   if (loginPromise) return loginPromise;
 
   const clientId = process.env.FYERS_CLIENT_ID;
-  const secretKey = process.env.FYERS_SECRET_KEY;
+  const secretKey = process.env.FYERS_SECRET_KEY || process.env.FYERS_SECRET_ID;
   const userId = process.env.FYERS_USER_ID;
   const pin = process.env.FYERS_PIN;
-  const totpSecret = process.env.FYERS_TOTP_SECRET;
+  const totpSecret = process.env.FYERS_TOTP_SECRET || process.env.FYERS_TOTP_SECRI;
   const appUrl = process.env.APP_URL?.replace(/\/$/, "");
-  const redirectUri = process.env.FYERS_REDIRECT_URI || (appUrl ? `${appUrl}/api/auth/fyers/callback` : undefined);
+  
+  // Priority: Secret > Auto-detected App URL
+  const redirectUri = process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL || (appUrl ? `${appUrl}/api/auth/fyers/callback` : undefined);
 
   if (!clientId || !secretKey || !userId || !pin || !totpSecret || !redirectUri) {
     const missing = [];
     if (!clientId) missing.push("FYERS_CLIENT_ID");
-    if (!secretKey) missing.push("FYERS_SECRET_KEY");
+    if (!secretKey) missing.push("FYERS_SECRET_KEY/ID");
     if (!userId) missing.push("FYERS_USER_ID");
     if (!pin) missing.push("FYERS_PIN");
-    if (!totpSecret) missing.push("FYERS_TOTP_SECRET");
-    if (!redirectUri) missing.push("FYERS_REDIRECT_URI/APP_URL");
+    if (!totpSecret) missing.push("FYERS_TOTP_SECRET/SECRI");
+    if (!redirectUri) missing.push("FYERS_REDIRECT_URI/URL");
     
     console.log(`[AutoLogin] Missing automated login credentials: ${missing.join(", ")}. Skipping...`);
     return null;
@@ -252,9 +254,11 @@ async function startServer() {
     res.json({ 
       status: "alive", 
       time: new Date().toISOString(), 
-      env: process.env.NODE_ENV,
-      port: PORT,
-      tokenPresent: !!process.env.FYERS_ACCESS_TOKEN
+      tokenPresent: !!process.env.FYERS_ACCESS_TOKEN,
+      fyersConfigured: !!process.env.FYERS_CLIENT_ID && !!process.env.FYERS_SECRET_KEY,
+      autoLoginConfigured: !!process.env.FYERS_USER_ID && !!process.env.FYERS_TOTP_SECRET && !!process.env.FYERS_PIN,
+      appUrl: process.env.APP_URL || "NOT_SET",
+      manualRedirectSet: !!process.env.FYERS_REDIRECT_URI
     });
   });
 
@@ -300,15 +304,23 @@ async function startServer() {
 
   app.get("/api/auth/fyers/login", (req, res) => {
     const clientId = process.env.FYERS_CLIENT_ID;
-    const appUrl = process.env.APP_URL?.replace(/\/$/, "");
-    const redirectUrl = process.env.FYERS_REDIRECT_URI || (appUrl ? `${appUrl}/api/auth/fyers/callback` : undefined);
     
-    if (!clientId || !redirectUrl) {
+    // Auto-detect redirect URL if not explicitly set
+    const host = req.get('host');
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const detectedAppUrl = `${protocol}://${host}`;
+    
+    const appUrl = process.env.APP_URL?.replace(/\/$/, "") || detectedAppUrl;
+    const redirectUrl = process.env.FYERS_REDIRECT_URI || `${appUrl}/api/auth/fyers/callback`;
+    
+    if (!clientId) {
       return res.status(500).json({ 
-        error: "FYERS_CLIENT_ID or FYERS_REDIRECT_URI not configured",
-        help: "Please set FYERS_CLIENT_ID and FYERS_REDIRECT_URI (or ensure APP_URL is available) in the environment secrets."
+        error: "FYERS_CLIENT_ID not configured",
+        help: "Please set FYERS_CLIENT_ID in the environment secrets."
       });
     }
+
+    console.log(`[Auth] Using redirect_uri: ${redirectUrl}`);
     const fyersAuthUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUrl)}&response_type=code&state=sample_state`;
     res.redirect(fyersAuthUrl);
   });
@@ -498,6 +510,18 @@ async function startServer() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 [Server] Quantitative Trading Engine running on http://0.0.0.0:${PORT}`);
     
+    // Config Debug
+    const cfg = {
+      clientId: !!process.env.FYERS_CLIENT_ID,
+      secretKey: !!process.env.FYERS_SECRET_KEY,
+      userId: !!process.env.FYERS_USER_ID,
+      totp: !!process.env.FYERS_TOTP_SECRET,
+      pin: !!process.env.FYERS_PIN,
+      appUrl: process.env.APP_URL || "MISSING",
+      redirectUri: process.env.FYERS_REDIRECT_URI || "DETECTION_MODE"
+    };
+    console.log(`[Config Status] ClientID: ${cfg.clientId}, AppURL: ${cfg.appUrl}, AutoLogin Ready: ${cfg.userId && cfg.totp && cfg.pin}`);
+
     // Try auto-login AFTER server is listening
     if (!process.env.FYERS_ACCESS_TOKEN && process.env.FYERS_TOTP_SECRET) {
       console.log("[Server Startup] Triggering automated login...");
