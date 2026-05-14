@@ -10,8 +10,8 @@ import crypto from "crypto";
 import { authenticator } from "otplib";
 // @ts-ignore
 import fyers from "fyers-api-v3";
-import { ScannerService, TradeSignal } from "./src/services/scannerService.ts";
-import { PaperTradingService } from "./src/services/paperTradingService.ts";
+import { ScannerService, TradeSignal } from "./src/services/scannerService";
+import { PaperTradingService } from "./src/services/paperTradingService";
 
 dotenv.config();
 
@@ -128,15 +128,19 @@ async function performAutoLogin() {
 }
 
 async function startServer() {
+  console.log("[Server] Starting server initialization...");
   const app = express();
-  const server = http.createServer(app);
-  const io = new Server(server, {
+  const httpServer = http.createServer(app);
+  
+  // Initialize Socket.io
+  const io = new Server(httpServer, {
     cors: {
       origin: "*",
       methods: ["GET", "POST"]
     }
   });
 
+  console.log("[Server] Core services initializing...");
   scannerService = new ScannerService(io);
   tradingService = new PaperTradingService(io);
 
@@ -149,10 +153,24 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
+  
+  // Logging middleware
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      console.log(`[API Request] ${req.method} ${req.path}`);
+    }
+    next();
+  });
 
-  // FYERS AUTH ENDPOINTS
+  // Health check
   app.get("/api/health", (req, res) => {
-    res.json({ status: "alive", time: new Date().toISOString(), env: process.env.NODE_ENV });
+    res.json({ 
+      status: "alive", 
+      time: new Date().toISOString(), 
+      env: process.env.NODE_ENV,
+      port: PORT,
+      tokenPresent: !!process.env.FYERS_ACCESS_TOKEN
+    });
   });
 
   app.get("/api/auth/fyers/autologin", async (req, res) => {
@@ -299,23 +317,39 @@ async function startServer() {
     }
   });
 
-  // Vite middleware for development
+  // Vite / Static Serving
   if (process.env.NODE_ENV !== "production") {
+    console.log("[Server] Running in DEVELOPMENT mode with Vite Middleware");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    console.log("[Server] Running in PRODUCTION mode");
+    const distPath = path.resolve(process.cwd(), "dist");
+    
+    // Serve static files first
     app.use(express.static(distPath));
-    // Refine fallback to NOT intercept API calls
-    app.get(/^\/(?!api).*/, (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+    
+    // Catch-all for SPA routing - MUST be after static and API routes
+    app.get("*", (req, res) => {
+      // Don't intercept API calls
+      if (req.path.startsWith("/api")) {
+        return res.status(404).json({ error: "API endpoint not found" });
+      }
+      
+      const indexPath = path.join(distPath, "index.html");
+      res.sendFile(indexPath, (err) => {
+        if (err) {
+          console.error(`[Server] Error sending index.html:`, err);
+          res.status(500).send("Error loading application. Please check if 'dist' folder exists.");
+        }
+      });
     });
   }
 
-  // FYERS WEBSOCKET INTEGRATION
+  // Fyers WebSocket Setup
   const setupFyersSocket = () => {
     const token = process.env.FYERS_ACCESS_TOKEN;
     const clientId = process.env.FYERS_CLIENT_ID;
@@ -388,11 +422,17 @@ async function startServer() {
 
 
   io.on("connection", (socket) => {
-    console.log("[Socket.io] Client connected:", socket.id);
+    console.log("[Socket] Client connected:", socket.id);
     
     // Send initial status
     if (tradingService) {
-      socket.emit("paper-portfolio-update", tradingService.getStatus());
+      const status = tradingService.getStatus();
+      socket.emit("auto-trade-status", status.autoTradeEnabled);
+      socket.emit("paper-portfolio-update", {
+        positions: status.positions,
+        balance: status.balance,
+        totalPnL: status.positions.reduce((sum, p) => sum + p.pnl, 0)
+      });
     }
 
     socket.on("toggle-auto-trade", (enabled: boolean) => {
@@ -403,12 +443,12 @@ async function startServer() {
     });
 
     socket.on("disconnect", () => {
-      console.log("[Socket.io] Client disconnected:", socket.id);
+      console.log("[Socket] Client disconnected:", socket.id);
     });
   });
 
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  httpServer.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 [Server] Quantitative Trading Engine running on http://0.0.0.0:${PORT}`);
     
     // Try auto-login AFTER server is listening
     if (!process.env.FYERS_ACCESS_TOKEN && process.env.FYERS_TOTP_SECRET) {
