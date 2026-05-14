@@ -428,8 +428,11 @@ async function startServer() {
     }
   };
 
-  setupFyersSocket();
-
+  try {
+    setupFyersSocket();
+  } catch (e) {
+    console.error("[Server] Early socket setup failed:", e);
+  }
 
   io.on("connection", (socket) => {
     console.log("[Socket] Client connected:", socket.id);
@@ -463,14 +466,22 @@ async function startServer() {
     // Try auto-login AFTER server is listening
     if (!process.env.FYERS_ACCESS_TOKEN && process.env.FYERS_TOTP_SECRET) {
       console.log("[Server Startup] Triggering automated login...");
-      performAutoLogin().then((token) => {
+      performAutoLogin()
+        .then((token) => {
           if (token) {
             console.log("[Server Startup] Automated login successful. Initializing sockets.");
-            setupFyersSocket();
+            try {
+              setupFyersSocket();
+            } catch (e) {
+              console.error("[Server Startup] Deferred socket setup failed:", e);
+            }
           } else {
             console.log("[Server Startup] Automated login failed or credentials missing.");
           }
-      });
+        })
+        .catch(err => {
+          console.error("[Server Startup] login-then-socket chain failed:", err);
+        });
     }
   });
 }

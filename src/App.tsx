@@ -399,9 +399,9 @@ export default function App() {
       // Update Portfolio (Simplified)
       const pRef = doc(db, 'portfolios', user!.uid);
       await updateDoc(pRef, {
-        balance: (portfolio.balance || 0) + pos.pnl,
-        totalTrades: (portfolio.totalTrades || 0) + 1,
-        netPnl: (portfolio.netPnl || 0) + pos.pnl
+        balance: ((portfolio?.balance) || 0) + pos.pnl,
+        totalTrades: ((portfolio?.totalTrades) || 0) + 1,
+        netPnl: ((portfolio?.netPnl) || 0) + pos.pnl
       });
 
       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] POSITION CLOSED: ${pos.symbol} PNL: ${pos.pnl.toFixed(2)}`, ...prev]);

@@ -1,5 +1,5 @@
 {
-  "name": "QuantOptix AI - NSE F&O Institutional Trader",
+  "name": "Quantum Pro",
   "description": "High-probability NSE F&O options buying platform with AI probability modeling, multi-timeframe analysis, and institutional flow tracking.",
   "requestFramePermissions": [],
   "majorCapabilities": ["AI Analysis", "High-frequency data visualization", "Quant derivatives engine"]
