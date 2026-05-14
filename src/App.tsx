@@ -176,6 +176,9 @@ export default function App() {
         if (portfolioUpdate.balance !== undefined) {
            setPortfolio((prev: any) => ({ ...prev, balance: portfolioUpdate.balance }));
         }
+        if (portfolioUpdate.autoTradeEnabled !== undefined) {
+           setIsAutoTrading(portfolioUpdate.autoTradeEnabled);
+        }
       },
       (autoTradeStatus) => {
         setIsAutoTrading(autoTradeStatus);
