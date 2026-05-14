@@ -296,7 +296,9 @@ async function startServer() {
       appUrl: process.env.APP_URL || "NOT_SET",
       fyersKeysFound: fyersKeys,
       allAvailableKeyNames: allEnvKeys.map(k => k.length > 4 ? k.substring(0, 3) + "..." + k.substring(k.length - 2) : k),
-      manualRedirectSet: !!(process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL)
+      manualRedirectSet: !!(process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL),
+      telegramConfigured: !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_CHAT_ID,
+      telegramKeysFound: allEnvKeys.filter(k => k.includes('TELEGRAM'))
     });
   });
 

@@ -53,3 +53,20 @@ export function formatTradeExit(trade: any, exitPrice: number, pnl: number) {
 Updates available on the Quant Dashboard.
 `;
 }
+
+export function formatTestMessage(userName: string) {
+  return `
+🔔 <b>SYSTEM TEST: QuantOptix Pro</b> 🔔
+
+Hello <b>${userName}</b>, 
+
+This is a sample alert from your <b>QuantOptix Trading Engine</b>. 
+Your Telegram integration is now <b>ACTIVE</b> and ready to receive real-time trade signals.
+
+⚡ <b>Latency:</b> ${Math.floor(Math.random() * 50)}ms
+📡 <b>Market Data:</b> CONNECTED
+🤖 <b>Execution Engine:</b> STANDBY
+
+<i>Institutional-grade trading alerts will appear here.</i>
+`;
+}

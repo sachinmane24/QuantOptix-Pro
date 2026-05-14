@@ -23,7 +23,7 @@ import {
 } from './services/nseService';
 import { analyzeTradeProbability, generateRecommendation } from './services/aiAnalysisService';
 import { 
-  sendTelegramNotification, formatTradeEntry, formatTradeExit 
+  sendTelegramNotification, formatTradeEntry, formatTradeExit, formatTestMessage
 } from './services/telegramService';
 import { ScannerAlerts } from './components/ScannerAlerts';
 import { 
@@ -100,7 +100,9 @@ export default function App() {
   const [realizedPnL, setRealizedPnL] = useState(0);
   const [unrealizedPnL, setUnrealizedPnL] = useState(0);
   const [isFyersConnected, setIsFyersConnected] = useState(false);
+  const [isSendingTelegram, setIsSendingTelegram] = useState(false);
   const [scannerSignals, setScannerSignals] = useState<any[]>([]);
+  const [sectorStrengths, setSectorStrengths] = useState<any[]>([]);
 
   const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(false);
   const [manualAuthCode, setManualAuthCode] = useState('');
@@ -109,14 +111,31 @@ export default function App() {
 
   const loadMarketData = async () => {
     const realData = await fetchLiveMarketData();
+    let currentStocks: StockData[] = [];
+    
     if (realData) {
-      setStocks(realData);
+      currentStocks = realData;
       setIsFyersConnected(true);
     } else {
-      setStocks(getLiveStockData());
+      currentStocks = getLiveStockData();
       setIsFyersConnected(false);
     }
+    
+    setStocks(currentStocks);
     setMarketInfo(getMarketOverview());
+
+    // Calculate Sector Strengths
+    const sectors = Array.from(new Set(currentStocks.map(s => s.sector)));
+    const strengths = sectors.map(sector => {
+      const sectorStocks = currentStocks.filter(s => s.sector === sector);
+      const avgPerf = sectorStocks.reduce((acc, s) => acc + s.pChange, 0) / sectorStocks.length;
+      return {
+        name: sector,
+        val: avgPerf,
+        color: avgPerf > 0.5 ? 'bg-neon-green' : avgPerf < -0.5 ? 'bg-neon-red' : 'bg-neutral-600'
+      };
+    }).sort((a, b) => b.val - a.val);
+    setSectorStrengths(strengths.slice(0, 6));
   };
 
   const triggerAutoLogin = async () => {
@@ -335,6 +354,18 @@ export default function App() {
   };
 
   const handleLogout = () => auth.signOut();
+
+  const sendTestTelegram = async () => {
+    setIsSendingTelegram(true);
+    try {
+      await sendTelegramNotification(formatTestMessage(user?.displayName || "Trader"));
+      alert("Test message sent to Telegram!");
+    } catch (e) {
+      alert("Failed to send test message. Check Telegram Bot Token and Chat ID in secrets.");
+    } finally {
+      setIsSendingTelegram(false);
+    }
+  };
   
   const updateRiskSettings = async (updates: Partial<RiskSettings>) => {
     if (!user) return;
@@ -467,21 +498,17 @@ export default function App() {
     const matchesSearch = s.symbol.toLowerCase().includes(searchQuery.toLowerCase());
     if (filter === 'bullish') {
       return matchesSearch && 
-             s.lastPrice > s.vwap && 
              s.lastPrice > s.ema20 && 
-             s.relVolume > 1.5 && 
-             s.oiChange > 2;
+             (s.oiChange > 0 || s.pChange > 0.5);
     }
     if (filter === 'bearish') {
       return matchesSearch && 
-             s.lastPrice < s.vwap && 
              s.lastPrice < s.ema20 && 
-             s.oiChange > 2;
+             (s.oiChange < 0 || s.pChange < -0.5);
     }
     if (filter === 'breakout') {
       return matchesSearch && 
-             s.marketRegime === MarketRegime.BREAKOUT && 
-             s.relVolume > 2;
+             (s.marketRegime === MarketRegime.BREAKOUT || s.relVolume > 1.25);
     }
     return matchesSearch;
   });
@@ -608,6 +635,17 @@ export default function App() {
             </div>
             <div className="w-px h-8 bg-tech-border mx-2"></div>
             <div className="bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono flex items-center gap-3">
+              <span className="text-neutral-500 uppercase tracking-widest text-[9px]">Alerts:</span>
+              <button 
+                onClick={sendTestTelegram}
+                disabled={isSendingTelegram}
+                className="text-sky-400 hover:text-white transition-colors font-bold flex items-center gap-1"
+              >
+                {isSendingTelegram ? 'SENDING...' : 'TEST_TELEGRAM'}
+              </button>
+            </div>
+            <div className="w-px h-8 bg-tech-border mx-2"></div>
+            <div className="bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono flex items-center gap-3">
               <span className="text-neutral-500 uppercase tracking-widest text-[9px]">Auto-Bot:</span>
               <button 
                 onClick={() => {
@@ -635,23 +673,19 @@ export default function App() {
           <div className="p-6 border-b border-tech-border">
             <h3 className="text-[10px] uppercase text-neutral-500 font-bold mb-4 tracking-[0.2em]">Sector Strength Index</h3>
             <div className="space-y-4">
-              {[
-                { name: 'NIFTY IT', val: 8.5, color: 'bg-neon-green' },
-                { name: 'NIFTY BANK', val: 7.2, color: 'bg-neon-green' },
-                { name: 'NIFTY AUTO', val: 4.1, color: 'bg-neon-green' },
-                { name: 'NIFTY PHARMA', val: 3.5, color: 'bg-neutral-600' },
-                { name: 'NIFTY ENERGY', val: -2.1, color: 'bg-neon-red' },
-              ].map(s => (
+              {sectorStrengths.length > 0 ? sectorStrengths.map(s => (
                 <div key={s.name} className="group">
                   <div className="flex justify-between text-[11px] mb-1.5 font-mono">
                     <span className="text-neutral-400">{s.name}</span>
-                    <span className={cn(s.val > 0 ? "text-neon-green" : "text-neon-red")}>{s.val > 0 ? "+" : ""}{s.val}%</span>
+                    <span className={cn(s.val > 0 ? "text-neon-green" : "text-neon-red")}>{s.val > 0 ? "+" : ""}{s.val.toFixed(1)}%</span>
                   </div>
                   <div className="h-1 bg-tech-border relative overflow-hidden">
-                    <div className={cn("absolute h-full top-0 left-0 transition-all duration-1000", s.color)} style={{ width: `${Math.abs(s.val) * 10}%` }}></div>
+                    <div className={cn("absolute h-full top-0 left-0 transition-all duration-1000", s.color)} style={{ width: `${Math.min(100, Math.abs(s.val) * 10)}%` }}></div>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="text-[10px] text-neutral-600 font-mono italic">Calculating sector pulse...</div>
+              )}
             </div>
           </div>
           
@@ -872,7 +906,17 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="text-xs divide-y divide-tech-border">
-                    {filteredStocks.map(stock => (
+                    {filteredStocks.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="px-6 py-20 text-center">
+                           <div className="flex flex-col items-center gap-4">
+                              <Search size={40} className="text-neutral-800" />
+                              <div className="text-neutral-500 font-mono uppercase tracking-[0.3em]">No Alpha Opportunities Found for current filter</div>
+                              <button onClick={() => setFilter('all')} className="text-neon-green text-[10px] font-bold underline">RESET FILTERS</button>
+                           </div>
+                        </td>
+                      </tr>
+                    ) : filteredStocks.map(stock => (
                       <tr key={stock.symbol} className="hover:bg-white/5 transition-colors group">
                         <td className="px-6 py-4">
                           <div className="flex flex-col gap-1">
@@ -1188,7 +1232,15 @@ export default function App() {
                          { label: 'RSI(14)_INDEX', value: selectedStock.rsi.toFixed(2), status: selectedStock.rsi > 70 ? 'OVERBOUGHT' : selectedStock.rsi < 30 ? 'OVERSOLD' : 'STABLE' },
                          { label: 'VWAP_VECTOR', value: formatCurrency(selectedStock.vwap), status: selectedStock.lastPrice > selectedStock.vwap ? 'BULLISH' : 'BEARISH' },
                          { label: 'EMA_20_SIG', value: formatCurrency(selectedStock.ema20), status: selectedStock.lastPrice > selectedStock.ema20 ? 'SUPP_ENABLED' : 'RES_ACTIVE' },
-                         { label: 'PCR_L_VOL', value: '1.24', status: 'C_UNWINDING' },
+                         { 
+                           label: 'PCR_L_VOL', 
+                           value: (() => {
+                             const callOi = optionChain.filter(o => o.type === 'CE').reduce((acc, o) => acc + o.oi, 0);
+                             const putOi = optionChain.filter(o => o.type === 'PUT').reduce((acc, o) => acc + o.oi, 0);
+                             return callOi > 0 ? (putOi / callOi).toFixed(2) : '1.00';
+                           })(), 
+                           status: 'C_UNWINDING' 
+                         },
                        ].map((idx, i) => (
                          <div key={i} className="bg-tech-surface border border-tech-border p-5 relative group overflow-hidden">
                             <div className="absolute top-0 left-0 w-1 h-full bg-tech-border group-hover:bg-neon-green transition-colors"></div>
@@ -1395,6 +1447,16 @@ export default function App() {
                exit={{ opacity: 0 }}
                className="space-y-6"
              >
+                {!user ? (
+                   <div className="bg-tech-surface border border-tech-border p-12 flex flex-col items-center justify-center text-center">
+                      <Shield className="w-16 h-16 text-neon-red/30 mb-6" />
+                      <h3 className="text-2xl font-black text-white mb-2 uppercase">Risk Management Locked</h3>
+                      <p className="text-neutral-500 font-mono text-xs mb-8 uppercase tracking-widest max-w-md">Risk parameters and global circuit breakers are tied to your institutional profile. Please sign in to configure your capital limits and loss boundaries.</p>
+                      <button onClick={handleLogin} className="bg-neon-green text-black px-8 py-3 text-xs font-black uppercase tracking-widest flex items-center gap-2">
+                         <LogIn size={16} /> Sign In to Configure
+                      </button>
+                   </div>
+                ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                    <div className="bg-tech-surface border border-tech-border p-8 space-y-8 shadow-2xl">
                       <div className="flex items-center justify-between gap-4 mb-4">
@@ -1443,7 +1505,14 @@ export default function App() {
                                   step={cfg.step}
                                   disabled={riskSettings?.killSwitch}
                                   value={editingSettings?.[cfg.key as keyof RiskSettings] as number || cfg.min}
-                                  onChange={(e) => setEditingSettings(prev => prev ? { ...prev, [cfg.key]: parseFloat(e.target.value) } : null)}
+                                  onChange={(e) => {
+                                   const val = parseFloat(e.target.value);
+                                   setEditingSettings(prev => {
+                                      if (prev) return { ...prev, [cfg.key]: val };
+                                      if (riskSettings) return { ...riskSettings, [cfg.key]: val };
+                                      return null;
+                                   });
+                                }}
                                   className={cn(
                                      "w-full accent-neon-green bg-tech-border h-1 appearance-none cursor-pointer",
                                      riskSettings?.killSwitch && "opacity-20 cursor-not-allowed"
@@ -1511,6 +1580,7 @@ export default function App() {
                       </div>
                    </div>
                 </div>
+                )}
              </motion.div>
           )}
 
