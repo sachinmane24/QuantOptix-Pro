@@ -102,6 +102,40 @@ export default function App() {
   const [isFyersConnected, setIsFyersConnected] = useState(false);
   const [scannerSignals, setScannerSignals] = useState<any[]>([]);
 
+  const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(false);
+
+  const loadMarketData = async () => {
+    const realData = await fetchLiveMarketData();
+    if (realData) {
+      setStocks(realData);
+      setIsFyersConnected(true);
+    } else {
+      setStocks(getLiveStockData());
+      setIsFyersConnected(false);
+    }
+    setMarketInfo(getMarketOverview());
+  };
+
+  const triggerAutoLogin = async () => {
+    if (isAutoLoggingIn) return;
+    setIsAutoLoggingIn(true);
+    try {
+      const res = await fetch('/api/auth/fyers/autologin');
+      const data = await res.json();
+      if (data.success) {
+        setIsFyersConnected(true);
+        loadMarketData();
+      } else {
+        alert(data.message || "Auto-login failed");
+      }
+    } catch (e) {
+      console.error("Auto-login request failed:", e);
+      alert("Failed to reach server for auto-login");
+    } finally {
+      setIsAutoLoggingIn(false);
+    }
+  };
+
   // NSE / Fyers Data flow
   useEffect(() => {
     const checkServer = async () => {
@@ -114,18 +148,6 @@ export default function App() {
       }
     };
     checkServer();
-
-    const loadMarketData = async () => {
-      const realData = await fetchLiveMarketData();
-      if (realData) {
-        setStocks(realData);
-        setIsFyersConnected(true);
-      } else {
-        setStocks(getLiveStockData());
-        setIsFyersConnected(false);
-      }
-      setMarketInfo(getMarketOverview());
-    };
 
     loadMarketData();
     
@@ -511,12 +533,21 @@ export default function App() {
               {isFyersConnected ? (
                 <span className="text-neon-green font-bold">LINKED</span>
               ) : (
-                <a 
-                  href="/api/auth/fyers/login"
-                  className="text-amber-500 hover:text-white transition-colors flex items-center gap-1"
-                >
-                  CONNECT
-                </a>
+                <div className="flex items-center gap-2">
+                  <a 
+                    href="/api/auth/fyers/login"
+                    className="text-amber-500 hover:text-white transition-colors"
+                  >
+                    CONNECT
+                  </a>
+                  <button 
+                    onClick={triggerAutoLogin}
+                    disabled={isAutoLoggingIn}
+                    className="text-[9px] bg-neutral-800 hover:bg-neutral-700 text-neutral-400 py-0.5 px-1.5 transition-colors uppercase font-bold"
+                  >
+                    {isAutoLoggingIn ? 'Attempting...' : 'Try Auto'}
+                  </button>
+                </div>
               )}
             </div>
             <div className="w-px h-8 bg-tech-border mx-2"></div>
