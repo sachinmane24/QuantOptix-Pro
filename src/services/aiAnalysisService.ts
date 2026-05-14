@@ -5,13 +5,51 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 import { StockData, OptionChainData, AIProbabilityModel, OptionAction, Trend } from "../types";
+import axios from "axios";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Helper to check if we are in node or browser
+const isServer = typeof process !== 'undefined' && process.env && !((process as any).browser);
+
+// Only initialize if we have a key (server-side)
+const apiKey = isServer ? process.env.GEMINI_API_KEY : null;
+const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
 export async function analyzeTradeProbability(
   stock: StockData,
   optionChain: OptionChainData[]
 ): Promise<AIProbabilityModel> {
+  // If we are in the browser and don't have the AI client, call our local API instead
+  if (!isServer && !ai) {
+    try {
+      const response = await axios.post("/api/ai/analyze", { stock, optionChain });
+      return response.data;
+    } catch (error) {
+      console.error("Client AI Analysis Error (API):", error);
+      return {
+        winProbability: 50,
+        confidence: 'Low',
+        momentumScore: 5,
+        institutionalActivityScore: 5,
+        breakoutQualityScore: 5,
+        riskScore: 5,
+        summary: "AI analysis server unreachable."
+      };
+    }
+  }
+
+  // Server-side (or dev with local client) execution
+  if (!ai) {
+    return {
+      winProbability: 50,
+      confidence: 'Low',
+      momentumScore: 5,
+      institutionalActivityScore: 5,
+      breakoutQualityScore: 5,
+      riskScore: 5,
+      summary: "AI Service not initialized."
+    };
+  }
+
   try {
     const prompt = `
       As an expert quant trader, analyze the following stock and options data for ${stock.symbol}.

@@ -443,7 +443,7 @@ export default function App() {
         <div className="flex items-center gap-10">
           <div className="flex items-center gap-3">
             <div className="w-3 h-3 bg-neon-green rounded-full shadow-[0_0_8px_rgba(0,255,148,0.5)]"></div>
-            <h1 className="text-xl font-sans font-extrabold tracking-tighter text-white">QUANTA<span className="text-neon-green">NSE</span> AI</h1>
+            <h1 className="text-xl font-sans font-extrabold tracking-tighter text-white uppercase">Quant<span className="text-neon-green">Optix</span></h1>
           </div>
           
           <div className="hidden xl:flex gap-8 text-[10px] font-mono uppercase text-neutral-500">

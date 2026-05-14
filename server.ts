@@ -173,6 +173,25 @@ async function startServer() {
     });
   });
 
+  // AI Analysis Endpoint
+  app.post("/api/ai/analyze", async (req, res) => {
+    const { stock, optionChain } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+      return res.status(500).json({ error: "GEMINI_API_KEY not configured on server" });
+    }
+
+    try {
+      const { analyzeTradeProbability } = await import("./src/services/aiAnalysisService");
+      const result = await analyzeTradeProbability(stock, optionChain);
+      res.json(result);
+    } catch (error: any) {
+      console.error("[AI API] Error:", error.message);
+      res.status(500).json({ error: "Analysis failed", details: error.message });
+    }
+  });
+
   app.get("/api/auth/fyers/autologin", async (req, res) => {
     const token = await performAutoLogin();
     if (token) {
@@ -328,34 +347,15 @@ async function startServer() {
   } else {
     console.log("[Server] Running in PRODUCTION mode");
     const distPath = path.resolve(process.cwd(), "dist");
-    console.log(`[Server] Technical dist path: ${distPath}`);
+    const indexPath = path.join(distPath, "index.html");
     
-    // Serve static files first
-    app.use(express.static(distPath, {
-      index: "index.html",
-      setHeaders: (res, path) => {
-        if (path.endsWith(".html")) {
-          res.setHeader("Cache-Control", "no-cache");
-        }
-      }
-    }));
-    
-    // Catch-all for SPA routing - MUST be after static and API routes
+    app.use(express.static(distPath, { index: false }));
+
     app.get("*", (req, res) => {
-      // Don't intercept API calls
       if (req.path.startsWith("/api")) {
-        console.log(`[Server] 404 on API: ${req.path}`);
         return res.status(404).json({ error: "API endpoint not found" });
       }
-      
-      const indexPath = path.join(distPath, "index.html");
-      console.log(`[Server] Serving SPA fallback from: ${indexPath} for request: ${req.path}`);
-      res.sendFile(indexPath, (err) => {
-        if (err) {
-          console.error(`[Server] CRITICAL: Error sending index.html:`, err);
-          res.status(500).send(`Application Error: Required static assets (dist) might be missing. Path: ${distPath}`);
-        }
-      });
+      res.sendFile(indexPath);
     });
   }
 
