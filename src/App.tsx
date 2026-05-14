@@ -353,8 +353,13 @@ export default function App() {
   const handleLogin = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      if (err.code === 'auth/popup-blocked') {
+        alert("Sign-in popup blocked. Please allow popups for this site and try again.");
+      } else {
+        alert("Authentication failed: " + err.message);
+      }
     }
   };
 
@@ -363,10 +368,20 @@ export default function App() {
   const sendTestTelegram = async () => {
     setIsSendingTelegram(true);
     try {
-      await sendTelegramNotification(formatTestMessage(user?.displayName || "Trader"));
-      alert("Test message sent to Telegram!");
-    } catch (e) {
-      alert("Failed to send test message. Check Telegram Bot Token and Chat ID in secrets.");
+      const response = await fetch('/api/notify/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: formatTestMessage(user?.displayName || "Trader") }),
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        alert("SUCCESS: Test message delivered to Telegram!");
+      } else {
+        alert(`ERROR: ${data.details || data.error || "Unknown error"}. Ensure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in Secrets.`);
+      }
+    } catch (e: any) {
+      alert("FAILED: Network error or server unreachable. " + e.message);
     } finally {
       setIsSendingTelegram(false);
     }
@@ -768,7 +783,7 @@ export default function App() {
                       </h2>
                       <div className="flex bg-tech-surface border border-tech-border p-1">
                         <button className="px-5 py-1 text-[10px] font-bold uppercase tracking-tighter bg-neon-green text-black">TOP_SCAN</button>
-                        <div className="px-5 py-1 text-[10px] font-bold uppercase tracking-tighter text-neutral-500 font-mono">Refresh: 30m</div>
+                        <div className="px-5 py-1 text-[10px] font-bold uppercase tracking-tighter text-neutral-500 font-mono">Rescan: 5m</div>
                       </div>
                     </div>
 

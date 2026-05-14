@@ -132,25 +132,28 @@ export function generateRecommendation(
   }
 
   const entryPrice = bestContract.lastPrice;
-  const iv = bestContract.iv / 100;
+  const delta = Math.abs(bestContract.delta);
   
   // Institutional Logic: 
-  // 1. Stop Loss based on Volatility (IV) and Breakout Quality
-  // High Volatility = We give more room, but weighted by riskScore
-  // Breakout Quality = Higher quality leads to tighter SL expectations
-  const baseRisk = 0.20; // 20% base risk
-  const riskAdjustment = (aiModel.riskScore / 10); // Scale risk 1-10 to 0.1-1.0
-  const volAdjustment = (iv > 0.3 ? 0.05 : 0); // Add 5% if IV is high (>30%)
+  // 1. Spot Stop Loss based on ATR (Institutional Standard: 1.5 * ATR)
+  const atr = stock.atr || (stock.lastPrice * 0.015);
+  const spotStopLossDistance = atr * 1.5;
   
-  const slPercent = Math.max(0.1, baseRisk + volAdjustment - (aiModel.breakoutQualityScore * 0.01));
-  const stopLoss = entryPrice * (1 - slPercent);
+  // 2. Map Spot SL to Option SL using Delta
+  // Change in Option Price ≈ Change in Spot Price * Delta
+  const optionStopLossDistance = spotStopLossDistance * delta;
+  
+  // Factor in time decay and IV buffer (5% of premium)
+  const slBuffer = entryPrice * 0.05;
+  const stopLoss = Math.max(entryPrice * 0.1, entryPrice - optionStopLossDistance - slBuffer);
 
-  // 2. Targets based on Momentum and Institutional Activity
-  // Momentum score drives the stretch factor
-  const momentumStretch = 1 + (aiModel.momentumScore / 10);
-  const target1 = entryPrice * (1 + (slPercent * 1.5 * momentumStretch)); // Aim for min 1.5R adjusted by momentum
-  const target2 = entryPrice * (1 + (slPercent * 3.0 * momentumStretch)); // Aim for 3R extension
-  const target3 = entryPrice * (1 + (slPercent * 5.0 * momentumStretch)); // Moon shot
+  // 3. Targets based on R-Multiples (Risk-Reward)
+  // Standard Institutional Targets: 1.5R, 3R, 5R
+  const riskValue = entryPrice - stopLoss;
+  
+  const target1 = entryPrice + (riskValue * 1.5); // 1.5R
+  const target2 = entryPrice + (riskValue * 3.0); // 3R
+  const target3 = entryPrice + (riskValue * 5.0); // 5R
 
   return {
     symbol: stock.symbol,
@@ -164,8 +167,8 @@ export function generateRecommendation(
       parseFloat(target2.toFixed(2)),
       parseFloat(target3.toFixed(2))
     ],
-    riskReward: (target1 - entryPrice) / (entryPrice - stopLoss),
-    positionSize: '1 Lot',
+    riskReward: parseFloat(((target1 - entryPrice) / riskValue).toFixed(2)),
+    positionSize: `${stock.lotSize || 1} Units (1 Lot)`,
     probability: aiModel.winProbability
   };
 }

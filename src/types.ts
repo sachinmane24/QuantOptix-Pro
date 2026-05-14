@@ -39,6 +39,8 @@ export interface StockData {
   trend: Trend;
   rsi: number;
   lotSize?: number;
+  atr?: number;
+  adr?: number;
 }
 
 export interface OptionChainData {

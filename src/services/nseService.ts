@@ -10,7 +10,8 @@ import { FNO_DATA, FNO_SYMBOLS } from './fnoData';
 export const FNO_STOCKS = FNO_SYMBOLS;
 
 export const SECTORS = [
-  'Banking', 'IT', 'Auto', 'Pharma', 'PSU', 'Energy', 'Realty', 'Metals', 'Capital Goods'
+  'Banking', 'IT', 'Auto', 'Pharma', 'Financial Services', 'Energy', 'Capital Goods', 'Consumer Goods', 
+  'Metals', 'FMCG', 'Realty', 'Cement', 'Healthcare', 'Telecom', 'Chemicals', 'Retail', 'Services'
 ];
 
 const mockHistoricalData: Record<string, any[]> = {};
@@ -44,12 +45,14 @@ export function getLiveStockData(): StockData[] {
       vwap: lastPrice * (1 + (Math.random() * 0.02 - 0.01)),
       ema20: lastPrice * (1 - (Math.random() * 0.05)),
       ema50: lastPrice * (1 - (Math.random() * 0.1)),
-      sector: SECTORS[Math.floor(Math.random() * SECTORS.length)],
+      sector: info?.sector || 'Diversified',
       relativeStrength: (Math.random() * 4) - 2,
       marketRegime: regime,
       trend,
       rsi: 30 + Math.random() * 40,
-      lotSize: info?.lotSize || 1
+      lotSize: info?.lotSize || 1,
+      atr: lastPrice * (0.012 + Math.random() * 0.008), // 1.2% - 2% ATR
+      adr: lastPrice * (0.025 + Math.random() * 0.015)  // 2.5% - 4% ADR
     };
   });
 }
@@ -118,8 +121,8 @@ let lastUniverseRefresh = 0;
  */
 export async function getActiveInstitutionalUniverse(): Promise<string[]> {
   const now = Date.now();
-  // Refresh every 30 mins
-  if (activeUniverseSymbols.length > 0 && (now - lastUniverseRefresh < 30 * 60 * 1000)) {
+  // Refresh every 5 mins
+  if (activeUniverseSymbols.length > 0 && (now - lastUniverseRefresh < 5 * 60 * 1000)) {
     return activeUniverseSymbols;
   }
 
@@ -148,10 +151,10 @@ export async function getActiveInstitutionalUniverse(): Promise<string[]> {
     if (allQuotes.length === 0) return activeUniverseSymbols.length > 0 ? activeUniverseSymbols : FNO_STOCKS.slice(0, 10);
 
     const sorted = [...allQuotes].sort((a, b) => b.pChange - a.pChange);
-    const top5Gainers = sorted.slice(0, 5).map(s => s.symbol);
-    const top5Losers = sorted.slice(-5).map(s => s.symbol);
+    const top10Gainers = sorted.slice(0, 10).map(s => s.symbol);
+    const top10Losers = sorted.slice(-10).map(s => s.symbol);
     
-    activeUniverseSymbols = [...new Set([...top5Gainers, ...top5Losers])];
+    activeUniverseSymbols = [...new Set([...top10Gainers, ...top10Losers])];
     lastUniverseRefresh = now;
     
     console.log('[Institutional Scanner] Universe Refreshed:', activeUniverseSymbols);
@@ -164,7 +167,8 @@ export async function getActiveInstitutionalUniverse(): Promise<string[]> {
 
 export async function fetchLiveMarketData(): Promise<StockData[] | null> {
   try {
-    const stockSymbols = FNO_STOCKS.map(s => `NSE:${s}-EQ`).join(',');
+    const activeUniverse = await getActiveInstitutionalUniverse();
+    const stockSymbols = activeUniverse.map(s => `NSE:${s}-EQ`).join(',');
     const indexSymbols = 'NSE:NIFTY50-INDEX,NSE:NIFTYBANK-INDEX,NSE:INDIAVIX-INDEX';
     const queryParams = new URLSearchParams({ symbols: `${stockSymbols},${indexSymbols}` });
     const response = await fetch(`/api/market/quotes?${queryParams.toString()}`);
@@ -233,12 +237,14 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
             vwap: v.avg_price || lastPrice,
             ema20: lastPrice * (1 - (Math.random() * 0.02)),
             ema50: lastPrice * (1 - (Math.random() * 0.04)),
-            sector: SECTORS[Math.floor(Math.random() * SECTORS.length)], 
+            sector: FNO_DATA[symbol]?.sector || 'Diversified', 
             relativeStrength: (pChange - (nifty?.v?.chp || 0)),
             marketRegime: Math.abs(pChange) > 2 ? MarketRegime.BREAKOUT : MarketRegime.SIDEWAYS,
             trend: pChange > 0 ? Trend.BULLISH : Trend.BEARISH,
             rsi: 40 + (pChange * 2),
-            lotSize: FNO_DATA[symbol]?.lotSize || 1
+            lotSize: FNO_DATA[symbol]?.lotSize || 1,
+            atr: lastPrice * (0.015), // Standard approx
+            adr: lastPrice * (0.03) // Standard approx
           };
         });
     }
@@ -250,14 +256,18 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
 }
 
 export function getMarketOverview() {
-  return dynamicMarketOverview || {
-    nifty: { price: 22450.30, change: 120.5, pChange: 0.54 },
-    bankNifty: { price: 47800.15, change: -45.2, pChange: -0.09 },
-    indiaVix: { price: 12.4, change: 0.2, pChange: 1.5 },
-    topGainer: 'TRENT',
-    topLoser: 'TATAMOTORS',
-    advances: 104,
-    declines: 78
+  if (dynamicMarketOverview) return dynamicMarketOverview;
+  
+  // Dynamic mock data that changes every time it's called if real data missing
+  const drift = (Math.random() * 10) - 5;
+  return {
+    nifty: { price: 24210.50 + drift, change: 120.5 + drift, pChange: 0.54 + (drift/1000) },
+    bankNifty: { price: 52300.15 + drift*5, change: -45.2 + drift*5, pChange: -0.09 + (drift/500) },
+    indiaVix: { price: 13.4 + (drift/20), change: 0.2, pChange: 1.5 },
+    topGainer: 'RELIANCE',
+    topLoser: 'TCS',
+    advances: 104 + Math.floor(drift),
+    declines: 78 - Math.floor(drift)
   };
 }
 
@@ -345,7 +355,9 @@ export function initializeMarketWebSocket(
           relativeStrength: 0,
           marketRegime: Math.abs(v.chp) > 2 ? MarketRegime.BREAKOUT : MarketRegime.SIDEWAYS,
           trend: v.chp > 0 ? Trend.BULLISH : Trend.BEARISH,
-          rsi: 50
+          rsi: 50,
+          atr: v.lp * 0.015,
+          adr: v.lp * 0.03
         });
       }
     });
