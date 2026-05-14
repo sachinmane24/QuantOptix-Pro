@@ -182,6 +182,9 @@ export default function App() {
       },
       (autoTradeStatus) => {
         setIsAutoTrading(autoTradeStatus);
+      },
+      (log) => {
+        setTradeLogs(prev => [log, ...prev].slice(0, 100));
       }
     );
 
@@ -946,7 +949,7 @@ export default function App() {
                            </div>
 
                            <div className="space-y-2 mb-8 font-mono">
-                              {recommendation?.targets.map((tgt: number, i: number) => (
+                              {recommendation?.targets?.map((tgt: number, i: number) => (
                                 <div key={i} className="flex justify-between items-center bg-tech-bg p-2.5 border border-neon-green/20">
                                    <span className="text-[10px] text-neon-green font-bold uppercase tracking-widest">TARGET_{i+1}</span>
                                    <span className="text-sm font-bold text-white tracking-widest">{tgt}</span>
@@ -1220,12 +1223,23 @@ export default function App() {
                   <h2 className="text-[10px] font-mono font-bold uppercase tracking-[.3em] text-neutral-500 mt-10">Institutional Execution Logs</h2>
                   <div className="bg-[#0b0e14] border border-tech-border p-5 h-[300px] overflow-y-auto font-mono text-[9px] space-y-3 custom-scrollbar">
                     {tradeLogs.length === 0 && <div className="text-neutral-700 italic uppercase">System ready. Waiting for order triggers...</div>}
-                    {tradeLogs.map((log, i) => (
-                      <div key={i} className="text-neutral-400 flex gap-4 items-start border-b border-white/5 pb-2">
-                        <span className="text-neon-green font-black shrink-0">[EXEC_OK]</span>
-                        <span>{log}</span>
-                      </div>
-                    ))}
+                    {tradeLogs.map((log, i) => {
+                      const isRejected = log.includes('REJECTED');
+                      const isExecuted = log.includes('EXECUTED');
+                      const isClosed = log.includes('CLOSED');
+                      
+                      return (
+                        <div key={i} className="text-neutral-400 flex gap-4 items-start border-b border-white/5 pb-2">
+                          <span className={cn(
+                            "font-black shrink-0",
+                            isRejected ? "text-neon-red" : isExecuted ? "text-neon-green" : isClosed ? "text-amber-500" : "text-sky-400"
+                          )}>
+                            [{isRejected ? 'REJECT' : isExecuted ? 'EXEC_OK' : isClosed ? 'EXIT_OK' : 'SYSTEM'}]
+                          </span>
+                          <span className={cn(isRejected && "text-neutral-500 italic")}>{log}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 

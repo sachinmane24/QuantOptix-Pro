@@ -27,22 +27,41 @@ export class PaperTradingService {
   private io: Server;
   private autoTradeEnabled: boolean = false;
   private virtualBalance: number = 1000000; // 10 Lakh starting capital
+  private dailyTradesCount: number = 0;
+  private maxTradesPerDay: number = 10;
+  private maxDailyLoss: number = 20000; // Stop bot if lost > 20k in a day
+  private dailyPnL: number = 0;
+  private lastResetDate: string = new Date().toDateString();
 
   constructor(io: Server) {
     this.io = io;
   }
 
+  private checkDailyReset() {
+    const today = new Date().toDateString();
+    if (this.lastResetDate !== today) {
+      this.dailyTradesCount = 0;
+      this.dailyPnL = 0;
+      this.lastResetDate = today;
+      console.log(`[Trading] Daily stats reset for ${today}`);
+    }
+  }
+
   public setAutoTrade(enabled: boolean) {
     this.autoTradeEnabled = enabled;
     console.log(`[Trading] Auto-trade status changed to: ${enabled}`);
+    this.io.emit("bot-log", `Auto-trade ${enabled ? 'ENABLED' : 'DISABLED'}`);
   }
 
   public getStatus() {
+    this.checkDailyReset();
     return {
       autoTradeEnabled: this.autoTradeEnabled,
       positions: Array.from(this.positions.values()),
       history: this.tradeHistory.slice(-20),
-      balance: this.virtualBalance
+      balance: this.virtualBalance,
+      dailyTrades: this.dailyTradesCount,
+      dailyPnL: this.dailyPnL
     };
   }
 
@@ -51,18 +70,33 @@ export class PaperTradingService {
    */
   public handleSignal(signal: TradeSignal) {
     if (!this.autoTradeEnabled) return;
+    this.checkDailyReset();
 
-    // Check if we already have a position in this symbol
-    if (this.positions.has(signal.symbol)) {
-      // Logic for trailing stop loss or scaling could go here
+    // 1. Risk Check: Max Daily Loss Hit
+    if (this.dailyPnL <= -this.maxDailyLoss) {
+      this.emitLog(`ORDER REJECTED: Daily Max Loss Limit (${this.maxDailyLoss}) reached. Daily PnL: ${this.dailyPnL.toFixed(2)}`, "REJECTED");
       return;
     }
 
-    // Risk Management: Use 10% of capital per trade
+    // 2. Risk Check: Max Trades per day
+    if (this.dailyTradesCount >= this.maxTradesPerDay) {
+      this.emitLog(`ORDER REJECTED: Max Daily Trades (${this.maxTradesPerDay}) reached.`, "REJECTED");
+      return;
+    }
+
+    // 3. Check if we already have a position in this symbol
+    if (this.positions.has(signal.symbol)) {
+      return;
+    }
+
+    // 4. Position Sizing: Use 10% of capital per trade
     const capitalPerTrade = this.virtualBalance * 0.1;
     const qty = Math.floor(capitalPerTrade / signal.price);
 
-    if (qty <= 0) return;
+    if (qty <= 0) {
+      this.emitLog(`ORDER REJECTED: Insufficient balance for ${signal.symbol}`, "REJECTED");
+      return;
+    }
 
     if (signal.type === "RSI_BREAKOUT_UP" || signal.type === "BULLISH_DIVERGENCE") {
       this.executeTrade(signal, "BUY", qty);
@@ -74,7 +108,8 @@ export class PaperTradingService {
   private executeTrade(signal: TradeSignal, type: "BUY" | "SELL", qty: number) {
     const tradeId = Math.random().toString(36).substr(2, 9);
     
-    console.log(`[Trading] EXECUTING ${type} for ${signal.symbol} @ ${signal.price}`);
+    this.dailyTradesCount++;
+    this.emitLog(`ORDER EXECUTED: ${type} ${signal.symbol} @ ${signal.price} (Qty: ${qty}) [Signal: ${signal.type}]`, "EXECUTED");
 
     const trade: PaperTradeRecord = {
       id: tradeId,
@@ -135,7 +170,8 @@ export class PaperTradingService {
     const pos = this.positions.get(symbol);
     if (!pos) return;
 
-    console.log(`[Trading] CLOSING ${symbol} @ ${price} (Reason: ${reason})`);
+    this.dailyPnL += pos.pnl;
+    this.emitLog(`POSITION CLOSED: ${symbol} @ ${price} (Reason: ${reason}) | PnL: ${pos.pnl.toFixed(2)}`, "CLOSED");
     
     this.tradeHistory.push({
       id: Math.random().toString(36).substr(2, 9),
@@ -152,6 +188,12 @@ export class PaperTradingService {
     
     this.io.emit("position-closed", { symbol, pnl: pos.pnl, reason });
     this.broadcastUpdate();
+  }
+
+  private emitLog(message: string, type: "EXECUTED" | "REJECTED" | "CLOSED" | "INFO") {
+    console.log(`[Trading] ${type}: ${message}`);
+    const timestamp = new Date().toLocaleTimeString();
+    this.io.emit("bot-log", `[${timestamp}] ${message}`);
   }
 
   private broadcastUpdate() {

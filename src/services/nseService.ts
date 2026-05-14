@@ -201,11 +201,18 @@ export function initializeMarketWebSocket(
   onMarketUpdate: (market: any) => void,
   onTradeSignal?: (signal: any) => void,
   onPaperPortfolioUpdate?: (update: any) => void,
-  onAutoTradeStatus?: (enabled: boolean) => void
+  onAutoTradeStatus?: (enabled: boolean) => void,
+  onBotLog?: (log: string) => void
 ) {
   if (socket) return;
   
   socket = io();
+
+  if (onBotLog) {
+    socket.on('bot-log', (log: string) => {
+      onBotLog(log);
+    });
+  }
 
   if (onTradeSignal) {
     socket.on('trade-signal', (signal: any) => {

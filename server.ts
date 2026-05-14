@@ -328,22 +328,32 @@ async function startServer() {
   } else {
     console.log("[Server] Running in PRODUCTION mode");
     const distPath = path.resolve(process.cwd(), "dist");
+    console.log(`[Server] Technical dist path: ${distPath}`);
     
     // Serve static files first
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      index: "index.html",
+      setHeaders: (res, path) => {
+        if (path.endsWith(".html")) {
+          res.setHeader("Cache-Control", "no-cache");
+        }
+      }
+    }));
     
     // Catch-all for SPA routing - MUST be after static and API routes
     app.get("*", (req, res) => {
       // Don't intercept API calls
       if (req.path.startsWith("/api")) {
+        console.log(`[Server] 404 on API: ${req.path}`);
         return res.status(404).json({ error: "API endpoint not found" });
       }
       
       const indexPath = path.join(distPath, "index.html");
+      console.log(`[Server] Serving SPA fallback from: ${indexPath} for request: ${req.path}`);
       res.sendFile(indexPath, (err) => {
         if (err) {
-          console.error(`[Server] Error sending index.html:`, err);
-          res.status(500).send("Error loading application. Please check if 'dist' folder exists.");
+          console.error(`[Server] CRITICAL: Error sending index.html:`, err);
+          res.status(500).send(`Application Error: Required static assets (dist) might be missing. Path: ${distPath}`);
         }
       });
     });
