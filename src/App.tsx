@@ -103,6 +103,9 @@ export default function App() {
   const [scannerSignals, setScannerSignals] = useState<any[]>([]);
 
   const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(false);
+  const [manualAuthCode, setManualAuthCode] = useState('');
+  const [isSubmittingCode, setIsSubmittingCode] = useState(false);
+  const [showManualCodeInput, setShowManualCodeInput] = useState(false);
 
   const loadMarketData = async () => {
     const realData = await fetchLiveMarketData();
@@ -133,6 +136,31 @@ export default function App() {
       alert("Failed to reach server for auto-login");
     } finally {
       setIsAutoLoggingIn(false);
+    }
+  };
+
+  const submitManualCode = async () => {
+    if (!manualAuthCode) return;
+    setIsSubmittingCode(true);
+    try {
+      const res = await fetch('/api/auth/fyers/submit-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auth_code: manualAuthCode })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsFyersConnected(true);
+        setShowManualCodeInput(false);
+        loadMarketData();
+      } else {
+        alert(data.message || "Code exchange failed");
+      }
+    } catch (e) {
+      console.error("Code submission failed:", e);
+      alert("Failed to reach server for code exchange");
+    } finally {
+      setIsSubmittingCode(false);
     }
   };
 
@@ -533,20 +561,48 @@ export default function App() {
               {isFyersConnected ? (
                 <span className="text-neon-green font-bold">LINKED</span>
               ) : (
-                <div className="flex items-center gap-2">
-                  <a 
-                    href="/api/auth/fyers/login"
-                    className="text-amber-500 hover:text-white transition-colors"
-                  >
-                    CONNECT
-                  </a>
-                  <button 
-                    onClick={triggerAutoLogin}
-                    disabled={isAutoLoggingIn}
-                    className="text-[9px] bg-neutral-800 hover:bg-neutral-700 text-neutral-400 py-0.5 px-1.5 transition-colors uppercase font-bold"
-                  >
-                    {isAutoLoggingIn ? 'Attempting...' : 'Try Auto'}
-                  </button>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <a 
+                      href="/api/auth/fyers/login"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-amber-500 hover:text-white transition-colors"
+                    >
+                      CONNECT
+                    </a>
+                    <button 
+                      onClick={triggerAutoLogin}
+                      disabled={isAutoLoggingIn}
+                      className="text-[9px] bg-neutral-800 hover:bg-neutral-700 text-neutral-400 py-0.5 px-1.5 transition-colors uppercase font-bold"
+                    >
+                      {isAutoLoggingIn ? 'Attempting...' : 'Try Auto'}
+                    </button>
+                    <button 
+                      onClick={() => setShowManualCodeInput(!showManualCodeInput)}
+                      className="text-[9px] bg-neutral-800 hover:bg-neutral-700 text-neutral-400 py-0.5 px-1.5 transition-colors uppercase font-bold"
+                    >
+                      Manual Code
+                    </button>
+                  </div>
+                  {showManualCodeInput && (
+                    <div className="flex items-center gap-1 mt-1">
+                      <input 
+                        type="text" 
+                        placeholder="Auth Code"
+                        value={manualAuthCode}
+                        onChange={(e) => setManualAuthCode(e.target.value)}
+                        className="bg-black border border-tech-border text-[9px] px-1 py-0.5 w-24 text-white focus:border-neon-green outline-none"
+                      />
+                      <button 
+                        onClick={submitManualCode}
+                        disabled={isSubmittingCode}
+                        className="text-[9px] bg-neon-green/20 hover:bg-neon-green/40 text-neon-green py-0.5 px-1.5 transition-colors uppercase font-bold border border-neon-green/30"
+                      >
+                        {isSubmittingCode ? '...' : 'Submit'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

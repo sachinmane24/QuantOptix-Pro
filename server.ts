@@ -347,25 +347,76 @@ async function startServer() {
     const appUrl = process.env.APP_URL?.replace(/\/$/, "") || detectedAppUrl;
     const redirectUrl = process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL || `${appUrl}/api/auth/fyers/callback`;
     
+    const allFyersKeys = Object.keys(process.env).filter(k => k.startsWith('FYERS_'));
+    const maskedKeys = allFyersKeys.reduce((acc: any, key) => {
+      const val = process.env[key] || '';
+      acc[key] = val.length > 5 ? val.substring(0, 3) + "..." + val.substring(val.length - 2) : (val ? "PRESENT" : "EMPTY");
+      return acc;
+    }, {});
+
     if (!clientId) {
       return res.status(500).json({ 
         error: "FYERS_CLIENT_ID not configured",
         help: "Please set FYERS_CLIENT_ID (or FYERS_APP_ID) in the environment secrets.",
         debug: {
-          keysFound: Object.keys(process.env).filter(k => k.startsWith('FYERS_'))
+          keysFound: allFyersKeys,
+          maskedValues: maskedKeys,
+          detectedHost: host,
+          detectedProtocol: protocol,
+          appUrl: appUrl
         }
       });
     }
 
-    console.log(`[Auth] Using redirect_uri: ${redirectUrl}`);
+    console.log(`[Auth] Using redirect_uri: ${redirectUrl} for Client: ${clientId}`);
     const fyersAuthUrl = `https://api-t1.fyers.in/api/v3/generate-authcode?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUrl)}&response_type=code&state=sample_state`;
     res.redirect(fyersAuthUrl);
+  });
+
+  app.post("/api/auth/fyers/submit-code", async (req, res) => {
+    const { auth_code } = req.body;
+    const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
+    const secretId = process.env.FYERS_SECRET_KEY || process.env.FYERS_SECRET_ID;
+
+    if (!auth_code) return res.status(400).json({ success: false, message: "No auth code provided" });
+    if (!clientId || !secretId) return res.status(500).json({ success: false, message: "Server keys not configured" });
+
+    try {
+      const appIdHash = crypto.createHash('sha256').update(`${clientId}:${secretId}`).digest('hex');
+      const tokenResponse = await axios.post('https://api-t1.fyers.in/api/v3/validate-authcode', {
+        grant_type: 'authorization_code',
+        appIdHash: appIdHash,
+        code: auth_code
+      });
+
+      if (tokenResponse.data.s === "ok") {
+        const accessToken = tokenResponse.data.access_token;
+        process.env.FYERS_ACCESS_TOKEN = accessToken;
+        try { setupFyersSocket(); } catch (e) {}
+        res.json({ success: true, message: "Login successful via manual code" });
+      } else {
+        res.status(400).json({ 
+          success: false, 
+          message: tokenResponse.data.message || "Manual code exchange failed",
+          details: tokenResponse.data
+        });
+      }
+    } catch (error: any) {
+      res.status(500).json({ success: false, message: "Error during manual code exchange", details: error.message });
+    }
   });
 
   app.get("/api/auth/fyers/callback", async (req, res) => {
     const { auth_code } = req.query;
     const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
     const secretId = process.env.FYERS_SECRET_KEY || process.env.FYERS_SECRET_ID;
+
+    // Use same redirect_uri as during login
+    const host = req.get('host');
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const detectedAppUrl = `${protocol}://${host}`;
+    const appUrl = process.env.APP_URL?.replace(/\/$/, "") || detectedAppUrl;
+    const redirectUrl = process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL || `${appUrl}/api/auth/fyers/callback`;
 
     if (!auth_code) return res.status(400).send("No auth code provided");
 
