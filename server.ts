@@ -33,8 +33,8 @@ async function performAutoLogin() {
   const totpSecret = process.env.FYERS_TOTP_SECRET || process.env.FYERS_TOTP_SECRI;
   const appUrl = process.env.APP_URL?.replace(/\/$/, "");
   
-  // Priority: Secret > Auto-detected App URL
-  const redirectUri = process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL || (appUrl ? `${appUrl}/api/auth/fyers/callback` : undefined);
+  // Priority: Secret > Env Defined
+  const redirectUri = process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL || (appUrl ? `${appUrl}/api/auth/fyers/callback` : "https://www.google.com/");
 
   if (!clientId || !secretKey || !userId || !pin || !totpSecret || !redirectUri) {
     const missing = [];
@@ -51,84 +51,110 @@ async function performAutoLogin() {
 
   loginPromise = (async () => {
     try {
-      console.log("[AutoLogin] Starting automated session for USER:", userId);
+      console.log(`[AutoLogin] Starting automated session for USER: ${userId} with CLIENT: ${clientId}`);
 
-      // Step 1: Send Login OTP (Internal AppID 2 for Web Login)
-      const loginStep1 = await axios.post("https://api-t1.fyers.in/api/v3/send-login-otp-v2", {
+      // Helper for base64
+      const b64 = (s: string) => Buffer.from(s).toString('base64');
+
+      const headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
+      };
+
+      // Step 1: send_login_otp (Vagator api-t2)
+      console.log("[AutoLogin] Step 1: send_login_otp");
+      const r1 = await axios.post("https://api-t2.fyers.in/vagator/v2/send_login_otp", {
         fy_id: userId,
         app_id: "2"
-      });
+      }, { headers });
 
-      if (loginStep1.data.s !== "ok") {
-        throw new Error(`Step 1 Failed: ${loginStep1.data.message || "Unknown error"}`);
+      if (r1.data.s !== "ok") {
+        throw new Error(`Step 1 Failed: ${JSON.stringify(r1.data)}`);
       }
-      const requestKey = loginStep1.data.request_key;
+      let requestKey = r1.data.request_key;
 
-      // Step 2: Verify TOTP
-      const totpVal = authenticator.generate(totpSecret);
-      const loginStep2 = await axios.post("https://api-t1.fyers.in/api/v3/verify-login-otp-v2", {
-        fy_id: userId,
-        app_id: "2",
-        otp: totpVal,
-        request_key: requestKey
-      });
+      // Step 2: verify_otp (TOTP)
+      console.log("[AutoLogin] Step 2: verify_otp");
+      const totpCode = authenticator.generate(totpSecret);
+      const r2 = await axios.post("https://api-t2.fyers.in/vagator/v2/verify_otp", {
+        request_key: requestKey,
+        otp: totpCode
+      }, { headers });
 
-      if (loginStep2.data.s !== "ok") {
-        throw new Error(`Step 2 Failed: ${loginStep2.data.message || "Unknown error"}`);
+      if (r2.data.s !== "ok") {
+        throw new Error(`Step 2 Failed: ${JSON.stringify(r2.data)}`);
       }
-      const requestKey2 = loginStep2.data.request_key;
+      requestKey = r2.data.request_key;
 
-      // Step 3: Verify PIN
-      const loginStep3 = await axios.post("https://api-t1.fyers.in/api/v3/verify-login-pin-v2", {
-        fy_id: userId,
-        app_id: "2",
-        pin: pin,
-        request_key: requestKey2
-      });
+      // Step 3: verify_pin_v2 (PIN base64 encoded)
+      console.log("[AutoLogin] Step 3: verify_pin_v2");
+      const r3 = await axios.post("https://api-t2.fyers.in/vagator/v2/verify_pin_v2", {
+        request_key: requestKey,
+        identity_type: "pin",
+        identifier: b64(pin)
+      }, { headers });
 
-      if (loginStep3.data.s !== "ok") {
-        throw new Error(`Step 3 Failed: ${loginStep3.data.message || "Unknown error"}`);
+      if (r3.data.s !== "ok") {
+        throw new Error(`Step 3 Failed: ${JSON.stringify(r3.data)}`);
       }
-      const webToken = loginStep3.data.data.access_token;
+      const fyersInternalToken = r3.data.data.access_token;
 
-      // Step 4: Authorize our CUSTOM APP using the session token
-      const authCodeResponse = await axios.post("https://api-t1.fyers.in/api/v3/generate-authcode", {
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        response_type: "code",
-        state: "auto_login"
+      // Step 4: get auth_code from /api/v3/token
+      console.log("[AutoLogin] Step 4: get_auth_code");
+      const appIdOnly = clientId.split("-")[0];
+      const r4 = await axios.post("https://api-t1.fyers.in/api/v3/token", {
+          fyers_id: userId,
+          app_id: appIdOnly,
+          redirect_uri: redirectUri,
+          appType: "100",
+          code_challenge: "",
+          state: "None",
+          scope: "",
+          nonce: "",
+          response_type: "code",
+          create_cookie: true
       }, {
         headers: {
-          'Authorization': `Bearer ${webToken}`
+          ...headers,
+          "Authorization": `Bearer ${fyersInternalToken}`
         }
       });
 
-      if (authCodeResponse.data.s !== "ok") {
-        throw new Error(`Step 4 Failed: ${authCodeResponse.data.message || "Unknown error"}`);
+      if (r4.data.s !== "ok") {
+        throw new Error(`Step 4 Failed: ${JSON.stringify(r4.data)}`);
       }
-      const authCode = authCodeResponse.data.data.authorization_code;
 
-      // Step 5: Exchange auth_code for Access Token
+      const redirectUrl = r4.data.Url;
+      const urlObj = new URL(redirectUrl);
+      const authCode = urlObj.searchParams.get("auth_code");
+
+      if (!authCode) {
+        throw new Error(`Step 4 Failed: Auth code not found in redirect URL: ${redirectUrl}`);
+      }
+
+      // Step 5: exchange auth_code for Access Token (Validation)
+      console.log("[AutoLogin] Step 5: validate_authcode");
       const appIdHash = crypto.createHash('sha256').update(`${clientId}:${secretKey}`).digest('hex');
-      const tokenResponse = await axios.post('https://api-t1.fyers.in/api/v3/validate-authcode', {
+      const r5 = await axios.post('https://api-t1.fyers.in/api/v3/validate-authcode', {
         grant_type: 'authorization_code',
         appIdHash: appIdHash,
         code: authCode
       });
 
-      if (tokenResponse.data.s !== "ok") {
-        throw new Error(`Step 5 Failed: ${tokenResponse.data.message || "Unknown error"}`);
+      if (r5.data.s !== "ok") {
+        throw new Error(`Step 5 Failed: ${JSON.stringify(r5.data)}`);
       }
 
-      const finalAccessToken = tokenResponse.data.access_token;
-      console.log("[AutoLogin] Access token generated successfully!");
+      const finalAccessToken = r5.data.access_token;
+      console.log("[AutoLogin] Success! Access token generated.");
       
-      // Cache it in env for the proxy to use
       process.env.FYERS_ACCESS_TOKEN = finalAccessToken;
       return finalAccessToken;
 
     } catch (error: any) {
-      console.error("[AutoLogin] Failed with error:", error.response?.data || error.message);
+      const respData = error.response?.data || error.message;
+      console.error("[AutoLogin] Failed:", respData);
       return null;
     } finally {
       loginPromise = null;
@@ -338,8 +364,8 @@ async function startServer() {
 
   app.get("/api/auth/fyers/callback", async (req, res) => {
     const { auth_code } = req.query;
-    const clientId = process.env.FYERS_CLIENT_ID;
-    const secretId = process.env.FYERS_SECRET_KEY;
+    const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
+    const secretId = process.env.FYERS_SECRET_KEY || process.env.FYERS_SECRET_ID;
 
     if (!auth_code) return res.status(400).send("No auth code provided");
 
