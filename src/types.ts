@@ -38,6 +38,7 @@ export interface StockData {
   marketRegime: MarketRegime;
   trend: Trend;
   rsi: number;
+  lotSize?: number;
 }
 
 export interface OptionChainData {

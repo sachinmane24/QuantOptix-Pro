@@ -19,7 +19,7 @@ import {
 import { cn, formatCurrency, formatNumber } from './lib/utils';
 import { 
   getLiveStockData, getMarketOverview, getOptionChain, fetchLiveMarketData,
-  initializeMarketWebSocket, socket
+  initializeMarketWebSocket, socket, getActiveInstitutionalUniverse, getRecommendedStrike
 } from './services/nseService';
 import { analyzeTradeProbability, generateRecommendation } from './services/aiAnalysisService';
 import { 
@@ -103,6 +103,7 @@ export default function App() {
   const [isSendingTelegram, setIsSendingTelegram] = useState(false);
   const [scannerSignals, setScannerSignals] = useState<any[]>([]);
   const [sectorStrengths, setSectorStrengths] = useState<any[]>([]);
+  const [activeUniverse, setActiveUniverse] = useState<string[]>([]);
 
   const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(false);
   const [manualAuthCode, setManualAuthCode] = useState('');
@@ -110,6 +111,10 @@ export default function App() {
   const [showManualCodeInput, setShowManualCodeInput] = useState(false);
 
   const loadMarketData = async () => {
+    // Refresh Active Institutional Universe
+    const uni = await getActiveInstitutionalUniverse();
+    setActiveUniverse(uni);
+
     const realData = await fetchLiveMarketData();
     let currentStocks: StockData[] = [];
     
@@ -436,7 +441,11 @@ export default function App() {
     const entry = rec.entryPrice;
     const sl = rec.stopLoss;
     const stopLossPoints = Math.abs(entry - sl);
-    const qty = Math.floor(riskAmount / (stopLossPoints || 1));
+    
+    // lotSize based position sizing
+    const lotSize = stock.lotSize || 1;
+    let qty = Math.floor(riskAmount / (stopLossPoints || 1));
+    qty = Math.max(lotSize, Math.floor(qty / lotSize) * lotSize); // Round to nearest lot size
 
     if (qty <= 0) return;
 
@@ -754,50 +763,63 @@ export default function App() {
                   <div className="space-y-6">
                     <div className="flex justify-between items-center">
                       <h2 className="text-sm font-bold uppercase tracking-[0.2em] flex items-center gap-3">
-                        <div className="w-2 h-2 bg-neon-green"></div>
-                        High Probability Alpha Opportunities (NSE F&O)
+                        <div className="w-2 h-2 bg-neon-green shadow-green"></div>
+                        Institutional High Probability Alpha (Top Movers)
                       </h2>
                       <div className="flex bg-tech-surface border border-tech-border p-1">
-                        <button className="px-5 py-1 text-[10px] font-bold uppercase tracking-tighter bg-neon-green text-black">CE BUYING</button>
-                        <button className="px-5 py-1 text-[10px] font-bold uppercase tracking-tighter text-neutral-500">PE BUYING</button>
+                        <button className="px-5 py-1 text-[10px] font-bold uppercase tracking-tighter bg-neon-green text-black">TOP_SCAN</button>
+                        <div className="px-5 py-1 text-[10px] font-bold uppercase tracking-tighter text-neutral-500 font-mono">Refresh: 30m</div>
                       </div>
                     </div>
 
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                      {stocks.filter(s => s.trend === Trend.BULLISH && s.relVolume > 1.5).slice(0, 2).map(s => (
-                        <div key={s.symbol} className="bg-tech-surface border border-tech-border p-6 relative overflow-hidden group cursor-pointer hover:border-neon-green/50 transition-colors" onClick={() => handleStockSelect(s)}>
-                          <div className="absolute top-0 right-0 p-4 opacity-5 font-black text-6xl italic uppercase pointer-events-none group-hover:opacity-10 transition-opacity">CE BUY</div>
-                          <div className="flex justify-between items-start mb-6">
+                      {stocks.filter(s => activeUniverse.includes(s.symbol)).slice(0, 4).map(s => (
+                        <div key={s.symbol} className="bg-tech-surface border border-tech-border p-5 relative overflow-hidden group cursor-pointer hover:border-neon-green/50 transition-colors" onClick={() => handleStockSelect(s)}>
+                          <div className={cn(
+                            "absolute top-0 right-0 p-4 opacity-5 font-black text-6xl italic uppercase pointer-events-none group-hover:opacity-10 transition-opacity",
+                            s.pChange > 0 ? "text-neon-green" : "text-neon-red"
+                          )}>{s.pChange > 0 ? 'CE BUY' : 'PE BUY'}</div>
+                          <div className="flex justify-between items-start mb-4">
                             <div>
-                              <h1 className="text-3xl font-black leading-none tracking-tighter text-white">{s.symbol}</h1>
-                              <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest">Sector: {s.sector}</span>
+                              <h1 className="text-2xl font-black leading-none tracking-tighter text-white">{s.symbol}</h1>
+                              <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">{s.sector} | LOT: {s.lotSize}</span>
                             </div>
                             <div className="text-right">
-                              <div className="text-neon-green text-2xl font-mono font-black glow-green">BUY CE</div>
-                              <div className="text-[10px] font-mono text-neutral-400 mt-1 uppercase tracking-widest">Strike: {Math.round(s.lastPrice/50)*50} | EXP: 28 MAR</div>
+                              <div className={cn("text-xl font-mono font-black", s.pChange > 0 ? "text-neon-green glow-green" : "text-neon-red glow-red")}>
+                                {s.pChange > 0 ? "BUY CE" : "BUY PE"}
+                              </div>
+                              <div className="text-[9px] font-mono text-neutral-400 mt-1 uppercase tracking-widest">
+                                Strike: {getRecommendedStrike(s.lastPrice, s.pChange > 0 ? 'CE' : 'PUT')}
+                              </div>
                             </div>
                           </div>
                           
-                          <div className="grid grid-cols-4 gap-2 mb-6">
+                          <div className="grid grid-cols-4 gap-2 mb-4">
                             {[
-                              { label: 'Prob Score', val: `${(85 + Math.random() * 10).toFixed(1)}%`, highlight: true },
-                              { label: 'IV Percentile', val: (20 + Math.random() * 30).toFixed(1) },
-                              { label: 'Delta (Tgt)', val: '0.58' },
-                              { label: 'Mtm Strength', val: 'HIGH' },
+                              { label: 'Strength', val: `${(80 + Math.abs(s.pChange) * 2).toFixed(1)}%`, highlight: true },
+                              { label: 'Vol Flow', val: s.relVolume.toFixed(2) + 'x' },
+                              { label: 'Trend', val: s.trend },
+                              { label: 'RSI(14)', val: s.rsi.toFixed(0) },
                             ].map((stat, i) => (
-                              <div key={i} className="bg-tech-bg p-2.5 border border-tech-border">
+                              <div key={i} className="bg-tech-bg p-2 border border-tech-border">
                                 <div className="text-[8px] text-neutral-500 uppercase font-mono tracking-widest mb-1">{stat.label}</div>
-                                <div className={cn("text-sm font-bold", stat.highlight ? "text-neon-green glow-green" : "text-white")}>{stat.val}</div>
+                                <div className={cn("text-xs font-bold", stat.highlight ? (s.pChange > 0 ? "text-neon-green" : "text-neon-red") : "text-white")}>{stat.val}</div>
                               </div>
                             ))}
                           </div>
 
-                          <div className="flex justify-between items-center bg-neon-green/5 border border-neon-green/20 p-3">
-                            <span className="text-[10px] font-bold text-neon-green font-mono uppercase tracking-widest">
-                              Entry: {(s.lastPrice * 0.02).toFixed(2)} | SL: {(s.lastPrice * 0.015).toFixed(2)} | TGT: {(s.lastPrice * 0.03).toFixed(2)}
+                          <div className={cn(
+                            "flex justify-between items-center p-2.5 border",
+                            s.pChange > 0 ? "bg-neon-green/5 border-neon-green/20" : "bg-neon-red/5 border-neon-red/20"
+                          )}>
+                            <span className={cn("text-[9px] font-bold font-mono uppercase tracking-widest", s.pChange > 0 ? "text-neon-green" : "text-neon-red")}>
+                              Pulse: {s.pChange.toFixed(2)}% | OI: {s.oiChange.toFixed(1)}%
                             </span>
-                            <span className="text-[10px] font-bold text-neon-green px-2 py-0.5 border border-neon-green/50 bg-neon-green/10 uppercase tracking-tighter">
-                              Active Breakout
+                            <span className={cn(
+                              "text-[9px] font-bold px-2 py-0.5 border uppercase tracking-tighter",
+                              s.pChange > 0 ? "text-neon-green border-neon-green/50 bg-neon-green/10" : "text-neon-red border-neon-red/50 bg-neon-red/10"
+                            )}>
+                              {s.marketRegime}
                             </span>
                           </div>
                         </div>

@@ -5,13 +5,9 @@
 
 import { StockData, MarketRegime, Trend, OptionChainData } from '../types';
 import { io, Socket } from 'socket.io-client';
+import { FNO_DATA, FNO_SYMBOLS } from './fnoData';
 
-export const FNO_STOCKS = [
-  'RELIANCE', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'INFY', 'TCS', 'AXISBANK', 'KOTAKBANK',
-  'TATAMOTORS', 'LT', 'BEL', 'HAL', 'TRENT', 'ADANIENT', 'ADANIPORTS', 'COFORGE',
-  'CHOLAFIN', 'BAJFINANCE', 'BHARTIARTL', 'SUNPHARMA', 'HINDUNILVR',
-  'ITC', 'TITAN', 'ASIANPAINT', 'ULTRACEMCO'
-];
+export const FNO_STOCKS = FNO_SYMBOLS;
 
 export const SECTORS = [
   'Banking', 'IT', 'Auto', 'Pharma', 'PSU', 'Energy', 'Realty', 'Metals', 'Capital Goods'
@@ -21,7 +17,8 @@ const mockHistoricalData: Record<string, any[]> = {};
 
 // Simulate live data
 export function getLiveStockData(): StockData[] {
-  return FNO_STOCKS.map(symbol => {
+  return FNO_STOCKS.slice(0, 100).map(symbol => {
+    const info = FNO_DATA[symbol];
     const lastPrice = 500 + Math.random() * 5000;
     const pChange = (Math.random() * 6) - 3;
     const oiChange = (Math.random() * 20) - 10;
@@ -51,7 +48,8 @@ export function getLiveStockData(): StockData[] {
       relativeStrength: (Math.random() * 4) - 2,
       marketRegime: regime,
       trend,
-      rsi: 30 + Math.random() * 40
+      rsi: 30 + Math.random() * 40,
+      lotSize: info?.lotSize || 1
     };
   });
 }
@@ -95,6 +93,74 @@ export function getOptionChain(symbol: string, currentPrice: number): OptionChai
 }
 
 let dynamicMarketOverview: any = null;
+
+/**
+ * Institutional Strike Selection Logic
+ * Picks ATM or slightly OTM strike based on delta (approximate)
+ */
+export function getRecommendedStrike(price: number, type: 'CE' | 'PUT', mode: 'AGGRESSIVE' | 'CONSERVATIVE' = 'CONSERVATIVE') {
+  const strikeInterval = price > 5000 ? 100 : (price > 1000 ? 50 : (price > 500 ? 20 : 10));
+  const atm = Math.round(price / strikeInterval) * strikeInterval;
+  
+  if (type === 'CE') {
+    return mode === 'CONSERVATIVE' ? atm : atm + strikeInterval;
+  } else {
+    return mode === 'CONSERVATIVE' ? atm : atm - strikeInterval;
+  }
+}
+
+let activeUniverseSymbols: string[] = [];
+let lastUniverseRefresh = 0;
+
+/**
+ * Institutional Scanner Logic:
+ * Prioritizes top 5 gainers and losers to stay within API limits
+ */
+export async function getActiveInstitutionalUniverse(): Promise<string[]> {
+  const now = Date.now();
+  // Refresh every 30 mins
+  if (activeUniverseSymbols.length > 0 && (now - lastUniverseRefresh < 30 * 60 * 1000)) {
+    return activeUniverseSymbols;
+  }
+
+  try {
+    // Fetch quotes for all F&O stocks (chunked)
+    const allQuotes: StockData[] = [];
+    const chunks = [];
+    for (let i = 0; i < FNO_STOCKS.length; i += 50) {
+      chunks.push(FNO_STOCKS.slice(i, i + 50));
+    }
+
+    for (const chunk of chunks) {
+      const symbols = chunk.map(s => `NSE:${s}-EQ`).join(',');
+      const response = await fetch(`/api/market/quotes?symbols=${symbols}`);
+      const data = await response.json();
+      if (data.d && Array.isArray(data.d)) {
+        data.d.forEach((item: any) => {
+          if (item.n.includes('-EQ')) {
+            const sym = item.n.split(':')[1].split('-')[0];
+            allQuotes.push({ symbol: sym, pChange: item.v.chp } as any);
+          }
+        });
+      }
+    }
+
+    if (allQuotes.length === 0) return activeUniverseSymbols.length > 0 ? activeUniverseSymbols : FNO_STOCKS.slice(0, 10);
+
+    const sorted = [...allQuotes].sort((a, b) => b.pChange - a.pChange);
+    const top5Gainers = sorted.slice(0, 5).map(s => s.symbol);
+    const top5Losers = sorted.slice(-5).map(s => s.symbol);
+    
+    activeUniverseSymbols = [...new Set([...top5Gainers, ...top5Losers])];
+    lastUniverseRefresh = now;
+    
+    console.log('[Institutional Scanner] Universe Refreshed:', activeUniverseSymbols);
+    return activeUniverseSymbols;
+  } catch (error) {
+    console.error('Universe Scan Failed:', error);
+    return activeUniverseSymbols.length > 0 ? activeUniverseSymbols : FNO_STOCKS.slice(0, 10);
+  }
+}
 
 export async function fetchLiveMarketData(): Promise<StockData[] | null> {
   try {
@@ -171,7 +237,8 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
             relativeStrength: (pChange - (nifty?.v?.chp || 0)),
             marketRegime: Math.abs(pChange) > 2 ? MarketRegime.BREAKOUT : MarketRegime.SIDEWAYS,
             trend: pChange > 0 ? Trend.BULLISH : Trend.BEARISH,
-            rsi: 40 + (pChange * 2)
+            rsi: 40 + (pChange * 2),
+            lotSize: FNO_DATA[symbol]?.lotSize || 1
           };
         });
     }
