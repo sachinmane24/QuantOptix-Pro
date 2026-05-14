@@ -10,12 +10,14 @@ import crypto from "crypto";
 import { authenticator } from "otplib";
 // @ts-ignore
 import fyers from "fyers-api-v3";
-import { ScannerService } from "./src/services/scannerService.ts";
+import { ScannerService, TradeSignal } from "./src/services/scannerService.ts";
+import { PaperTradingService } from "./src/services/paperTradingService.ts";
 
 dotenv.config();
 
 let loginPromise: Promise<string | null> | null = null;
 let scannerService: ScannerService | null = null;
+let tradingService: PaperTradingService | null = null;
 
 /**
  * Automates the login flow for Fyers V3 using TOTP and PIN.
@@ -136,6 +138,14 @@ async function startServer() {
   });
 
   scannerService = new ScannerService(io);
+  tradingService = new PaperTradingService(io);
+
+  scannerService.onSignal = (signal) => {
+    if (tradingService) {
+      tradingService.handleSignal(signal);
+    }
+  };
+
   const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
@@ -338,15 +348,20 @@ async function startServer() {
         // Broadcast to all connected socket.io clients
         io.emit("market-update", message);
 
-        // Pipe to scanner
-        if (scannerService && message.symbol && message.ltp) {
-          scannerService.handleTick(
-            message.symbol, 
-            message.ltp, 
-            message.high_price || message.ltp, 
-            message.low_price || message.ltp, 
-            message.v || message.vol_traded_today || 0
-          );
+        // Pipe to scanner and trading engine
+        if (message.symbol && message.ltp) {
+          if (scannerService) {
+            scannerService.handleTick(
+              message.symbol, 
+              message.ltp, 
+              message.high_price || message.ltp, 
+              message.low_price || message.ltp, 
+              message.v || message.vol_traded_today || 0
+            );
+          }
+          if (tradingService) {
+            tradingService.updatePnL(message.symbol, message.ltp);
+          }
         }
       });
 
@@ -374,6 +389,19 @@ async function startServer() {
 
   io.on("connection", (socket) => {
     console.log("[Socket.io] Client connected:", socket.id);
+    
+    // Send initial status
+    if (tradingService) {
+      socket.emit("paper-portfolio-update", tradingService.getStatus());
+    }
+
+    socket.on("toggle-auto-trade", (enabled: boolean) => {
+      if (tradingService) {
+        tradingService.setAutoTrade(enabled);
+        io.emit("auto-trade-status", enabled);
+      }
+    });
+
     socket.on("disconnect", () => {
       console.log("[Socket.io] Client disconnected:", socket.id);
     });

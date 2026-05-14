@@ -19,7 +19,7 @@ import {
 import { cn, formatCurrency, formatNumber } from './lib/utils';
 import { 
   getLiveStockData, getMarketOverview, getOptionChain, fetchLiveMarketData,
-  initializeMarketWebSocket
+  initializeMarketWebSocket, socket
 } from './services/nseService';
 import { analyzeTradeProbability, generateRecommendation } from './services/aiAnalysisService';
 import { 
@@ -159,6 +159,26 @@ export default function App() {
           // Keep only last 10 signals
           return [newSignal, ...prev].slice(0, 10);
         });
+      },
+      (portfolioUpdate) => {
+        if (portfolioUpdate.positions) {
+          setPositions(portfolioUpdate.positions.map((p: any) => ({
+            id: p.symbol,
+            symbol: p.symbol,
+            type: p.type === 'LONG' ? 'BUY' : 'SELL',
+            entry: p.entryPrice,
+            qty: p.qty,
+            pnl: p.pnl,
+            status: 'OPEN',
+            timestamp: { toDate: () => new Date(p.timestamp) }
+          })));
+        }
+        if (portfolioUpdate.balance !== undefined) {
+           setPortfolio((prev: any) => ({ ...prev, balance: portfolioUpdate.balance }));
+        }
+      },
+      (autoTradeStatus) => {
+        setIsAutoTrading(autoTradeStatus);
       }
     );
 
@@ -497,7 +517,11 @@ export default function App() {
             <div className="bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono flex items-center gap-3">
               <span className="text-neutral-500 uppercase tracking-widest text-[9px]">Auto-Bot:</span>
               <button 
-                onClick={() => !riskSettings?.killSwitch && setIsAutoTrading(!isAutoTrading)}
+                onClick={() => {
+                  if (!riskSettings?.killSwitch && socket) {
+                    socket.emit('toggle-auto-trade', !isAutoTrading);
+                  }
+                }}
                 disabled={riskSettings?.killSwitch}
                 className={cn(
                   "px-3 py-0.5 font-black uppercase tracking-tighter transition-all text-[9px]",

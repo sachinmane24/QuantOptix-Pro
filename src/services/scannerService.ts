@@ -36,6 +36,7 @@ export class ScannerService {
   private states: Map<string, SymbolState> = new Map();
   private io: Server;
   private isRunning: boolean = false;
+  public onSignal?: (signal: TradeSignal) => void;
 
   constructor(io: Server) {
     this.io = io;
@@ -233,5 +234,8 @@ export class ScannerService {
   private notifySignal(signal: TradeSignal) {
     console.log(`[Scanner] SIGNAL DETECTED: ${signal.symbol} - ${signal.type}`);
     this.io.emit("trade-signal", signal);
+    if (this.onSignal) {
+      this.onSignal(signal);
+    }
   }
 }

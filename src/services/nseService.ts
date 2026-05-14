@@ -194,12 +194,14 @@ export function getMarketOverview() {
   };
 }
 
-let socket: Socket | null = null;
+export let socket: Socket | null = null;
 
 export function initializeMarketWebSocket(
   onStocksUpdate: (stocks: StockData[]) => void, 
   onMarketUpdate: (market: any) => void,
-  onTradeSignal?: (signal: any) => void
+  onTradeSignal?: (signal: any) => void,
+  onPaperPortfolioUpdate?: (update: any) => void,
+  onAutoTradeStatus?: (enabled: boolean) => void
 ) {
   if (socket) return;
   
@@ -207,8 +209,19 @@ export function initializeMarketWebSocket(
 
   if (onTradeSignal) {
     socket.on('trade-signal', (signal: any) => {
-      console.log('[Scanner] New Trade Signal:', signal);
       onTradeSignal(signal);
+    });
+  }
+
+  if (onPaperPortfolioUpdate) {
+    socket.on('paper-portfolio-update', (update: any) => {
+      onPaperPortfolioUpdate(update);
+    });
+  }
+
+  if (onAutoTradeStatus) {
+    socket.on('auto-trade-status', (enabled: boolean) => {
+      onAutoTradeStatus(enabled);
     });
   }
   
