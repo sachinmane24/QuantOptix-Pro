@@ -103,8 +103,17 @@ export default function App() {
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [tradeLogs, setTradeLogs] = useState<string[]>([]);
-  const [riskSettings, setRiskSettings] = useState<RiskSettings | null>(null);
-  const [editingSettings, setEditingSettings] = useState<RiskSettings | null>(null);
+  const DEFAULT_SETTINGS: RiskSettings = {
+    userId: GUEST_USER.uid,
+    maxCapital: 1000000,
+    maxTradesPerDay: 20,
+    maxLossPerDay: 20000,
+    riskPerTrade: 1,
+    killSwitch: false
+  };
+
+  const [riskSettings, setRiskSettings] = useState<RiskSettings>(DEFAULT_SETTINGS);
+  const [editingSettings, setEditingSettings] = useState<RiskSettings | null>(DEFAULT_SETTINGS);
   const [dailyPnL, setDailyPnL] = useState(0);
   const [realizedPnL, setRealizedPnL] = useState(0);
   const [unrealizedPnL, setUnrealizedPnL] = useState(0);
@@ -441,6 +450,7 @@ export default function App() {
 
     // Sync Settings
     const unsubSettings = onSnapshot(doc(db, 'settings', user.uid), (snap) => {
+      console.log(`[SETTINGS_SYNC] Snapshot for ${user.uid} exists:`, snap.exists());
       if (snap.exists()) {
         const data = snap.data() as RiskSettings;
         // Ensure all fields exist
@@ -1738,9 +1748,9 @@ export default function App() {
                                        <span className="text-neutral-600 mr-2">[USE: {cfg.isCurrency ? formatCurrency(cfg.current) : cfg.current}]</span>
                                      )}
                                      <span className="text-white font-bold text-xs">
-                                        {cfg.isCurrency ? formatCurrency((editingSettings?.[cfg.key as keyof RiskSettings] as number) || 0) : 
-                                         cfg.isPercent ? `${editingSettings?.[cfg.key as keyof RiskSettings] ?? 1}%` : 
-                                         editingSettings?.[cfg.key as keyof RiskSettings] ?? 0}
+                                        {cfg.isCurrency ? formatCurrency((editingSettings?.[cfg.key as keyof RiskSettings] as number) ?? (riskSettings?.[cfg.key as keyof RiskSettings] as number) ?? 0) : 
+                                         cfg.isPercent ? `${editingSettings?.[cfg.key as keyof RiskSettings] ?? riskSettings?.[cfg.key as keyof RiskSettings] ?? 1}%` : 
+                                         editingSettings?.[cfg.key as keyof RiskSettings] ?? riskSettings?.[cfg.key as keyof RiskSettings] ?? 0}
                                      </span>
                                   </div>
                                </div>
@@ -1750,7 +1760,7 @@ export default function App() {
                                   max={cfg.max}
                                   step={cfg.step}
                                   disabled={riskSettings?.killSwitch}
-                                  value={editingSettings?.[cfg.key as keyof RiskSettings] as number || cfg.min}
+                                  value={editingSettings?.[cfg.key as keyof RiskSettings] as number ?? riskSettings?.[cfg.key as keyof RiskSettings] as number ?? cfg.min}
                                   onChange={(e) => {
                                    const val = parseFloat(e.target.value);
                                    setEditingSettings(prev => {
