@@ -151,10 +151,10 @@ export async function getActiveInstitutionalUniverse(): Promise<string[]> {
     if (allQuotes.length === 0) return activeUniverseSymbols.length > 0 ? activeUniverseSymbols : FNO_STOCKS.slice(0, 10);
 
     const sorted = [...allQuotes].sort((a, b) => b.pChange - a.pChange);
-    const top10Gainers = sorted.slice(0, 10).map(s => s.symbol);
-    const top10Losers = sorted.slice(-10).map(s => s.symbol);
+    const top20Gainers = sorted.slice(0, 20).map(s => s.symbol);
+    const top20Losers = sorted.slice(-20).map(s => s.symbol);
     
-    activeUniverseSymbols = [...new Set([...top10Gainers, ...top10Losers])];
+    activeUniverseSymbols = [...new Set([...top20Gainers, ...top20Losers])];
     lastUniverseRefresh = now;
     
     console.log('[Institutional Scanner] Universe Refreshed:', activeUniverseSymbols);

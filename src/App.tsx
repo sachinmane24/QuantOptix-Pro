@@ -262,6 +262,24 @@ export default function App() {
     }
   };
 
+  // Live re-evaluation for selected stock when data updates
+  useEffect(() => {
+    if (!isAutoTrading || !selectedStock || !aiAnalysis || !recommendation) return;
+    
+    // Check if the current probability (shown in UI) meets the auto-trade threshold
+    if (aiAnalysis.winProbability >= 80 && !positions.find(p => p.symbol === selectedStock.symbol)) {
+      const lastCheckKey = `last_trade_check_${selectedStock.symbol}`;
+      const lastCheck = (window as any)[lastCheckKey] || 0;
+      
+      // Throttle re-checks to once every 10s to avoid spam
+      if (Date.now() - lastCheck > 10000) {
+        (window as any)[lastCheckKey] = Date.now();
+        addLog(selectedStock.symbol, 'UI_WATCH_MATCH', 'SUCCESS', `Focused asset probability hit ${aiAnalysis.winProbability}%. Auto-triggering...`);
+        executeTrade(selectedStock, recommendation, aiAnalysis);
+      }
+    }
+  }, [stocks, aiAnalysis, isAutoTrading, selectedStock]);
+
   // NSE / Fyers Data flow
   useEffect(() => {
     const checkServer = async () => {
@@ -500,11 +518,19 @@ export default function App() {
   };
 
   const executeTrade = async (stock: StockData, rec: TradeRecommendation, analysis: AIProbabilityModel) => {
-    if (!user || !portfolio || !riskSettings) return;
+    if (!user) {
+      addLog(stock.symbol, 'AUTH_BLOCK', 'WARNING', 'Institutional trade requires authenticated session. Sign in to execute.');
+      return;
+    }
+
+    if (!portfolio || !riskSettings) {
+      addLog(stock.symbol, 'DATA_BLOCK', 'ERROR', 'Quantum data sync pending. Wait for institutional profile load.');
+      return;
+    }
 
     // Reject if Kill Switch is active
     if (riskSettings.killSwitch) {
-       addLog(stock.symbol, 'RISK_BLOCK', 'ERROR', 'Global Kill Switch is ACTIVE. Halted.');
+       addLog(stock.symbol, 'RISK_BLOCK', 'ERROR', 'Global Kill Switch is ACTIVE. Trade halted.');
        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Global Kill Switch is ACTIVE`, ...prev]);
        return;
     }
@@ -517,29 +543,29 @@ export default function App() {
     }).length;
 
     if (tradesToday >= riskSettings.maxTradesPerDay) {
-       addLog(stock.symbol, 'RISK_BLOCK', 'WARNING', `Daily limit reached (${riskSettings.maxTradesPerDay}).`);
+       addLog(stock.symbol, 'RISK_BLOCK', 'WARNING', `Daily trade limit reached (${riskSettings.maxTradesPerDay}/${riskSettings.maxTradesPerDay}).`);
        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Max daily trades (${riskSettings.maxTradesPerDay}) reached`, ...prev]);
        return;
     }
 
     // Check Max Capital
-    const estimatedMargin = positions.reduce((acc, p) => acc + (p.entry * p.qty), 0);
-    if (estimatedMargin >= riskSettings.maxCapital) {
-       addLog(stock.symbol, 'RISK_BLOCK', 'WARNING', 'Max capital allocation reached.');
+    const currentAllocation = positions.reduce((acc, p) => acc + (p.entry * p.qty), 0);
+    if (currentAllocation >= riskSettings.maxCapital) {
+       addLog(stock.symbol, 'RISK_BLOCK', 'WARNING', `Capital limit exceeded. Current: ${formatCurrency(currentAllocation)} | Limit: ${formatCurrency(riskSettings.maxCapital)}`);
        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Max capital allocation reached`, ...prev]);
        return;
     }
 
     // Check Max Loss Per Day (Drawdown)
     if (dailyPnL <= -riskSettings.maxLossPerDay) {
-       addLog(stock.symbol, 'RISK_BLOCK', 'ERROR', 'Daily drawdown limit hit.');
+       addLog(stock.symbol, 'RISK_BLOCK', 'ERROR', `Daily drawdown limit hit (${formatCurrency(dailyPnL)}).`);
        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Daily SL Limit (${formatCurrency(riskSettings.maxLossPerDay)}) hit`, ...prev]);
        return;
     }
 
     // Check if already in position
     if (positions.find(p => p.symbol === stock.symbol)) {
-      addLog(stock.symbol, 'SKIP', 'INFO', 'Position already open for this symbol.');
+      addLog(stock.symbol, 'SKIP', 'INFO', 'Position already open. Dual-entry prohibited by risk engine.');
       return;
     }
 
