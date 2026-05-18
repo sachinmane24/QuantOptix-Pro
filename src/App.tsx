@@ -764,7 +764,7 @@ export default function App() {
     addLog(stock.symbol, 'ORDER_INIT', 'INFO', `Order Prep: ${numLots} Lots (Lot Size: ${lotSize}, Total QTY: ${qty}). Estimated Margin: ${formatCurrency(marginRequired)}`);
 
     const newPosition = {
-      userId: user.uid,
+      userId: user?.uid || 'guest_institutional_trader',
       symbol: stock.symbol,
       fyersSymbol: rec.fyersSymbol || "UNKNOWN",
       type: rec.action,
@@ -839,7 +839,8 @@ export default function App() {
       });
 
       // Update Portfolio (Simplified)
-      const pRef = doc(db, 'portfolios', user!.uid);
+      const userId = user?.uid || 'guest_institutional_trader';
+      const pRef = doc(db, 'portfolios', userId);
       await updateDoc(pRef, {
         balance: ((portfolio?.balance) || 0) + pos.pnl,
         totalTrades: ((portfolio?.totalTrades) || 0) + 1,
@@ -1136,24 +1137,40 @@ export default function App() {
                       {stocks.filter(s => {
                         const isInUni = activeUniverse.includes(s.symbol);
                         const isDirectional = dashAlphaTab === 'CE' ? s.pChange > 0.5 : s.pChange < -0.5;
-                        return isInUni && isDirectional;
-                      }).slice(0, 4).map(s => (
-                        <div key={s.symbol} className="bg-tech-surface border border-tech-border p-5 relative overflow-hidden group cursor-pointer hover:border-neon-green/50 transition-colors" onClick={() => handleStockSelect(s)}>
+                        
+                        // Bearish Reversal Detection Logic:
+                        // Strong stocks (in top Movers) seeing a Pulse drop or RSI divergent
+                        const isBearishReversal = s.rsi > 70 && s.pulse < 0.3 && s.pChange > 1.0;
+                        
+                        return isInUni && (isDirectional || (dashAlphaTab === 'PE' && isBearishReversal));
+                      }).slice(0, 4).map(s => {
+    const isReversal = s.rsi > 70 && s.pulse < 0.3 && s.pChange > 1.0 && dashAlphaTab === 'PE';
+                        const isPE = dashAlphaTab === 'PE' || s.pChange < 0;
+                        return (
+                        <div key={s.symbol} className={cn(
+                          "bg-tech-surface border p-5 relative overflow-hidden group cursor-pointer transition-colors",
+                          isReversal ? "border-amber-500/50 hover:border-amber-500" : "border-tech-border hover:border-neon-green/50"
+                        )} onClick={() => handleStockSelect(s)}>
+                          {isReversal && (
+                            <div className="absolute top-0 left-0 bg-amber-500 text-black text-[8px] font-bold px-2 py-0.5 z-10">
+                              REVERSAL_SIGNAL
+                            </div>
+                          )}
                           <div className={cn(
                             "absolute top-0 right-0 p-4 opacity-5 font-black text-6xl italic uppercase pointer-events-none group-hover:opacity-10 transition-opacity",
-                            s.pChange > 0 ? "text-neon-green" : "text-neon-red"
-                          )}>{s.pChange > 0 ? 'CE BUY' : 'PE BUY'}</div>
+                            isPE ? "text-neon-red" : "text-neon-green"
+                          )}>{isPE ? 'PE BUY' : 'CE BUY'}</div>
                           <div className="flex justify-between items-start mb-4">
                             <div>
                               <h1 className="text-2xl font-black leading-none tracking-tighter text-white">{s.symbol}</h1>
                               <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">{s.sector} | LOT: {s.lotSize}</span>
                             </div>
                             <div className="text-right">
-                              <div className={cn("text-xl font-mono font-black", s.pChange > 0 ? "text-neon-green glow-green" : "text-neon-red glow-red")}>
-                                {s.pChange > 0 ? "BUY CE" : "BUY PE"}
+                              <div className={cn("text-xl font-mono font-black", isPE ? "text-neon-red glow-red" : "text-neon-green glow-green")}>
+                                {isPE ? "BUY PE" : "BUY CE"}
                               </div>
                               <div className="text-[9px] font-mono text-neutral-400 mt-1 uppercase tracking-widest">
-                                Strike: {getRecommendedStrike(s.lastPrice, s.pChange > 0 ? 'CE' : 'PUT')}
+                                Strike: {getRecommendedStrike(s.lastPrice, isPE ? 'PUT' : 'CE')}
                               </div>
                             </div>
                           </div>
@@ -1187,9 +1204,10 @@ export default function App() {
                             </span>
                           </div>
                         </div>
-                      ))}
-                    </div>
+                      );
+                    })}
                   </div>
+                </div>
 
                   {/* Institutional Scanner Grid */}
                   <div className="space-y-4 flex-1 flex flex-col">
