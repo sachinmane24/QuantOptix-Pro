@@ -181,6 +181,7 @@ export function generateRecommendation(
 
   return {
     symbol: stock.symbol,
+    fyersSymbol: getFyersOptionSymbol(stock.symbol, bestContract.strike, bestContract.type),
     action,
     strike: bestContract.strike,
     expiry: 'Current Weekly',
@@ -195,4 +196,17 @@ export function generateRecommendation(
     positionSize: `${stock.lotSize || 1} Units (1 Lot)`,
     probability: aiModel.winProbability
   };
+}
+
+export function getFyersOptionSymbol(symbol: string, strike: number, type: 'CE' | 'PE' | 'PUT'): string {
+  // Format: SYMBOL{YY}{MMM}{STRIKE}{TYPE}
+  // Example: COFORGE26MAY1320CE
+  const now = new Date();
+  const year = now.getFullYear().toString().slice(-2);
+  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const month = months[now.getMonth()];
+  
+  const optionType = type === 'PUT' ? 'PE' : type;
+  
+  return `${symbol}${year}${month}${strike}${optionType}`;
 }

@@ -21,7 +21,7 @@ import {
   getLiveStockData, getMarketOverview, getOptionChain, fetchLiveMarketData,
   initializeMarketWebSocket, socket, getActiveInstitutionalUniverse, getRecommendedStrike
 } from './services/nseService';
-import { analyzeTradeProbability, generateRecommendation } from './services/aiAnalysisService';
+import { analyzeTradeProbability, generateRecommendation, getFyersOptionSymbol } from './services/aiAnalysisService';
 import { 
   sendTelegramNotification, formatTradeEntry, formatTradeExit, formatTestMessage
 } from './services/telegramService';
@@ -595,8 +595,13 @@ export default function App() {
   };
 
   const forceTradeDebug = async () => {
-    addLog('DEBUG', 'FORCE_START', 'INFO', 'Starting forced trade execution for first available asset...');
-    const targetStock = stocks.find(s => activeUniverse.includes(s.symbol)) || stocks[0];
+    addLog('DEBUG', 'FORCE_START', 'INFO', 'Starting forced trade execution for COFORGE...');
+    let targetStock = stocks.find(s => s.symbol === 'COFORGE');
+    
+    if (!targetStock) {
+      addLog('DEBUG', 'WARN', 'WARNING', 'COFORGE not in snapshot, using fallback for debug structure.');
+      targetStock = stocks[0];
+    }
     
     if (!targetStock) {
       addLog('DEBUG', 'ERR', 'ERROR', 'No stocks available in current snapshot.');
@@ -604,21 +609,33 @@ export default function App() {
     }
     
     const mockAnalysis: AIProbabilityModel = {
-      winProbability: 99,
-      expectedRR: 2,
-      regime: MarketRegime.BULLISH,
-      confidenceScore: 0.95,
-      factors: {
-        trendAlignment: "STRONG_BULL",
-        volumeValidation: "HIGH_ACCUMULATION",
-        volatilityContext: "EXPANDING"
-      }
+      winProbability: 95,
+      confidence: 'High',
+      momentumScore: 90,
+      institutionalActivityScore: 85,
+      breakoutQualityScore: 88,
+      riskScore: 2,
+      summary: "Manual Debug Execution triggered for COFORGE26MAY1320CE"
     };
     
-    const chain = getOptionChain(targetStock.symbol, targetStock.lastPrice);
-    const mockRec = generateRecommendation(targetStock, mockAnalysis, chain);
+    const fyersSymbol = getFyersOptionSymbol(targetStock.symbol, 1320, 'CE');
     
-    addLog('DEBUG', 'FORCING', 'INFO', `Executing mock trade for ${targetStock.symbol} ${mockRec.action}...`);
+    // Simulate the specific requested contract for internal logging/testing
+    const mockRec: TradeRecommendation = {
+      symbol: targetStock.symbol,
+      fyersSymbol: fyersSymbol,
+      action: OptionAction.BUY_CE,
+      strike: 1320,
+      expiry: '26MAY',
+      entryPrice: 45, // Symbolic entry
+      stopLoss: 30,
+      targets: [65, 85],
+      riskReward: 2.5,
+      positionSize: 'Standard',
+      probability: 95
+    };
+    
+    addLog('DEBUG', 'FORCING', 'INFO', `Executing debug trade for ${fyersSymbol}...`);
     executeTrade(targetStock, mockRec, mockAnalysis);
   };
   
@@ -711,7 +728,7 @@ export default function App() {
 
     tradingLock.current[lockKey] = true;
     
-    addLog(stock.symbol, 'PROTOCOL_V2', 'INFO', `Protocol engaged via ${user?.displayName || 'GUEST_CORE'}. Action: ${rec.action} @ ${formatCurrency(rec.entryPrice)}`);
+    addLog(stock.symbol, 'PROTOCOL_V2', 'INFO', `Protocol engaged via ${user?.displayName || 'GUEST_CORE'}. Action: ${rec.fyersSymbol || rec.action} @ ${formatCurrency(rec.entryPrice)}`);
 
     const riskPerTrade = riskSettings.riskPerTrade || 1;
     const riskAmount = (portfolio?.balance || 1000000) * (riskPerTrade / 100);
@@ -749,6 +766,7 @@ export default function App() {
     const newPosition = {
       userId: user.uid,
       symbol: stock.symbol,
+      fyersSymbol: rec.fyersSymbol || "UNKNOWN",
       type: rec.action,
       optionType: rec.action.includes('CE') ? 'CE' : 'PUT',
       strike: rec.strike,
@@ -766,8 +784,33 @@ export default function App() {
     try {
       await addDoc(collection(db, 'trades'), newPosition);
       addLog(stock.symbol, 'ORDER_SUCCESS', 'SUCCESS', `Order executed: ${newPosition.qty} units @ ${newPosition.entry}.`);
-      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER EXECUTED: ${stock.symbol} ${rec.action} @ ${rec.entryPrice} QTY: ${qty}`, ...prev]);
+      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER EXECUTED: ${rec.fyersSymbol || stock.symbol} ${rec.action} @ ${rec.entryPrice} QTY: ${qty}`, ...prev]);
       
+      // REAL ORDER EXECUTION ON FYERS (IF CONNECTED)
+      if (isFyersConnected && rec.fyersSymbol) {
+        addLog(stock.symbol, 'REAL_ORDER', 'INFO', `Attempting execution on FYERS for ${rec.fyersSymbol}...`);
+        try {
+          const resp = await fetch('/api/trade/place', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              symbol: rec.fyersSymbol,
+              qty: qty,
+              side: rec.action.includes('BUY') ? 'BUY' : 'SELL',
+              price: entry
+            })
+          });
+          const data = await resp.json();
+          if (data.success) {
+            addLog(stock.symbol, 'FYERS_API', 'SUCCESS', `FYERS Order ${data.orderId} confirmed.`);
+          } else {
+            addLog(stock.symbol, 'FYERS_ERR', 'ERROR', `FYERS rejected: ${data.message}`);
+          }
+        } catch (e: any) {
+          addLog(stock.symbol, 'FYERS_API_FAIL', 'ERROR', `Network error during FYERS sync: ${e.message}`);
+        }
+      }
+
       // Notify Telegram
       sendTelegramNotification(formatTradeEntry(newPosition));
     } catch (err: any) {
@@ -1094,7 +1137,7 @@ export default function App() {
                         const isInUni = activeUniverse.includes(s.symbol);
                         const isDirectional = dashAlphaTab === 'CE' ? s.pChange > 0.5 : s.pChange < -0.5;
                         return isInUni && isDirectional;
-                      }).slice(0, 8).map(s => (
+                      }).slice(0, 4).map(s => (
                         <div key={s.symbol} className="bg-tech-surface border border-tech-border p-5 relative overflow-hidden group cursor-pointer hover:border-neon-green/50 transition-colors" onClick={() => handleStockSelect(s)}>
                           <div className={cn(
                             "absolute top-0 right-0 p-4 opacity-5 font-black text-6xl italic uppercase pointer-events-none group-hover:opacity-10 transition-opacity",

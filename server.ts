@@ -530,6 +530,56 @@ async function startServer() {
     }
   });
 
+  // ORDER PLACEMENT ENDPOINT
+  app.post("/api/trade/place", async (req, res) => {
+    const { symbol, qty, type, side, price } = req.body;
+    let token = process.env.FYERS_ACCESS_TOKEN;
+    const clientId = process.env.FYERS_CLIENT_ID;
+
+    if (!token || !clientId) {
+      return res.status(401).json({ success: false, message: "Fyers not connected" });
+    }
+
+    try {
+      // Logic for Fyers V3 order placement
+      // We use 'NSE:' prefix if not present for options
+      const fullSymbol = symbol.startsWith('NSE:') ? symbol : `NSE:${symbol}`;
+      
+      console.log(`[Order] Placing ${side} order for ${fullSymbol} Qty: ${qty}`);
+      
+      const orderData = {
+        symbol: fullSymbol,
+        qty: qty,
+        type: type || 2, // 2 = Market Order
+        side: side === "BUY" ? 1 : -1,
+        productType: "MARGIN",
+        limitPrice: price || 0,
+        stopPrice: 0,
+        validity: "DAY",
+        disclosedQty: 0,
+        offlineOrder: "False",
+        stopLoss: 0,
+        takeProfit: 0
+      };
+
+      const authHeader = token.includes(":") ? token : `${clientId}:${token}`;
+      
+      const response = await axios.post("https://api-t1.fyers.in/api/v3/orders/sync", orderData, {
+        headers: { 'Authorization': authHeader }
+      });
+
+      if (response.data.s === "ok") {
+        res.json({ success: true, orderId: response.data.id, message: "Order placed successfully on FYERS" });
+      } else {
+        res.status(400).json({ success: false, message: response.data.message || "Fyers rejected order", details: response.data });
+      }
+    } catch (error: any) {
+      const err = error.response?.data?.message || error.message;
+      console.error("[Order Error] Failed to place order:", err);
+      res.status(500).json({ success: false, message: "Execution error", details: err });
+    }
+  });
+
   // TELEGRAM NOTIFICATIONS
   app.post("/api/notify/telegram", async (req, res) => {
     const { message } = req.body;

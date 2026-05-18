@@ -69,6 +69,7 @@ export interface AIProbabilityModel {
 
 export interface TradeRecommendation {
   symbol: string;
+  fyersSymbol?: string;
   action: OptionAction;
   strike: number;
   expiry: string;
