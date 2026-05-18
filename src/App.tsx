@@ -595,10 +595,11 @@ export default function App() {
   };
 
   const forceTradeDebug = async () => {
-    addLog('DEBUG', 'FORCE_START', 'INFO', 'Starting forced trade execution for RELIANCE...');
-    const reliance = stocks.find(s => s.symbol === 'RELIANCE');
-    if (!reliance) {
-      addLog('DEBUG', 'ERR', 'ERROR', 'RELIANCE data not found in current snapshot.');
+    addLog('DEBUG', 'FORCE_START', 'INFO', 'Starting forced trade execution for first available asset...');
+    const targetStock = stocks.find(s => activeUniverse.includes(s.symbol)) || stocks[0];
+    
+    if (!targetStock) {
+      addLog('DEBUG', 'ERR', 'ERROR', 'No stocks available in current snapshot.');
       return;
     }
     
@@ -614,11 +615,11 @@ export default function App() {
       }
     };
     
-    const chain = getOptionChain(reliance.symbol, reliance.lastPrice);
-    const mockRec = generateRecommendation(reliance, mockAnalysis, chain);
+    const chain = getOptionChain(targetStock.symbol, targetStock.lastPrice);
+    const mockRec = generateRecommendation(targetStock, mockAnalysis, chain);
     
-    addLog('DEBUG', 'FORCING', 'INFO', `Executing mock trade for ${reliance.symbol} ${mockRec.action}...`);
-    executeTrade(reliance, mockRec, mockAnalysis);
+    addLog('DEBUG', 'FORCING', 'INFO', `Executing mock trade for ${targetStock.symbol} ${mockRec.action}...`);
+    executeTrade(targetStock, mockRec, mockAnalysis);
   };
   
   const updateRiskSettings = async (updates: Partial<RiskSettings>) => {
