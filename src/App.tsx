@@ -106,6 +106,8 @@ export default function App() {
   const [tradeLogs, setTradeLogs] = useState<string[]>([]);
   
   // Institutional Trade Monitor (Options Price Monitoring)
+  const tradingLock = React.useRef<Record<string, boolean>>({});
+
   useEffect(() => {
     if (positions.length === 0) return;
 
@@ -124,17 +126,21 @@ export default function App() {
           const currentPrice = contract.lastPrice;
           setMonitoredPrices(prev => ({ ...prev, [pos.id]: currentPrice }));
           
-          // Check for SL or Targets
+          // Institutional Exit Protocol
           let exitReason = null;
           if (currentPrice <= pos.sl) {
             exitReason = 'STOP_LOSS';
           } else {
-            // Check targets in reverse to find highest hit
-            const targets = [...(pos.targets || [])].sort((a, b) => b - a);
-            for (const target of targets) {
-              if (currentPrice >= target) {
-                exitReason = `TARGET_HIT_${targets.indexOf(target) + 1}`;
-                break;
+            // Check targets
+            const targets = pos.targets || [];
+            if (targets.length > 0) {
+              // Check from final target downwards
+              const sortedTargets = [...targets].sort((a, b) => b - a);
+              for (const target of sortedTargets) {
+                if (currentPrice >= target) {
+                  exitReason = 'TARGET_MET';
+                  break;
+                }
               }
             }
           }
@@ -145,7 +151,7 @@ export default function App() {
           }
         }
       }
-    }, 5000); // Pulse every 5s for institutional monitoring
+    }, 5000);
 
     return () => clearInterval(monitorInterval);
   }, [positions, stocks]);
@@ -602,8 +608,16 @@ export default function App() {
   };
 
   const executeTrade = async (stock: StockData, rec: TradeRecommendation, analysis: AIProbabilityModel) => {
-    addLog(stock.symbol, 'PROTOCOL_V2', 'INFO', `Protocol engaged via ${user?.displayName || 'GUEST_CORE'}. Action: ${rec.action} @ ${formatCurrency(rec.entryPrice)}`);
+    // Duplicate Prevention Lock
+    const lockKey = `${stock.symbol}_${rec.action}`;
+    if (tradingLock.current[lockKey]) return;
     
+    // Check if already in position for same option type
+    if (positions.find(p => p.symbol === stock.symbol && p.type === rec.action)) {
+      addLog(stock.symbol, 'SKIP', 'INFO', `Active ${rec.action} position exists. Dual-entry prevented.`);
+      return;
+    }
+
     // Check Portfolio/Settings data availability
     if (!portfolio || !riskSettings) {
       addLog(stock.symbol, 'DATA_BLOCK', 'ERROR', 'Quantum data sync pending. Wait for institutional profile load.');
@@ -645,11 +659,9 @@ export default function App() {
        return;
     }
 
-    // Check if already in position for same option type
-    if (positions.find(p => p.symbol === stock.symbol && p.type === rec.action)) {
-      addLog(stock.symbol, 'SKIP', 'INFO', `Active ${rec.action} position exists. Dual-entry prevented.`);
-      return;
-    }
+    tradingLock.current[lockKey] = true;
+    
+    addLog(stock.symbol, 'PROTOCOL_V2', 'INFO', `Protocol engaged via ${user?.displayName || 'GUEST_CORE'}. Action: ${rec.action} @ ${formatCurrency(rec.entryPrice)}`);
 
     const riskPerTrade = riskSettings.riskPerTrade || 1;
     const riskAmount = (portfolio?.balance || 1000000) * (riskPerTrade / 100);
@@ -711,6 +723,13 @@ export default function App() {
     } catch (err: any) {
       addLog(stock.symbol, 'ORDER_ERR', 'ERROR', `Execution failed: ${err.message}`);
       handleFirestoreError(err, OperationType.CREATE, 'trades');
+    } finally {
+      // Small timeout to prevent immediate re-triggering from UI bounce
+      setTimeout(() => {
+        if (tradingLock.current[lockKey]) {
+          tradingLock.current[lockKey] = false;
+        }
+      }, 2000);
     }
   };
 

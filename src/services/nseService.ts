@@ -76,12 +76,18 @@ export function getOptionChain(symbol: string, currentPrice: number): OptionChai
     // Call
     const ceIntrinsic = Math.max(0, currentPrice - strike);
     const peIntrinsic = Math.max(0, strike - currentPrice);
-    const timeValue = currentPrice * 0.015;
+    
+    // Improved Option Pricing Model (Simple BSM Approximation)
+    // Time Value = Spot * volatility * sqrt(days/365)
+    // For mock, we use a decay factor based on how OTM it is
+    const distance = Math.abs(currentPrice - strike);
+    const decayFactor = Math.exp(-distance / (currentPrice * 0.1));
+    const timeValue = (currentPrice * 0.02) * decayFactor;
 
     chain.push({
       strike,
       type: 'CE',
-      lastPrice: Math.max(1, Number((ceIntrinsic + timeValue + Math.random() * 5).toFixed(2))),
+      lastPrice: Math.max(2, Number((ceIntrinsic + timeValue + Math.random() * 5).toFixed(2))),
       change: (Math.random() * 40) - 20,
       oi: Math.floor(Math.random() * 100000),
       oiChange: (Math.random() * 50) - 10,
@@ -95,7 +101,7 @@ export function getOptionChain(symbol: string, currentPrice: number): OptionChai
     chain.push({
       strike,
       type: 'PUT',
-      lastPrice: Math.max(1, Number((peIntrinsic + timeValue + Math.random() * 5).toFixed(2))),
+      lastPrice: Math.max(2, Number((peIntrinsic + timeValue + Math.random() * 5).toFixed(2))),
       change: (Math.random() * 40) - 20,
       oi: Math.floor(Math.random() * 100000),
       oiChange: (Math.random() * 50) - 10,
