@@ -32,7 +32,7 @@ service cloud.firestore {
       return data.keys().hasAll(['userId', 'symbol', 'type', 'entry', 'sl', 'qty', 'status', 'timestamp']) &&
              (data.userId == (isSignedIn() ? request.auth.uid : 'guest_institutional_trader')) &&
              data.symbol is string && data.symbol.size() <= 20 &&
-             data.type in ['BUY_CE', 'BUY_PE'] &&
+             data.type in ['BUY CE', 'BUY PE'] &&
              data.entry is number && data.entry > 0 &&
              data.sl is number && data.sl >= 0 &&
              data.qty is number && data.qty > 0 &&

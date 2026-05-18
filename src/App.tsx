@@ -100,9 +100,55 @@ export default function App() {
   // Paper Trading State
   const [portfolio, setPortfolio] = useState<any>(null);
   const [positions, setPositions] = useState<any[]>([]);
+  const [monitoredPrices, setMonitoredPrices] = useState<Record<string, number>>({});
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [tradeLogs, setTradeLogs] = useState<string[]>([]);
+  
+  // Institutional Trade Monitor (Options Price Monitoring)
+  useEffect(() => {
+    if (positions.length === 0) return;
+
+    const monitorInterval = setInterval(async () => {
+      for (const pos of positions) {
+        if (pos.status !== 'OPEN') continue;
+
+        // Get latest option chain for the symbol
+        const stock = stocks.find(s => s.symbol === pos.symbol);
+        if (!stock) continue;
+
+        const chain = getOptionChain(pos.symbol, stock.lastPrice);
+        const contract = chain.find(c => c.strike === pos.strike && c.type === pos.optionType);
+
+        if (contract) {
+          const currentPrice = contract.lastPrice;
+          setMonitoredPrices(prev => ({ ...prev, [pos.id]: currentPrice }));
+          
+          // Check for SL or Targets
+          let exitReason = null;
+          if (currentPrice <= pos.sl) {
+            exitReason = 'STOP_LOSS';
+          } else {
+            // Check targets in reverse to find highest hit
+            const targets = [...(pos.targets || [])].sort((a, b) => b - a);
+            for (const target of targets) {
+              if (currentPrice >= target) {
+                exitReason = `TARGET_HIT_${targets.indexOf(target) + 1}`;
+                break;
+              }
+            }
+          }
+
+          if (exitReason) {
+            addLog(pos.symbol, 'CORE_EXIT', 'WARNING', `Market condition met: ${exitReason} @ ${formatCurrency(currentPrice)}`);
+            closePosition(pos.id);
+          }
+        }
+      }
+    }, 5000); // Pulse every 5s for institutional monitoring
+
+    return () => clearInterval(monitorInterval);
+  }, [positions, stocks]);
   const DEFAULT_SETTINGS: RiskSettings = {
     userId: GUEST_USER.uid,
     maxCapital: 1000000,
@@ -599,12 +645,11 @@ export default function App() {
        return;
     }
 
-    // Check if already in position
-    if (positions.find(p => p.symbol === stock.symbol)) {
-      addLog(stock.symbol, 'SKIP', 'INFO', 'Position already open. Dual-entry prohibited by risk engine.');
+    // Check if already in position for same option type
+    if (positions.find(p => p.symbol === stock.symbol && p.type === rec.action)) {
+      addLog(stock.symbol, 'SKIP', 'INFO', `Active ${rec.action} position exists. Dual-entry prevented.`);
       return;
     }
-
 
     const riskPerTrade = riskSettings.riskPerTrade || 1;
     const riskAmount = (portfolio?.balance || 1000000) * (riskPerTrade / 100);
@@ -612,30 +657,45 @@ export default function App() {
     const sl = rec.stopLoss;
     const stopLossPoints = Math.max(0.05, Math.abs(entry - sl));
     
-    // lotSize based position sizing
+    // lotSize based position sizing with Signal Strength Multiplier
     const lotSize = stock.lotSize || 1;
-    let qty = Math.floor(riskAmount / stopLossPoints);
+    
+    // Calculate base lots from risk management
+    const baseLots = Math.floor(riskAmount / (stopLossPoints * lotSize));
+    
+    // Apply Signal Strength Multiplier (Prob based)
+    // 80% is the threshold for entry. 
+    // 80-84: 1x base lots (Min 1)
+    // 85-89: 2x base lots (Min 2)
+    // 90+: 3x base lots (Min 3)
+    let multiplier = 1;
+    if (analysis.winProbability >= 90) multiplier = 3;
+    else if (analysis.winProbability >= 85) multiplier = 2;
+    
+    let numLots = Math.max(1, baseLots) * multiplier;
+    let qty = numLots * lotSize;
     
     if (isNaN(qty) || qty <= 0) {
-      addLog(stock.symbol, 'SIZE_ERR', 'ERROR', `Calculation failed. Risk: ${riskAmount.toFixed(0)}, SL_Pts: ${stopLossPoints.toFixed(2)}, Lot: ${lotSize}`);
+      addLog(stock.symbol, 'SIZE_ERR', 'ERROR', `Invalid QTY. Prob: ${analysis.winProbability}%, Lots: ${numLots}, Risk: ${riskAmount.toFixed(0)}`);
       return;
     }
 
-    qty = Math.max(lotSize, Math.floor(qty / lotSize) * lotSize); // Round to nearest lot size
-
     const marginRequired = qty * entry;
     // Log detailed calculation for transparency
-    addLog(stock.symbol, 'ORDER_INIT', 'INFO', `Order Prep: QTY ${qty} (Lot: ${lotSize}). Estimated Margin: ${formatCurrency(marginRequired)}`);
+    addLog(stock.symbol, 'ORDER_INIT', 'INFO', `Order Prep: ${numLots} Lots (Lot Size: ${lotSize}, Total QTY: ${qty}). Estimated Margin: ${formatCurrency(marginRequired)}`);
 
     const newPosition = {
       userId: user.uid,
       symbol: stock.symbol,
       type: rec.action,
+      optionType: rec.action.includes('CE') ? 'CE' : 'PUT',
+      strike: rec.strike,
       entry: entry,
       sl: sl,
       targets: rec.targets,
       qty: qty,
       pnl: 0,
+      currentPrice: entry,
       status: 'OPEN',
       timestamp: Timestamp.now(),
       prob: analysis.winProbability
@@ -1599,27 +1659,40 @@ export default function App() {
                             </td>
                           </tr>
                         ) : (
-                          positions.map(pos => (
-                            <tr key={pos.id} className="hover:bg-white/5 transition-all">
-                              <td className="px-4 py-3 font-bold text-white tracking-widest">{pos.symbol}</td>
-                              <td className={cn("px-4 py-3 font-black", pos.type.includes('CE') ? "text-neon-green" : "text-neon-red")}>{pos.type}</td>
-                              <td className="px-4 py-3 text-neutral-400 text-right">{pos.entry}</td>
-                              <td className="px-4 py-3 text-neon-red/70 text-right">{pos.sl}</td>
-                              <td className="px-4 py-3 text-neon-green/70 text-right">{pos.targets?.join(' | ')}</td>
-                              <td className="px-4 py-3 text-white font-bold bg-white/5 text-right">{formatCurrency(pos.entry * pos.qty)}</td>
-                              <td className={cn("px-4 py-3 font-black text-right", pos.pnl >= 0 ? "text-neon-green glow-green" : "text-neon-red glow-red")}>
-                                {formatCurrency(pos.pnl)}
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                <button 
-                                  onClick={() => closePosition(pos.id)}
-                                  className="text-neutral-500 hover:text-white uppercase text-[8px] font-black tracking-[.2em] border border-tech-border px-3 py-1 hover:border-white transition-all focus:outline-none"
-                                >
-                                  LIQUIDATE
-                                </button>
-                              </td>
-                            </tr>
-                          ))
+                          positions.map(pos => {
+                            const livePrice = monitoredPrices[pos.id] || pos.entry;
+                            const currentPnl = (livePrice - pos.entry) * pos.qty;
+                            
+                            return (
+                              <tr key={pos.id} className="hover:bg-white/5 transition-all">
+                                <td className="px-4 py-3">
+                                  <div className="flex flex-col">
+                                    <span className="font-bold text-white tracking-widest">{pos.symbol}</span>
+                                    <span className="text-[9px] text-neutral-500 uppercase tracking-widest">Strike: {pos.strike}</span>
+                                  </div>
+                                </td>
+                                <td className={cn("px-4 py-3 font-black", pos.type.includes('CE') ? "text-neon-green" : "text-neon-red")}>{pos.type}</td>
+                                <td className="px-4 py-3 text-neutral-400 text-right">{pos.entry.toFixed(2)}</td>
+                                <td className="px-4 py-3 text-neon-green font-bold text-right">
+                                  {livePrice.toFixed(2)}
+                                </td>
+                                <td className="px-4 py-3 text-neon-red/70 text-right">{pos.sl.toFixed(2)}</td>
+                                <td className="px-4 py-3 text-neon-green/70 text-right">[{pos.targets?.join(', ')}]</td>
+                                <td className="px-4 py-3 text-white font-bold bg-white/5 text-right">{formatCurrency(pos.entry * pos.qty)}</td>
+                                <td className={cn("px-4 py-3 font-black text-right", currentPnl >= 0 ? "text-neon-green glow-green" : "text-neon-red glow-red")}>
+                                  {formatCurrency(currentPnl)}
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  <button 
+                                    onClick={() => closePosition(pos.id)}
+                                    className="text-neutral-500 hover:text-white uppercase text-[8px] font-black tracking-[.2em] border border-tech-border px-3 py-1 hover:border-white transition-all focus:outline-none"
+                                  >
+                                    LIQUIDATE
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })
                         )}
                       </tbody>
                     </table>

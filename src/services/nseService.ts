@@ -69,15 +69,19 @@ export function getStrikeInterval(price: number): number {
 export function getOptionChain(symbol: string, currentPrice: number): OptionChainData[] {
   const interval = getStrikeInterval(currentPrice);
   const roundPrice = Math.round(currentPrice / interval) * interval;
-  const strikes = Array.from({ length: 11 }, (_, i) => roundPrice - (5 * interval) + i * interval);
+  const strikes = Array.from({ length: 21 }, (_, i) => roundPrice - (10 * interval) + i * interval);
   
   const chain: OptionChainData[] = [];
   strikes.forEach(strike => {
     // Call
+    const ceIntrinsic = Math.max(0, currentPrice - strike);
+    const peIntrinsic = Math.max(0, strike - currentPrice);
+    const timeValue = currentPrice * 0.015;
+
     chain.push({
       strike,
       type: 'CE',
-      lastPrice: Math.max(1, (currentPrice - strike) * 1.1 + Math.random() * 20),
+      lastPrice: Math.max(1, Number((ceIntrinsic + timeValue + Math.random() * 5).toFixed(2))),
       change: (Math.random() * 40) - 20,
       oi: Math.floor(Math.random() * 100000),
       oiChange: (Math.random() * 50) - 10,
@@ -91,7 +95,7 @@ export function getOptionChain(symbol: string, currentPrice: number): OptionChai
     chain.push({
       strike,
       type: 'PUT',
-      lastPrice: Math.max(1, (strike - currentPrice) * 1.1 + Math.random() * 20),
+      lastPrice: Math.max(1, Number((peIntrinsic + timeValue + Math.random() * 5).toFixed(2))),
       change: (Math.random() * 40) - 20,
       oi: Math.floor(Math.random() * 100000),
       oiChange: (Math.random() * 50) - 10,

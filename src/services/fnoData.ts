@@ -56,7 +56,7 @@ export const FNO_DATA: Record<string, FnoStockInfo> = {
   'CIPLA': { symbol: 'CIPLA', lotSize: 650, sector: 'Pharma' },
   'COALINDIA': { symbol: 'COALINDIA', lotSize: 2100, sector: 'Energy' },
   'COCHINSHIP': { symbol: 'COCHINSHIP', lotSize: 400, sector: 'Capital Goods' },
-  'COFORGE': { symbol: 'COFORGE', lotSize: 150, sector: 'IT' },
+  'COFORGE': { symbol: 'COFORGE', lotSize: 375, sector: 'IT' },
   'COLPAL': { symbol: 'COLPAL', lotSize: 350, sector: 'FMCG' },
   'CAMS': { symbol: 'CAMS', lotSize: 200, sector: 'Financial Services' },
   'CONCOR': { symbol: 'CONCOR', lotSize: 1000, sector: 'Services' },
