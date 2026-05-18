@@ -728,6 +728,7 @@ export default function App() {
 
     tradingLock.current[lockKey] = true;
     
+    const userId = user?.uid || 'guest_institutional_trader';
     addLog(stock.symbol, 'PROTOCOL_V2', 'INFO', `Protocol engaged via ${user?.displayName || 'GUEST_CORE'}. Action: ${rec.fyersSymbol || rec.action} @ ${formatCurrency(rec.entryPrice)}`);
 
     const riskPerTrade = riskSettings.riskPerTrade || 1;
@@ -764,7 +765,7 @@ export default function App() {
     addLog(stock.symbol, 'ORDER_INIT', 'INFO', `Order Prep: ${numLots} Lots (Lot Size: ${lotSize}, Total QTY: ${qty}). Estimated Margin: ${formatCurrency(marginRequired)}`);
 
     const newPosition = {
-      userId: user?.uid || 'guest_institutional_trader',
+      userId: userId,
       symbol: stock.symbol,
       fyersSymbol: rec.fyersSymbol || "UNKNOWN",
       type: rec.action,
@@ -782,10 +783,15 @@ export default function App() {
       prob: analysis.winProbability
     };
 
-    console.log('[DEBUG] Executing Trade Payload:', JSON.stringify(newPosition, null, 2));
+    console.log('[DEBUG] ATTEMPTING FIRESTORE WRITE | PATH: trades | AUTH:', !!user, 'ID:', userId);
+    console.log('[DEBUG] DB_CONFIG:', db.app.options.databaseURL || 'DEFAULT');
+    console.log('[DEBUG] PAYLOAD:', JSON.stringify(newPosition));
 
     try {
-      await addDoc(collection(db, 'trades'), newPosition);
+      // Use handleFirestoreError to get the specific JSON diagnostic
+      const collectionRef = collection(db, 'trades');
+      const docRef = await addDoc(collectionRef, newPosition);
+      console.log('[DEBUG] FIRESTORE_SUCCESS | ID:', docRef.id);
       addLog(stock.symbol, 'ORDER_SUCCESS', 'SUCCESS', `Order executed: ${newPosition.qty} units @ ${newPosition.entry}.`);
       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER EXECUTED: ${rec.fyersSymbol || stock.symbol} ${rec.action} @ ${rec.entryPrice} QTY: ${qty}`, ...prev]);
       
@@ -1151,17 +1157,36 @@ export default function App() {
                       }).slice(0, 4).map(s => {
                         const isReversal = s.rsi > 68 && s.pulse < 0.2 && s.pChange > 0.8 && dashAlphaTab === 'PE';
                         const isPE = dashAlphaTab === 'PE' || s.pChange < 0;
+                        
+                        const reversalFactors = [
+                          { label: 'RSI_EXH', value: s.rsi.toFixed(1), threshold: '>68', met: s.rsi > 68 },
+                          { label: 'MOM_FADE', value: s.pulse.toFixed(2), threshold: '<0.2', met: s.pulse < 0.2 },
+                          { label: 'PRICE_EXT', value: s.pChange.toFixed(1) + '%', threshold: '>0.8%', met: s.pChange > 0.8 }
+                        ];
+
                         return (
                           <div key={s.symbol} className={cn(
                             "bg-tech-surface border p-5 relative overflow-hidden group cursor-pointer transition-all duration-300",
                             isReversal 
-                              ? "border-amber-500/40 bg-amber-500/5 hover:border-amber-500 ring-1 ring-amber-500/20" 
+                              ? "border-amber-500/40 bg-amber-500/5 hover:border-amber-500 ring-1 ring-amber-500/20 shadow-[inset_0_0_20px_rgba(245,158,11,0.05)]" 
                               : "border-tech-border hover:border-neon-green/50"
                           )} onClick={() => handleStockSelect(s)}>
                             {isReversal && (
-                              <div className="absolute top-0 left-0 bg-amber-500 text-black text-[9px] font-bold px-2 py-0.5 z-10 flex items-center gap-1">
-                                <Zap size={10} fill="currentColor" />
-                                EXHAUSTION_REVERSAL
+                              <div className="absolute top-0 left-0 flex flex-col items-start z-10">
+                                <div className="bg-amber-500 text-black text-[9px] font-bold px-2 py-0.5 flex items-center gap-1 uppercase tracking-tighter">
+                                  <Zap size={10} fill="currentColor" />
+                                  BEARISH_EXHAUSTION
+                                </div>
+                                <div className="flex gap-[1px]">
+                                  {reversalFactors.map(f => (
+                                    <div key={f.label} className={cn(
+                                      "text-[7px] px-1 py-0.5 font-mono",
+                                      f.met ? "bg-amber-500/20 text-amber-500" : "bg-neutral-800 text-neutral-500"
+                                    )}>
+                                      {f.label}:{f.value}
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
                             )}
                             <div className={cn(

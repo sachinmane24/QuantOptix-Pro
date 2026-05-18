@@ -75,8 +75,12 @@ async function performAutoLogin() {
       let requestKey = r1.data.request_key;
 
       // Step 2: verify_otp (TOTP)
-      console.log("[AutoLogin] Step 2: verify_otp");
+      console.log("[AutoLogin] Step 2: verify_otp using secret...");
+      if (!authenticator) {
+        throw new Error("authenticator is undefined. Check otplib import.");
+      }
       const totpCode = authenticator.generate(totpSecret);
+      console.log(`[AutoLogin] TOTP Generated: ${totpCode}`);
       const r2 = await axios.post("https://api-t2.fyers.in/vagator/v2/verify_otp", {
         request_key: requestKey,
         otp: totpCode

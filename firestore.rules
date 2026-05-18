@@ -1,29 +1,8 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 0. Default Deny
     match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // --- Collections ---
-
-    match /trades/{tradeId} {
-      // Allow unrestricted create for debugging permission issues
-      allow create: if true; 
-      
-      allow list: if (request.auth != null && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
-      allow get: if (request.auth != null && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
-      allow update: if (request.auth != null && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
-      allow delete: if false;
-    }
-
-    match /portfolios/{userId} {
-      allow read, write: if true; // Temporarily permissive for debug
-    }
-
-    match /settings/{userId} {
-      allow read, write: if true; // Temporarily permissive for debug
+      allow read, write: if true;
     }
   }
 }
