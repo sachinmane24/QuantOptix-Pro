@@ -84,6 +84,7 @@ export default function App() {
   const [recommendation, setRecommendation] = useState<TradeRecommendation | null>(null);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [analysisTab, setAnalysisTab] = useState<'iv' | 'oi'>('iv');
 
   // Scanners
   const [filter, setFilter] = useState<'all' | 'bullish' | 'bearish' | 'breakout'>('all');
@@ -479,15 +480,16 @@ export default function App() {
   };
 
   const handleStockSelect = async (stock: StockData) => {
+    const chain = getOptionChain(stock.symbol, stock.lastPrice);
     setSelectedStock(stock);
-    setOptionChain(getOptionChain(stock.symbol, stock.lastPrice));
+    setOptionChain(chain);
     setActiveView('analysis');
     setLoadingAnalysis(true);
     
     // Fetch AI Analysis
-    const analysis = await analyzeTradeProbability(stock, getOptionChain(stock.symbol, stock.lastPrice));
+    const analysis = await analyzeTradeProbability(stock, chain);
     setAiAnalysis(analysis);
-    const rec = generateRecommendation(stock, analysis, getOptionChain(stock.symbol, stock.lastPrice));
+    const rec = generateRecommendation(stock, analysis, chain);
     setRecommendation(rec);
     setLoadingAnalysis(false);
 
@@ -1238,7 +1240,7 @@ export default function App() {
                            <div className="grid grid-cols-2 gap-2 mb-8 uppercase font-mono">
                               <div className="p-3 bg-tech-bg border border-tech-border">
                                  <span className="text-[8px] text-neutral-500 block mb-1">Entry Range</span>
-                                 <span className="text-sm font-bold text-white tracking-widest">{recommendation?.entryPrice}</span>
+                                 <span className="text-sm font-bold text-white tracking-widest">{formatCurrency(recommendation?.entryPrice || 0)}</span>
                               </div>
                               <div className="p-3 bg-tech-bg border border-neon-red/20 text-neon-red">
                                  <span className="text-[8px] block mb-1">Stop Loss</span>
@@ -1357,34 +1359,70 @@ export default function App() {
 
                        <div className="bg-tech-surface border border-tech-border flex flex-col shadow-xl">
                           <div className="p-4 border-b border-tech-border bg-[#1a1d23] flex gap-6">
-                             <button className="text-[10px] font-mono font-bold text-neon-green tracking-[0.2em] uppercase border-b-2 border-neon-green pb-1 shadow-neon-green">IV_VECTOR</button>
-                             <button className="text-[10px] font-mono font-bold text-neutral-500 tracking-[0.2em] uppercase hover:text-white transition-colors pb-1">OI_DELTA</button>
+                             <button 
+                               onClick={() => setAnalysisTab('iv')}
+                               className={cn(
+                                 "text-[10px] font-mono font-bold tracking-[0.2em] uppercase pb-1 transition-all",
+                                 analysisTab === 'iv' ? "text-neon-green border-b-2 border-neon-green shadow-neon-green" : "text-neutral-500 hover:text-white"
+                               )}
+                             >
+                               IV_VECTOR
+                             </button>
+                             <button 
+                               onClick={() => setAnalysisTab('oi')}
+                               className={cn(
+                                 "text-[10px] font-mono font-bold tracking-[0.2em] uppercase pb-1 transition-all",
+                                 analysisTab === 'oi' ? "text-neon-green border-b-2 border-neon-green shadow-neon-green" : "text-neutral-500 hover:text-white"
+                               )}
+                             >
+                               OI_DELTA
+                             </button>
                           </div>
                           <div className="flex-1 p-8 h-[400px]">
                              <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={[
-                                  { time: '10:00', iv: 18.2 },
-                                  { time: '11:00', iv: 19.5 },
-                                  { time: '12:00', iv: 18.8 },
-                                  { time: '13:00', iv: 20.4 },
-                                  { time: '14:00', iv: 22.1 },
-                                  { time: '15:00', iv: 21.8 },
-                                ]}>
-                                   <defs>
-                                     <linearGradient id="colorIv" x1="0" y1="0" x2="0" y2="1">
-                                       <stop offset="5%" stopColor="#00FF94" stopOpacity={0.4}/>
-                                       <stop offset="95%" stopColor="#00FF94" stopOpacity={0}/>
-                                     </linearGradient>
-                                   </defs>
-                                   <CartesianGrid strokeDasharray="3 3" stroke="#242831" vertical={false} />
-                                   <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
-                                   <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
-                                   <Tooltip 
-                                     contentStyle={{ backgroundColor: '#0B0E14', border: '1px solid #242831', fontSize: '10px', borderRadius: '0px', fontFamily: 'JetBrains Mono' }}
-                                     itemStyle={{ color: '#00FF94' }}
-                                   />
-                                   <Area type="stepAfter" dataKey="iv" stroke="#00FF94" fillOpacity={1} fill="url(#colorIv)" strokeWidth={2} />
-                                </AreaChart>
+                                {analysisTab === 'iv' ? (
+                                  <AreaChart data={[
+                                    { time: '10:00', val: 18.2 },
+                                    { time: '11:00', val: 19.5 },
+                                    { time: '12:00', val: 18.8 },
+                                    { time: '13:00', val: 20.4 },
+                                    { time: '14:00', val: 22.1 },
+                                    { time: '15:00', val: 21.8 },
+                                  ]}>
+                                     <defs>
+                                       <linearGradient id="colorIv" x1="0" y1="0" x2="0" y2="1">
+                                         <stop offset="5%" stopColor="#00FF94" stopOpacity={0.4}/>
+                                         <stop offset="95%" stopColor="#00FF94" stopOpacity={0}/>
+                                       </linearGradient>
+                                     </defs>
+                                     <CartesianGrid strokeDasharray="3 3" stroke="#242831" vertical={false} />
+                                     <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
+                                     <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
+                                     <Tooltip 
+                                       contentStyle={{ backgroundColor: '#0B0E14', border: '1px solid #242831', fontSize: '10px', borderRadius: '0px', fontFamily: 'JetBrains Mono' }}
+                                       itemStyle={{ color: '#00FF94' }}
+                                     />
+                                     <Area type="stepAfter" dataKey="val" stroke="#00FF94" fillOpacity={1} fill="url(#colorIv)" strokeWidth={2} />
+                                  </AreaChart>
+                                ) : (
+                                  <BarChart data={[
+                                    { time: '10:00', ce: 4500, pe: 3200 },
+                                    { time: '11:00', ce: 5100, pe: 3400 },
+                                    { time: '12:00', ce: 4800, pe: 4100 },
+                                    { time: '13:00', ce: 5900, pe: 3800 },
+                                    { time: '14:00', ce: 6200, pe: 4500 },
+                                    { time: '15:00', ce: 5800, pe: 4900 },
+                                  ]}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#242831" vertical={false} />
+                                    <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
+                                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#666', fontFamily: 'JetBrains Mono' }} />
+                                    <Tooltip 
+                                      contentStyle={{ backgroundColor: '#0B0E14', border: '1px solid #242831', fontSize: '10px', borderRadius: '0px', fontFamily: 'JetBrains Mono' }}
+                                    />
+                                    <Bar dataKey="ce" fill="#0ea5e9" radius={[2, 2, 0, 0]} />
+                                    <Bar dataKey="pe" fill="#f43f5e" radius={[2, 2, 0, 0]} />
+                                  </BarChart>
+                                )}
                              </ResponsiveContainer>
                           </div>
                           <div className="p-4 border-t border-tech-border bg-tech-bg/50 text-[9px] text-neon-green font-mono font-black text-center tracking-[.4em] uppercase">
