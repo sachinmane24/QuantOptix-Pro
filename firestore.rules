@@ -14,7 +14,7 @@ service cloud.firestore {
       return request.auth != null;
     }
     function isOwner(userId) {
-      return (isSignedIn() && request.auth.uid == userId) || isGuest(userId);
+      return (request.auth != null && request.auth.uid == userId) || (userId == 'guest_institutional_trader');
     }
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
@@ -29,28 +29,17 @@ service cloud.firestore {
     // --- Validation Helpers ---
 
     function isValidTrade(data) {
-      // Identity Check: Allow guest_institutional_trader or the actual authenticated UID
-      let matchesUser = (data.userId == 'guest_institutional_trader') || (request.auth != null && data.userId == request.auth.uid);
+      // Identity Check: Support guest sessions and authenticated users
+      let matchesUser = (data.userId == 'guest_institutional_trader') || 
+                        (request.auth != null && data.userId == request.auth.uid);
       
-      // Core Field Validation
-      let hasCoreFields = data.symbol is string && 
-                          data.type is string && 
-                          data.qty is number && 
-                          data.qty > 0 &&
-                          data.entry is number &&
-                          data.sl is number &&
-                          data.strike is number &&
-                          data.status in ['OPEN', 'CLOSED'] &&
-                          data.optionType in ['CE', 'PUT'] &&
-                          data.targets is list;
+      // Basic Data Integrity
+      let hasCoreData = data.symbol is string && 
+                         data.qty is number && 
+                         data.entry is number && 
+                         data.status in ['OPEN', 'CLOSED'];
 
-      // Numeric Boundaries
-      let validMetrics = data.pnl is number && 
-                         data.currentPrice is number && 
-                         data.prob is number && 
-                         data.prob >= 0 && data.prob <= 100;
-
-      return matchesUser && hasCoreFields && validMetrics;
+      return matchesUser && hasCoreData;
     }
 
     function isValidPortfolio(data) {
