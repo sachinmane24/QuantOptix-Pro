@@ -1142,27 +1142,32 @@ export default function App() {
                         const isDirectional = dashAlphaTab === 'CE' ? s.pChange > 0.5 : s.pChange < -0.5;
                         
                         // Bearish Reversal Detection Logic:
-                        // Strong stocks (in top Movers) seeing a Pulse drop or RSI divergent
-                        const isBearishReversal = s.rsi > 70 && s.pulse < 0.3 && s.pChange > 1.0;
+                        // 1. Stock is overbought (RSI > 70)
+                        // 2. Pulse (short-term momentum) is fading or negative
+                        // 3. Price is still currently high relative to day's low
+                        const isBearishReversal = s.rsi > 68 && s.pulse < 0.2 && s.pChange > 0.8;
                         
                         return isInUni && (isDirectional || (dashAlphaTab === 'PE' && isBearishReversal));
                       }).slice(0, 4).map(s => {
-    const isReversal = s.rsi > 70 && s.pulse < 0.3 && s.pChange > 1.0 && dashAlphaTab === 'PE';
+                        const isReversal = s.rsi > 68 && s.pulse < 0.2 && s.pChange > 0.8 && dashAlphaTab === 'PE';
                         const isPE = dashAlphaTab === 'PE' || s.pChange < 0;
                         return (
-                        <div key={s.symbol} className={cn(
-                          "bg-tech-surface border p-5 relative overflow-hidden group cursor-pointer transition-colors",
-                          isReversal ? "border-amber-500/50 hover:border-amber-500" : "border-tech-border hover:border-neon-green/50"
-                        )} onClick={() => handleStockSelect(s)}>
-                          {isReversal && (
-                            <div className="absolute top-0 left-0 bg-amber-500 text-black text-[8px] font-bold px-2 py-0.5 z-10">
-                              REVERSAL_SIGNAL
-                            </div>
-                          )}
-                          <div className={cn(
-                            "absolute top-0 right-0 p-4 opacity-5 font-black text-6xl italic uppercase pointer-events-none group-hover:opacity-10 transition-opacity",
-                            isPE ? "text-neon-red" : "text-neon-green"
-                          )}>{isPE ? 'PE BUY' : 'CE BUY'}</div>
+                          <div key={s.symbol} className={cn(
+                            "bg-tech-surface border p-5 relative overflow-hidden group cursor-pointer transition-all duration-300",
+                            isReversal 
+                              ? "border-amber-500/40 bg-amber-500/5 hover:border-amber-500 ring-1 ring-amber-500/20" 
+                              : "border-tech-border hover:border-neon-green/50"
+                          )} onClick={() => handleStockSelect(s)}>
+                            {isReversal && (
+                              <div className="absolute top-0 left-0 bg-amber-500 text-black text-[9px] font-bold px-2 py-0.5 z-10 flex items-center gap-1">
+                                <Zap size={10} fill="currentColor" />
+                                EXHAUSTION_REVERSAL
+                              </div>
+                            )}
+                            <div className={cn(
+                              "absolute top-0 right-0 p-4 opacity-5 font-black text-6xl italic uppercase pointer-events-none group-hover:opacity-10 transition-opacity",
+                              isPE ? "text-neon-red" : "text-neon-green"
+                            )}>{isPE ? 'PE BUY' : 'CE BUY'}</div>
                           <div className="flex justify-between items-start mb-4">
                             <div>
                               <h1 className="text-2xl font-black leading-none tracking-tighter text-white">{s.symbol}</h1>
