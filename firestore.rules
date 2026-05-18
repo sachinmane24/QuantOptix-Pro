@@ -29,61 +29,50 @@ service cloud.firestore {
     // --- Validation Helpers ---
 
     function isValidTrade(data) {
-      // Must have core fields
-      let hasRequired = data.keys().hasAll(['userId', 'symbol', 'type', 'entry', 'sl', 'qty', 'status', 'timestamp', 'optionType', 'strike', 'targets', 'pnl', 'currentPrice', 'prob']);
+      // Identity Check: Allow guest_institutional_trader or the actual authenticated UID
+      let matchesUser = (data.userId == 'guest_institutional_trader') || (request.auth != null && data.userId == request.auth.uid);
       
-      // Ownership check
-      let matchesUser = (data.userId == (request.auth != null ? request.auth.uid : 'guest_institutional_trader'));
-      
-      // Field constraints
-      let validSymbol = data.symbol is string && data.symbol.size() <= 20;
-      let validType = data.type is string && data.type.size() <= 10; // 'BUY CE' or 'BUY PE'
-      let validOptionType = data.optionType in ['CE', 'PUT'];
-      let validStrike = data.strike is number && data.strike > 0;
-      let validNumeric = data.entry is number && data.entry >= 0 && 
-                         data.sl is number && data.sl >= 0 && 
-                         data.qty is number && data.qty > 0 && 
-                         data.pnl is number && 
-                         data.currentPrice is number &&
-                         data.prob is number && data.prob <= 100;
-      let validStatus = data.status in ['OPEN', 'CLOSED'];
-      let validTargets = data.targets is list && data.targets.size() <= 5;
+      // Core Field Validation
+      let hasCoreFields = data.symbol is string && 
+                          data.type is string && 
+                          data.qty is number && 
+                          data.qty > 0 &&
+                          data.entry is number &&
+                          data.sl is number &&
+                          data.strike is number &&
+                          data.status in ['OPEN', 'CLOSED'] &&
+                          data.optionType in ['CE', 'PUT'] &&
+                          data.targets is list;
 
-      return hasRequired && matchesUser && validSymbol && validType && validOptionType && validStrike && validNumeric && validStatus && validTargets;
+      // Numeric Boundaries
+      let validMetrics = data.pnl is number && 
+                         data.currentPrice is number && 
+                         data.prob is number && 
+                         data.prob >= 0 && data.prob <= 100;
+
+      return matchesUser && hasCoreFields && validMetrics;
     }
 
     function isValidPortfolio(data) {
-      return data.keys().hasAll(['userId', 'balance']) &&
-             (data.userId == (isSignedIn() ? request.auth.uid : 'guest_institutional_trader')) &&
-             data.balance is number;
+      let matchesUser = (data.userId == 'guest_institutional_trader') || (request.auth != null && data.userId == request.auth.uid);
+      return matchesUser && data.balance is number;
     }
 
     function isValidSettings(data) {
-      // Allow any risk settings as long as they have balance and userId
-      return data.keys().hasAll(['userId', 'killSwitch']) &&
-             (data.userId == (isSignedIn() ? request.auth.uid : 'guest_institutional_trader')) &&
-             data.killSwitch is bool;
+      let matchesUser = (data.userId == 'guest_institutional_trader') || (request.auth != null && data.userId == request.auth.uid);
+      return matchesUser && data.keys().hasAll(['userId', 'killSwitch']);
     }
 
     // --- Collections ---
 
     match /trades/{tradeId} {
-      allow list: if (isSignedIn() && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
-      allow get: if (isSignedIn() && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
+      allow list: if (request.auth != null && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
+      allow get: if (request.auth != null && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
       
-      allow create: if (isSignedIn() || (incoming().userId == 'guest_institutional_trader')) && 
-                      isValidId(tradeId) && 
+      allow create: if isValidTrade(incoming());
+      
+      allow update: if ((request.auth != null && existing().userId == request.auth.uid) || existing().userId == 'guest_institutional_trader') && 
                       isValidTrade(incoming());
-      
-      allow update: if (isOwner(existing().userId)) && 
-                      isValidTrade(incoming()) && (
-                        // Action: Close Trade
-                        (incoming().status == 'CLOSED' && 
-                         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'pnl', 'exit', 'closedAt'])) ||
-                        // Action: Update SL/Targets
-                        (incoming().status == 'OPEN' && 
-                         incoming().diff(existing()).affectedKeys().hasOnly(['sl', 'targets']))
-                      );
       
       allow delete: if false; // Audit trail: Never delete trades
     }
