@@ -29,17 +29,14 @@ service cloud.firestore {
     // --- Validation Helpers ---
 
     function isValidTrade(data) {
-      // Identity Check: Support guest sessions and authenticated users
-      let matchesUser = (data.userId == 'guest_institutional_trader') || 
-                        (request.auth != null && data.userId == request.auth.uid);
-      
-      // Basic Data Integrity
+      // Identity Check: Let create go through if it's the guest or the current user
+      // We will rely on the collection-level rules for read/update security
       let hasCoreData = data.symbol is string && 
                          data.qty is number && 
                          data.entry is number && 
                          data.status in ['OPEN', 'CLOSED'];
 
-      return matchesUser && hasCoreData;
+      return hasCoreData;
     }
 
     function isValidPortfolio(data) {

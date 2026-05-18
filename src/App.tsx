@@ -93,6 +93,7 @@ export default function App() {
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [analysisTab, setAnalysisTab] = useState<'iv' | 'oi'>('iv');
+  const [dashAlphaTab, setDashAlphaTab] = useState<'CE' | 'PE'>('CE');
 
   // Scanners
   const [filter, setFilter] = useState<'all' | 'bullish' | 'bearish' | 'breakout'>('all');
@@ -243,10 +244,32 @@ export default function App() {
     // Auto-analysis and trading background scan
     if (isAutoTrading) {
       addLog('SCANNER', 'AUTO_SCAN', 'INFO', `Scanning ${uni.length} institutional assets for trade quality...`);
+      
+      const candidates: { stock: StockData, analysis: AIProbabilityModel }[] = [];
+      
       for (const symbol of uni) {
         const stock = currentStocks.find(s => s.symbol === symbol);
-        if (stock && (Math.abs(stock.pChange) > 1.5 || stock.relVolume > 1.5)) {
-          analyzeAndMaybeTrade(stock);
+        if (stock && (Math.abs(stock.pChange) > 1.2 || stock.relVolume > 1.5)) {
+          const chain = getOptionChain(stock.symbol, stock.lastPrice);
+          const analysis = await analyzeTradeProbability(stock, chain);
+          
+          if (analysis.winProbability >= 70) {
+            candidates.push({ stock, analysis });
+          }
+        }
+      }
+
+      // Tie-breaking Logic: Sort by Probability DESC, then Relative Volume DESC
+      candidates.sort((a, b) => {
+        if (b.analysis.winProbability !== a.analysis.winProbability) 
+          return b.analysis.winProbability - a.analysis.winProbability;
+        return b.stock.relVolume - a.stock.relVolume;
+      });
+
+      // Execute top 2 qualified trades if they have at least 80% prob
+      for (const candidate of candidates.slice(0, 2)) {
+        if (candidate.analysis.winProbability >= 80) {
+          analyzeAndMaybeTrade(candidate.stock, candidate.analysis);
         }
       }
     }
@@ -265,20 +288,19 @@ export default function App() {
     setSectorStrengths(strengths.slice(0, 6));
   };
 
-  const analyzeAndMaybeTrade = async (stock: StockData) => {
+  const analyzeAndMaybeTrade = async (stock: StockData, preComputedAnalysis?: AIProbabilityModel) => {
     // Check if we already have a position
     if (positions.find(p => p.symbol === stock.symbol)) return;
     
     try {
       const chain = getOptionChain(stock.symbol, stock.lastPrice);
-      const analysis = await analyzeTradeProbability(stock, chain);
+      const analysis = preComputedAnalysis || await analyzeTradeProbability(stock, chain);
       const rec = generateRecommendation(stock, analysis, chain);
 
-      if (analysis.winProbability >= 70) { // Lowered from 80 for higher frequency
+      if (analysis.winProbability >= 70) { // Entry threshold
         addLog(stock.symbol, 'QUALIFIED', 'SUCCESS', `Institutional breakout score: ${analysis.winProbability}%. Executing...`);
         executeTrade(stock, rec, analysis);
       } else {
-        // Detailed feedback in console for why it was skipped
         addLog(stock.symbol, 'SKIPPED', 'INFO', `Scored ${analysis.winProbability}%. Confidence too low for automated entry.`);
       }
     } catch (e) {
@@ -570,6 +592,33 @@ export default function App() {
     } finally {
       setIsSendingTelegram(false);
     }
+  };
+
+  const forceTradeDebug = async () => {
+    addLog('DEBUG', 'FORCE_START', 'INFO', 'Starting forced trade execution for RELIANCE...');
+    const reliance = stocks.find(s => s.symbol === 'RELIANCE');
+    if (!reliance) {
+      addLog('DEBUG', 'ERR', 'ERROR', 'RELIANCE data not found in current snapshot.');
+      return;
+    }
+    
+    const mockAnalysis: AIProbabilityModel = {
+      winProbability: 99,
+      expectedRR: 2,
+      regime: MarketRegime.BULLISH,
+      confidenceScore: 0.95,
+      factors: {
+        trendAlignment: "STRONG_BULL",
+        volumeValidation: "HIGH_ACCUMULATION",
+        volatilityContext: "EXPANDING"
+      }
+    };
+    
+    const chain = getOptionChain(reliance.symbol, reliance.lastPrice);
+    const mockRec = generateRecommendation(reliance, mockAnalysis, chain);
+    
+    addLog('DEBUG', 'FORCING', 'INFO', `Executing mock trade for ${reliance.symbol} ${mockRec.action}...`);
+    executeTrade(reliance, mockRec, mockAnalysis);
   };
   
   const updateRiskSettings = async (updates: Partial<RiskSettings>) => {
@@ -902,6 +951,13 @@ export default function App() {
               >
                 {isSendingTelegram ? 'SENDING...' : 'TEST_TELEGRAM'}
               </button>
+              <div className="w-px h-3 bg-tech-border"></div>
+              <button 
+                onClick={forceTradeDebug}
+                className="text-amber-400 hover:text-white transition-colors font-bold text-[9px]"
+              >
+                DEBUG_EXEC
+              </button>
             </div>
             <div className="w-px h-8 bg-tech-border mx-2"></div>
             <div className="bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono flex items-center gap-3">
@@ -1013,17 +1069,31 @@ export default function App() {
                   <div className="space-y-6">
                     <div className="flex justify-between items-center">
                       <h2 className="text-sm font-bold uppercase tracking-[0.2em] flex items-center gap-3">
-                        <div className="w-2 h-2 bg-neon-green shadow-green"></div>
-                        Institutional High Probability Alpha (Top Movers)
+                        <div className={cn("w-2 h-2 shadow-green", dashAlphaTab === 'CE' ? "bg-neon-green" : "bg-neon-red shadow-red")}></div>
+                        Institutional Alpha {dashAlphaTab === 'CE' ? 'Bullish (Top Movers)' : 'Bearish (Short Decay)'}
                       </h2>
                       <div className="flex bg-tech-surface border border-tech-border p-1">
-                        <button className="px-5 py-1 text-[10px] font-bold uppercase tracking-tighter bg-neon-green text-black">TOP_SCAN</button>
-                        <div className="px-5 py-1 text-[10px] font-bold uppercase tracking-tighter text-neutral-500 font-mono">Rescan: 5m</div>
+                        <button 
+                          onClick={() => setDashAlphaTab('CE')}
+                          className={cn("px-5 py-1 text-[10px] font-bold uppercase tracking-tighter transition-all", dashAlphaTab === 'CE' ? "bg-neon-green text-black" : "text-neutral-500 hover:text-white")}
+                        >
+                          CE ALPHA
+                        </button>
+                        <button 
+                          onClick={() => setDashAlphaTab('PE')}
+                          className={cn("px-5 py-1 text-[10px] font-bold uppercase tracking-tighter transition-all", dashAlphaTab === 'PE' ? "bg-neon-red text-white" : "text-neutral-500 hover:text-white")}
+                        >
+                          PE ALPHA
+                        </button>
                       </div>
                     </div>
 
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                      {stocks.filter(s => activeUniverse.includes(s.symbol)).slice(0, 4).map(s => (
+                      {stocks.filter(s => {
+                        const isInUni = activeUniverse.includes(s.symbol);
+                        const isDirectional = dashAlphaTab === 'CE' ? s.pChange > 0.5 : s.pChange < -0.5;
+                        return isInUni && isDirectional;
+                      }).slice(0, 8).map(s => (
                         <div key={s.symbol} className="bg-tech-surface border border-tech-border p-5 relative overflow-hidden group cursor-pointer hover:border-neon-green/50 transition-colors" onClick={() => handleStockSelect(s)}>
                           <div className={cn(
                             "absolute top-0 right-0 p-4 opacity-5 font-black text-6xl italic uppercase pointer-events-none group-hover:opacity-10 transition-opacity",
