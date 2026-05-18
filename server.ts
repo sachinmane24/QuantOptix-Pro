@@ -7,7 +7,8 @@ import { Server } from "socket.io";
 import http from "http";
 import crypto from "crypto";
 // @ts-ignore
-import { authenticator } from "otplib";
+import otplib from "otplib";
+const { authenticator } = otplib;
 // @ts-ignore
 import fyers from "fyers-api-v3";
 import { ScannerService, TradeSignal } from "./src/services/scannerService";
