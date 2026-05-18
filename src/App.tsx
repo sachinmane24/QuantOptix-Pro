@@ -146,26 +146,39 @@ export default function App() {
     setStocks(currentStocks);
     setMarketInfo(getMarketOverview());
 
+    // Unified Momentum Detection & Alpha Scanner Feedback
+    const hotStocks = currentStocks.filter(s => uni.includes(s.symbol) && Math.abs(s.pChange) > 1.5);
+    
+    if (hotStocks.length > 0) {
+      setScannerSignals(prev => {
+        const newSignals = hotStocks.map(s => ({
+          id: Math.random().toString(36).substr(2, 9),
+          symbol: s.symbol,
+          type: s.pChange > 0 ? 'BULLISH' : 'BEARISH',
+          price: s.lastPrice,
+          time: new Date().toLocaleTimeString(),
+          strength: Math.min(Math.floor(Math.abs(s.pChange) / 2) + 1, 5)
+        }));
+        const merged = [...newSignals, ...prev];
+        const unique = Array.from(new Map(merged.map(s => [s.symbol, s])).values());
+        return unique.slice(0, 10);
+      });
+
+      // Log detected momentum to Engine Console
+      hotStocks.filter(h => Math.abs(h.pChange) > 2.5).forEach(s => {
+        addLog(s.symbol, 'MOMENTUM_DETECTOR', 'SUCCESS', `Institutional pressure noted: ${s.pChange.toFixed(2)}% move detected.`);
+      });
+    }
+
     // Auto-analysis and trading background scan
     if (isAutoTrading) {
-      addLog('SCANNER', 'AUTO_SCAN', 'INFO', `Scanning ${uni.length} institutional assets for breakout quality...`);
-      
-      // We process the top movers for potential trades
+      addLog('SCANNER', 'AUTO_SCAN', 'INFO', `Scanning ${uni.length} institutional assets for trade quality...`);
       for (const symbol of uni) {
         const stock = currentStocks.find(s => s.symbol === symbol);
-        if (stock) {
-          // Only analyze stocks with significant momentum (>1.5% or >1.5x vol)
-          if (Math.abs(stock.pChange) > 1.5 || stock.relVolume > 1.5) {
-            analyzeAndMaybeTrade(stock);
-          }
+        if (stock && (Math.abs(stock.pChange) > 1.5 || stock.relVolume > 1.5)) {
+          analyzeAndMaybeTrade(stock);
         }
       }
-    } else {
-      // Passive logging for UI feedback
-      const hotStocks = currentStocks.filter(s => uni.includes(s.symbol) && Math.abs(s.pChange) > 2);
-      hotStocks.forEach(s => {
-        addLog(s.symbol, 'MOMENTUM_DETECTOR', 'SUCCESS', `Heavy flux detected: ${s.pChange.toFixed(2)}% move with ${s.relVolume.toFixed(1)}x volume.`);
-      });
     }
 
     // Calculate Sector Strengths
