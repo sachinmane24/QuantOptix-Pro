@@ -428,9 +428,9 @@ export default function App() {
         // Initial Settings
         const initial = {
           userId: user.uid,
-          maxCapital: 500000,
-          maxTradesPerDay: 5,
-          maxLossPerDay: 10000,
+          maxCapital: 1000000,
+          maxTradesPerDay: 20,
+          maxLossPerDay: 20000,
           riskPerTrade: 1, // 1%
           killSwitch: false
         };
@@ -518,6 +518,7 @@ export default function App() {
   };
 
   const executeTrade = async (stock: StockData, rec: TradeRecommendation, analysis: AIProbabilityModel) => {
+    addLog(stock.symbol, 'EXEC_ENGAGED', 'INFO', `Protocol engaged: ${rec.action} @ ${formatCurrency(rec.entryPrice)}`);
     if (!user) {
       addLog(stock.symbol, 'AUTH_BLOCK', 'WARNING', 'Institutional trade requires authenticated session. Sign in to execute.');
       return;
@@ -569,19 +570,26 @@ export default function App() {
       return;
     }
 
-    addLog(stock.symbol, 'ORDER_INIT', 'INFO', `Initializing institutional ${rec.action} order.`);
 
     const riskAmount = (portfolio?.balance || 1000000) * (riskSettings.riskPerTrade / 100);
     const entry = rec.entryPrice;
     const sl = rec.stopLoss;
-    const stopLossPoints = Math.abs(entry - sl);
+    const stopLossPoints = Math.max(0.05, Math.abs(entry - sl));
     
     // lotSize based position sizing
     const lotSize = stock.lotSize || 1;
-    let qty = Math.floor(riskAmount / (stopLossPoints || 1));
+    let qty = Math.floor(riskAmount / stopLossPoints);
+    const rawQty = qty;
     qty = Math.max(lotSize, Math.floor(qty / lotSize) * lotSize); // Round to nearest lot size
 
-    if (qty <= 0) return;
+    if (qty <= 0) {
+      addLog(stock.symbol, 'SIZE_ERR', 'ERROR', `Invalid QTY. Risk: ${riskAmount.toFixed(0)}, SL_Pts: ${stopLossPoints.toFixed(2)}, Lot: ${lotSize}`);
+      return;
+    }
+
+    const marginRequired = qty * entry;
+    // Log detailed calculation for transparency
+    addLog(stock.symbol, 'ORDER_INIT', 'INFO', `Order Prep: QTY ${qty} (Lot: ${lotSize}). Estimated Margin: ${formatCurrency(marginRequired)}`);
 
     const newPosition = {
       userId: user.uid,
