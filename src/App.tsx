@@ -101,6 +101,7 @@ export default function App() {
   const [unrealizedPnL, setUnrealizedPnL] = useState(0);
   const [isFyersConnected, setIsFyersConnected] = useState(false);
   const [isSendingTelegram, setIsSendingTelegram] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
   const [scannerSignals, setScannerSignals] = useState<any[]>([]);
   const [sectorStrengths, setSectorStrengths] = useState<any[]>([]);
   const [activeUniverse, setActiveUniverse] = useState<string[]>([]);
@@ -145,11 +146,27 @@ export default function App() {
     setStocks(currentStocks);
     setMarketInfo(getMarketOverview());
 
-    // Auto-analysis logic for logs
-    const hotStocks = currentStocks.filter(s => uni.includes(s.symbol) && Math.abs(s.pChange) > 2);
-    hotStocks.forEach(s => {
-      addLog(s.symbol, 'MOMENTUM_DETECTOR', 'SUCCESS', `Heavy flux detected: ${s.pChange.toFixed(2)}% move with ${s.relVolume.toFixed(1)}x volume.`);
-    });
+    // Auto-analysis and trading background scan
+    if (isAutoTrading) {
+      addLog('SCANNER', 'AUTO_SCAN', 'INFO', `Scanning ${uni.length} institutional assets for breakout quality...`);
+      
+      // We process the top movers for potential trades
+      for (const symbol of uni) {
+        const stock = currentStocks.find(s => s.symbol === symbol);
+        if (stock) {
+          // Only analyze stocks with significant momentum (>1.5% or >1.5x vol)
+          if (Math.abs(stock.pChange) > 1.5 || stock.relVolume > 1.5) {
+            analyzeAndMaybeTrade(stock);
+          }
+        }
+      }
+    } else {
+      // Passive logging for UI feedback
+      const hotStocks = currentStocks.filter(s => uni.includes(s.symbol) && Math.abs(s.pChange) > 2);
+      hotStocks.forEach(s => {
+        addLog(s.symbol, 'MOMENTUM_DETECTOR', 'SUCCESS', `Heavy flux detected: ${s.pChange.toFixed(2)}% move with ${s.relVolume.toFixed(1)}x volume.`);
+      });
+    }
 
     // Calculate Sector Strengths
     const sectors = Array.from(new Set(currentStocks.map(s => s.sector)));
@@ -163,6 +180,27 @@ export default function App() {
       };
     }).sort((a, b) => b.val - a.val);
     setSectorStrengths(strengths.slice(0, 6));
+  };
+
+  const analyzeAndMaybeTrade = async (stock: StockData) => {
+    // Check if we already have a position
+    if (positions.find(p => p.symbol === stock.symbol)) return;
+    
+    try {
+      const chain = getOptionChain(stock.symbol, stock.lastPrice);
+      const analysis = await analyzeTradeProbability(stock, chain);
+      const rec = generateRecommendation(stock, analysis, chain);
+
+      if (analysis.winProbability >= 70) { // Lowered from 80 for higher frequency
+        addLog(stock.symbol, 'QUALIFIED', 'SUCCESS', `Institutional breakout score: ${analysis.winProbability}%. Executing...`);
+        executeTrade(stock, rec, analysis);
+      } else {
+        // Detailed feedback in console for why it was skipped
+        addLog(stock.symbol, 'SKIPPED', 'INFO', `Scored ${analysis.winProbability}%. Confidence too low for automated entry.`);
+      }
+    } catch (e) {
+      console.error(`Scanner error for ${stock.symbol}:`, e);
+    }
   };
 
   const triggerAutoLogin = async () => {
@@ -225,6 +263,15 @@ export default function App() {
 
     loadMarketData();
     
+    // Refresh interval every 5 mins to sync universe and scan
+    const refreshInterval = setInterval(() => {
+      loadMarketData();
+    }, 5 * 60 * 1000);
+    
+    return () => clearInterval(refreshInterval);
+  }, [isAutoTrading]); // Refire scanner setup when auto-trading toggled
+    
+  useEffect(() => {
     // Initialize WebSockets for real-time updates
     initializeMarketWebSocket(
       (updates) => {
@@ -1558,6 +1605,9 @@ export default function App() {
                    <div className="bg-tech-surface border border-tech-border p-12 flex flex-col items-center justify-center text-center">
                       <Shield className="w-16 h-16 text-neon-red/30 mb-6" />
                       <h3 className="text-2xl font-black text-white mb-2 uppercase">Risk Management Locked</h3>
+                      <p className="mt-4 text-[10px] text-sky-400 font-mono uppercase tracking-[0.2em] border border-sky-900 bg-sky-900/10 px-4 py-2 max-w-lg mx-auto">
+                        TECHNICAL NOTE: If "SIGN IN" is blocked, please click the "Open in New Tab" icon at the top right of this preview.
+                      </p>
                       <p className="text-neutral-500 font-mono text-xs mb-8 uppercase tracking-widest max-w-md">Risk parameters and global circuit breakers are tied to your institutional profile. Please sign in to configure your capital limits and loss boundaries.</p>
                       <button onClick={handleLogin} className="bg-neon-green text-black px-8 py-3 text-xs font-black uppercase tracking-widest flex items-center gap-2">
                          <LogIn size={16} /> Sign In to Configure
