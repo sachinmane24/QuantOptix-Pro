@@ -90,6 +90,7 @@ export interface ScannerLog {
 }
 
 export interface RiskSettings {
+  userId?: string;
   maxCapital: number;
   maxTradesPerDay: number;
   maxLossPerDay: number;

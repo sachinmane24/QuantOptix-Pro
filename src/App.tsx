@@ -393,16 +393,25 @@ export default function App() {
     // Sync Portfolio
     const unsubPort = onSnapshot(doc(db, 'portfolios', user.uid), (snap) => {
       if (snap.exists()) {
-        setPortfolio(snap.data());
+        const data = snap.data();
+        setPortfolio({
+          userId: data.userId || user.uid,
+          balance: data.balance ?? 1000000,
+          totalTrades: data.totalTrades || 0,
+          winRate: data.winRate || 0,
+          netPnl: data.netPnl || 0
+        });
       } else {
         // Initial Portfolio
-        setDoc(doc(db, 'portfolios', user.uid), {
+        const initial = {
           userId: user.uid,
           balance: 1000000,
           totalTrades: 0,
           winRate: 0,
           netPnl: 0
-        });
+        };
+        setDoc(doc(db, 'portfolios', user.uid), initial);
+        setPortfolio(initial);
       }
     }, (err) => handleFirestoreError(err, OperationType.GET, `portfolios/${user.uid}`));
 
@@ -434,8 +443,17 @@ export default function App() {
     const unsubSettings = onSnapshot(doc(db, 'settings', user.uid), (snap) => {
       if (snap.exists()) {
         const data = snap.data() as RiskSettings;
-        setRiskSettings(data);
-        setEditingSettings(data);
+        // Ensure all fields exist
+        const sanitized = {
+          maxCapital: data.maxCapital || 1000000,
+          maxTradesPerDay: data.maxTradesPerDay || 20,
+          maxLossPerDay: data.maxLossPerDay || 20000,
+          riskPerTrade: data.riskPerTrade || 1,
+          killSwitch: !!data.killSwitch,
+          userId: data.userId || user.uid
+        };
+        setRiskSettings(sanitized);
+        setEditingSettings(sanitized);
       } else {
         // Initial Settings
         const initial = {
@@ -447,6 +465,8 @@ export default function App() {
           killSwitch: false
         };
         setDoc(doc(db, 'settings', user.uid), initial);
+        setRiskSettings(initial);
+        setEditingSettings(initial);
       }
     }, (err) => handleFirestoreError(err, OperationType.GET, `settings/${user.uid}`));
 
@@ -493,9 +513,14 @@ export default function App() {
   const updateRiskSettings = async (updates: Partial<RiskSettings>) => {
     const uid = user?.uid || GUEST_USER.uid;
     try {
-      await updateDoc(doc(db, 'settings', uid), updates);
+      // Use setDoc with merge to ensure document exists
+      await setDoc(doc(db, 'settings', uid), updates, { merge: true });
       addLog('SETTINGS', 'SYNC_SUCCESS', 'SUCCESS', 'Risk configuration committed to cloud profiles.');
+      
+      // Update local state immediately for better UX
+      if (riskSettings) setRiskSettings({ ...riskSettings, ...updates });
     } catch (err) {
+      console.error("Settings Update Failed:", err);
       handleFirestoreError(err, OperationType.UPDATE, `settings/${uid}`);
     }
   };
@@ -571,7 +596,8 @@ export default function App() {
     }
 
 
-    const riskAmount = (portfolio?.balance || 1000000) * (riskSettings.riskPerTrade / 100);
+    const riskPerTrade = riskSettings.riskPerTrade || 1;
+    const riskAmount = (portfolio?.balance || 1000000) * (riskPerTrade / 100);
     const entry = rec.entryPrice;
     const sl = rec.stopLoss;
     const stopLossPoints = Math.max(0.05, Math.abs(entry - sl));
@@ -579,13 +605,13 @@ export default function App() {
     // lotSize based position sizing
     const lotSize = stock.lotSize || 1;
     let qty = Math.floor(riskAmount / stopLossPoints);
-    const rawQty = qty;
-    qty = Math.max(lotSize, Math.floor(qty / lotSize) * lotSize); // Round to nearest lot size
-
-    if (qty <= 0) {
-      addLog(stock.symbol, 'SIZE_ERR', 'ERROR', `Invalid QTY. Risk: ${riskAmount.toFixed(0)}, SL_Pts: ${stopLossPoints.toFixed(2)}, Lot: ${lotSize}`);
+    
+    if (isNaN(qty) || qty <= 0) {
+      addLog(stock.symbol, 'SIZE_ERR', 'ERROR', `Calculation failed. Risk: ${riskAmount.toFixed(0)}, SL_Pts: ${stopLossPoints.toFixed(2)}, Lot: ${lotSize}`);
       return;
     }
+
+    qty = Math.max(lotSize, Math.floor(qty / lotSize) * lotSize); // Round to nearest lot size
 
     const marginRequired = qty * entry;
     // Log detailed calculation for transparency
@@ -1712,9 +1738,9 @@ export default function App() {
                                        <span className="text-neutral-600 mr-2">[USE: {cfg.isCurrency ? formatCurrency(cfg.current) : cfg.current}]</span>
                                      )}
                                      <span className="text-white font-bold text-xs">
-                                        {cfg.isCurrency ? formatCurrency(editingSettings?.[cfg.key as keyof RiskSettings] as number || 0) : 
-                                         cfg.isPercent ? `${editingSettings?.[cfg.key as keyof RiskSettings]}%` : 
-                                         editingSettings?.[cfg.key as keyof RiskSettings]}
+                                        {cfg.isCurrency ? formatCurrency((editingSettings?.[cfg.key as keyof RiskSettings] as number) || 0) : 
+                                         cfg.isPercent ? `${editingSettings?.[cfg.key as keyof RiskSettings] ?? 1}%` : 
+                                         editingSettings?.[cfg.key as keyof RiskSettings] ?? 0}
                                      </span>
                                   </div>
                                </div>
