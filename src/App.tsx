@@ -770,16 +770,19 @@ export default function App() {
       type: rec.action,
       optionType: rec.action.includes('CE') ? 'CE' : 'PUT',
       strike: rec.strike,
+      expiry: rec.expiry,
+      qty: qty,
       entry: entry,
       sl: sl,
       targets: rec.targets,
-      qty: qty,
       pnl: 0,
       currentPrice: entry,
-      status: 'OPEN',
+      status: 'ACTIVE',
       timestamp: Timestamp.now(),
       prob: analysis.winProbability
     };
+
+    console.log('[DEBUG] Executing Trade Payload:', JSON.stringify(newPosition, null, 2));
 
     try {
       await addDoc(collection(db, 'trades'), newPosition);

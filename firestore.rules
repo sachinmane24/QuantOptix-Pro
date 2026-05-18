@@ -16,9 +16,6 @@ service cloud.firestore {
     function isOwner(userId) {
       return (request.auth != null && request.auth.uid == userId) || (userId == 'guest_institutional_trader');
     }
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
     function incoming() {
       return request.resource.data;
     }
@@ -29,55 +26,34 @@ service cloud.firestore {
     // --- Validation Helpers ---
 
     function isValidTrade(data) {
-      // Identity Check: Support guest sessions and authenticated users
-      let matchesUser = (data.userId == 'guest_institutional_trader') || 
-                        (request.auth != null && data.userId == request.auth.uid);
-      
-      // Basic Data Integrity
-      let hasCoreData = data.symbol is string && 
-                         data.qty is number && 
-                         data.entry is number && 
-                         data.status in ['OPEN', 'CLOSED'];
-
-      return matchesUser && hasCoreData;
+      // Basic existence check to prevent silent failures
+      return data.keys().hasAll(['userId', 'symbol', 'qty', 'entry', 'status']);
     }
 
     function isValidPortfolio(data) {
-      let matchesUser = (data.userId == 'guest_institutional_trader') || (request.auth != null && data.userId == request.auth.uid);
-      return matchesUser && data.balance is number;
-    }
-
-    function isValidSettings(data) {
-      let matchesUser = (data.userId == 'guest_institutional_trader') || (request.auth != null && data.userId == request.auth.uid);
-      return matchesUser && data.keys().hasAll(['userId', 'killSwitch']);
+      return isOwner(data.userId);
     }
 
     // --- Collections ---
 
     match /trades/{tradeId} {
-      allow list: if (request.auth != null && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
-      allow get: if (request.auth != null && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
-      
-      allow create: if isValidTrade(incoming());
-      
-      allow update: if ((request.auth != null && existing().userId == request.auth.uid) || existing().userId == 'guest_institutional_trader') && 
-                      isValidTrade(incoming());
-      
-      allow delete: if false; // Audit trail: Never delete trades
+      allow list: if isOwner(resource.data.userId);
+      allow get: if isOwner(resource.data.userId);
+      allow create: if isOwner(incoming().userId) && isValidTrade(incoming());
+      allow update: if isOwner(existing().userId);
+      allow delete: if false;
     }
 
     match /portfolios/{userId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && isValidPortfolio(incoming());
-      allow update: if isOwner(userId) && 
-                      isValidPortfolio(incoming()) && 
-                      incoming().diff(existing()).affectedKeys().hasAny(['balance', 'totalTrades', 'winRate', 'netPnl']);
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
     }
 
     match /settings/{userId} {
       allow read: if isOwner(userId);
-      allow create: if isOwner(userId) && isValidSettings(incoming());
-      allow update: if isOwner(userId) && isValidSettings(incoming());
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
     }
   }
 }
