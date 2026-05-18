@@ -71,11 +71,19 @@ const RiskIndicator = ({ score, label }: { score: number, label: string }) => (
   </div>
 );
 
+// VER: 2.1.0-AUTH-GUEST-FIX
+const GUEST_USER = {
+  uid: 'guest_institutional_trader',
+  displayName: 'QUANT_INSTITUTIONAL_CORE',
+  email: 'trader@quant.optix',
+  photoURL: null
+} as any;
+
 // --- Main App Component ---
 
 export default function App() {
   const [activeView, setActiveView] = useState<'dashboard' | 'screener' | 'analysis' | 'trades' | 'risk' | 'analytics'>('dashboard');
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(GUEST_USER);
   const [stocks, setStocks] = useState<StockData[]>([]);
   const [marketInfo, setMarketInfo] = useState<any>(null);
   const [selectedStock, setSelectedStock] = useState<StockData | null>(null);
@@ -366,7 +374,11 @@ export default function App() {
     const interval = setInterval(loadMarketData, 30000); // Pulse every 30s as fallback
 
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
+      if (u) {
+        setUser(u);
+      } else {
+        setUser(GUEST_USER);
+      }
     });
     return () => {
       unsubscribe();
@@ -451,20 +463,10 @@ export default function App() {
     }
   }, [riskSettings?.killSwitch]);
 
-  const handleLogin = async () => {
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (err: any) {
-      console.error(err);
-      if (err.code === 'auth/popup-blocked') {
-        alert("Sign-in popup blocked. Please allow popups for this site and try again.");
-      } else {
-        alert("Authentication failed: " + err.message);
-      }
-    }
+  const handleLogout = () => {
+    setUser(GUEST_USER);
+    auth.signOut();
   };
-
-  const handleLogout = () => auth.signOut();
 
   const sendTestTelegram = async () => {
     setIsSendingTelegram(true);
@@ -489,11 +491,12 @@ export default function App() {
   };
   
   const updateRiskSettings = async (updates: Partial<RiskSettings>) => {
-    if (!user) return;
+    const uid = user?.uid || GUEST_USER.uid;
     try {
-      await updateDoc(doc(db, 'settings', user.uid), updates);
+      await updateDoc(doc(db, 'settings', uid), updates);
+      addLog('SETTINGS', 'SYNC_SUCCESS', 'SUCCESS', 'Risk configuration committed to cloud profiles.');
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `settings/${user.uid}`);
+      handleFirestoreError(err, OperationType.UPDATE, `settings/${uid}`);
     }
   };
 
@@ -518,12 +521,9 @@ export default function App() {
   };
 
   const executeTrade = async (stock: StockData, rec: TradeRecommendation, analysis: AIProbabilityModel) => {
-    addLog(stock.symbol, 'EXEC_ENGAGED', 'INFO', `Protocol engaged: ${rec.action} @ ${formatCurrency(rec.entryPrice)}`);
-    if (!user) {
-      addLog(stock.symbol, 'AUTH_BLOCK', 'WARNING', 'Institutional trade requires authenticated session. Sign in to execute.');
-      return;
-    }
-
+    addLog(stock.symbol, 'PROTOCOL_V2', 'INFO', `Protocol engaged via ${user?.displayName || 'GUEST_CORE'}. Action: ${rec.action} @ ${formatCurrency(rec.entryPrice)}`);
+    
+    // Check Portfolio/Settings data availability
     if (!portfolio || !riskSettings) {
       addLog(stock.symbol, 'DATA_BLOCK', 'ERROR', 'Quantum data sync pending. Wait for institutional profile load.');
       return;
@@ -717,24 +717,15 @@ export default function App() {
           </nav>
           
           <div className="flex items-center gap-4 border-l border-tech-border pl-6">
-            {user ? (
-               <div className="flex items-center gap-3">
-                  <div className="text-right">
-                    <div className="text-[8px] text-neutral-500 uppercase font-mono tracking-widest">{user.displayName}</div>
-                    <div className="text-white text-[10px] font-mono font-bold leading-none">{formatCurrency(portfolio?.balance || 0)}</div>
-                  </div>
-                  <button onClick={handleLogout} className="text-neutral-500 hover:text-white transition-colors">
-                    <LogOut size={16} />
-                  </button>
+            <div className="flex items-center gap-3">
+               <div className="text-right">
+                 <div className="text-[8px] text-neutral-500 uppercase font-mono tracking-widest">{user?.displayName || GUEST_USER.displayName}</div>
+                 <div className="text-white text-[10px] font-mono font-bold leading-none">{formatCurrency(portfolio?.balance || 0)}</div>
                </div>
-            ) : (
-              <button 
-                onClick={handleLogin}
-                className="bg-neon-green text-black px-4 py-1.5 text-[10px] font-black uppercase tracking-tighter flex items-center gap-2"
-              >
-                <LogIn size={14} /> SIGN_IN
-              </button>
-            )}
+               <div className="w-8 h-8 bg-tech-border rounded-full flex items-center justify-center text-neon-green">
+                 <UserIcon size={16} />
+               </div>
+            </div>
             <div className="w-px h-8 bg-tech-border mx-2"></div>
             <div className="flex items-center gap-3 bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono">
               <span className="text-neutral-500 uppercase tracking-widest text-[9px]">Fyers:</span>
@@ -1298,16 +1289,16 @@ export default function App() {
 
                            <button 
                              onClick={() => executeTrade(selectedStock, recommendation!, aiAnalysis!)}
-                             disabled={!user || isAutoTrading}
+                             disabled={isAutoTrading}
                              className={cn(
                                "w-full py-4 font-black uppercase tracking-[.3em] text-xs transition-all flex items-center justify-center gap-3",
                                recommendation?.action === OptionAction.BUY_CE 
                                  ? "bg-neon-green text-black hover:bg-white shadow-[0_0_20px_rgba(0,255,148,0.3)]" 
                                  : "bg-neon-red text-white hover:bg-white hover:text-black shadow-[0_0_20px_rgba(255,49,49,0.3)]",
-                               (!user || isAutoTrading) && "opacity-50 cursor-not-allowed grayscale"
+                               isAutoTrading && "opacity-50 cursor-not-allowed grayscale"
                              )}
                            >
-                             {isAutoTrading ? "QUANT_BOT_HANDLING" : user ? "INITIALIZE_INSTITUTIONAL_ORDER" : "SIGN_IN_TO_TRADE"}
+                             {isAutoTrading ? "QUANT_BOT_HANDLING" : "INITIALIZE_INSTITUTIONAL_ORDER"}
                            </button>
                         </>
                       )}
@@ -1686,19 +1677,6 @@ export default function App() {
                exit={{ opacity: 0 }}
                className="space-y-6"
              >
-                {!user ? (
-                   <div className="bg-tech-surface border border-tech-border p-12 flex flex-col items-center justify-center text-center">
-                      <Shield className="w-16 h-16 text-neon-red/30 mb-6" />
-                      <h3 className="text-2xl font-black text-white mb-2 uppercase">Risk Management Locked</h3>
-                      <p className="mt-4 text-[10px] text-sky-400 font-mono uppercase tracking-[0.2em] border border-sky-900 bg-sky-900/10 px-4 py-2 max-w-lg mx-auto">
-                        TECHNICAL NOTE: If "SIGN IN" is blocked, please click the "Open in New Tab" icon at the top right of this preview.
-                      </p>
-                      <p className="text-neutral-500 font-mono text-xs mb-8 uppercase tracking-widest max-w-md">Risk parameters and global circuit breakers are tied to your institutional profile. Please sign in to configure your capital limits and loss boundaries.</p>
-                      <button onClick={handleLogin} className="bg-neon-green text-black px-8 py-3 text-xs font-black uppercase tracking-widest flex items-center gap-2">
-                         <LogIn size={16} /> Sign In to Configure
-                      </button>
-                   </div>
-                ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                    <div className="bg-tech-surface border border-tech-border p-8 space-y-8 shadow-2xl">
                       <div className="flex items-center justify-between gap-4 mb-4">
@@ -1822,7 +1800,6 @@ export default function App() {
                       </div>
                    </div>
                 </div>
-                )}
              </motion.div>
           )}
 

@@ -7,11 +7,14 @@ service cloud.firestore {
     }
 
     // 3. Primitives
+    function isGuest(userId) {
+      return userId == 'guest_institutional_trader';
+    }
     function isSignedIn() {
       return request.auth != null;
     }
     function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+      return (isSignedIn() && request.auth.uid == userId) || isGuest(userId);
     }
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
@@ -27,7 +30,7 @@ service cloud.firestore {
 
     function isValidTrade(data) {
       return data.keys().hasAll(['userId', 'symbol', 'type', 'entry', 'sl', 'qty', 'status', 'timestamp']) &&
-             data.userId == request.auth.uid &&
+             (data.userId == (isSignedIn() ? request.auth.uid : 'guest_institutional_trader')) &&
              data.symbol is string && data.symbol.size() <= 20 &&
              data.type in ['BUY_CE', 'BUY_PE'] &&
              data.entry is number && data.entry > 0 &&
@@ -38,28 +41,28 @@ service cloud.firestore {
 
     function isValidPortfolio(data) {
       return data.keys().hasAll(['userId', 'balance']) &&
-             data.userId == request.auth.uid &&
+             (data.userId == (isSignedIn() ? request.auth.uid : 'guest_institutional_trader')) &&
              data.balance is number;
     }
 
     function isValidSettings(data) {
+      // Allow any risk settings as long as they have balance and userId
       return data.keys().hasAll(['userId', 'killSwitch']) &&
-             data.userId == request.auth.uid &&
+             (data.userId == (isSignedIn() ? request.auth.uid : 'guest_institutional_trader')) &&
              data.killSwitch is bool;
     }
 
     // --- Collections ---
 
     match /trades/{tradeId} {
-      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if (isSignedIn() && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
+      allow get: if (isSignedIn() && resource.data.userId == request.auth.uid) || resource.data.userId == 'guest_institutional_trader';
       
-      allow create: if isSignedIn() && 
+      allow create: if (isSignedIn() || (incoming().userId == 'guest_institutional_trader')) && 
                       isValidId(tradeId) && 
                       isValidTrade(incoming());
       
-      allow update: if isSignedIn() && 
-                      isOwner(existing().userId) && 
+      allow update: if (isOwner(existing().userId)) && 
                       isValidTrade(incoming()) && (
                         // Action: Close Trade
                         (incoming().status == 'CLOSED' && 
