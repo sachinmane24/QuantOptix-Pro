@@ -8,7 +8,7 @@ import {
   LogOut, LogIn, User as UserIcon, Settings,
   History, TrendingUp, TrendingDown,
   LayoutDashboard, Eye, ListFilter, Activity, Target, Shield, AlertTriangle, 
-  BarChart3, Search, RefreshCw, Layers, Zap, PieChart, ChevronRight
+  BarChart3, Search, RefreshCw, Layers, Zap, PieChart, ChevronRight, Terminal
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -28,7 +28,7 @@ import {
 import { ScannerAlerts } from './components/ScannerAlerts';
 import { 
   StockData, OptionAction, Trend, MarketRegime, 
-  AIProbabilityModel, TradeRecommendation, RiskSettings
+  AIProbabilityModel, TradeRecommendation, RiskSettings, ScannerLog
 } from './types';
 import { 
   auth, db, googleProvider, signInWithPopup, onAuthStateChanged, 
