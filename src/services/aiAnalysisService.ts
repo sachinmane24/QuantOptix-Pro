@@ -5,6 +5,7 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 import { StockData, OptionChainData, AIProbabilityModel, OptionAction, Trend, MarketRegime } from "../types";
+import { getStrikeInterval } from "./nseService";
 import axios from "axios";
 
 // Helper to check if we are in node or browser
@@ -139,14 +140,19 @@ export function generateRecommendation(
   optionChain: OptionChainData[]
 ): any {
   const action = stock.trend === Trend.BULLISH ? OptionAction.BUY_CE : OptionAction.BUY_PE;
-  const atmStrike = Math.round(stock.lastPrice / 50) * 50;
+  const interval = getStrikeInterval(stock.lastPrice);
+  const atmStrike = Math.round(stock.lastPrice / interval) * interval;
   
-  // Select best strike (slightly ITM or ATM)
+  // Select best strike (Closest to ATM)
   let bestContract;
   if (action === OptionAction.BUY_CE) {
-    bestContract = optionChain.find(c => c.type === 'CE' && c.strike <= atmStrike) || optionChain[0];
+    // For CE, pick the strike closest to ATM from the lower side (Slightly ITM is better for options buying)
+    const ceContracts = optionChain.filter(c => c.type === 'CE').sort((a, b) => b.strike - a.strike);
+    bestContract = ceContracts.find(c => c.strike <= atmStrike) || ceContracts[0];
   } else {
-    bestContract = optionChain.find(c => c.type === 'PUT' && c.strike >= atmStrike) || optionChain[0];
+    // For PUT, pick the strike closest to ATM from the upper side (Slightly ITM)
+    const peContracts = optionChain.filter(c => c.type === 'PUT').sort((a, b) => a.strike - b.strike);
+    bestContract = peContracts.find(c => c.strike >= atmStrike) || peContracts[0];
   }
 
   const entryPrice = bestContract.lastPrice;

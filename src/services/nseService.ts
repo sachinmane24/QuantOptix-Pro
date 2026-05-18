@@ -57,9 +57,19 @@ export function getLiveStockData(): StockData[] {
   });
 }
 
+export function getStrikeInterval(price: number): number {
+  if (price > 5000) return 100;
+  if (price > 1000) return 50;
+  if (price > 500) return 20;
+  if (price > 100) return 10;
+  if (price > 50) return 5;
+  return 1;
+}
+
 export function getOptionChain(symbol: string, currentPrice: number): OptionChainData[] {
-  const roundPrice = Math.round(currentPrice / 50) * 50;
-  const strikes = Array.from({ length: 11 }, (_, i) => roundPrice - 250 + i * 50);
+  const interval = getStrikeInterval(currentPrice);
+  const roundPrice = Math.round(currentPrice / interval) * interval;
+  const strikes = Array.from({ length: 11 }, (_, i) => roundPrice - (5 * interval) + i * interval);
   
   const chain: OptionChainData[] = [];
   strikes.forEach(strike => {
@@ -102,7 +112,7 @@ let dynamicMarketOverview: any = null;
  * Picks ATM or slightly OTM strike based on delta (approximate)
  */
 export function getRecommendedStrike(price: number, type: 'CE' | 'PUT', mode: 'AGGRESSIVE' | 'CONSERVATIVE' = 'CONSERVATIVE') {
-  const strikeInterval = price > 5000 ? 100 : (price > 1000 ? 50 : (price > 500 ? 20 : 10));
+  const strikeInterval = getStrikeInterval(price);
   const atm = Math.round(price / strikeInterval) * strikeInterval;
   
   if (type === 'CE') {

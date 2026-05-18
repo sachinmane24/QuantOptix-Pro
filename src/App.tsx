@@ -1305,7 +1305,7 @@ export default function App() {
                               </div>
                               <div className="p-3 bg-tech-bg border border-neon-red/20 text-neon-red">
                                  <span className="text-[8px] block mb-1">Stop Loss</span>
-                                 <span className="text-sm font-bold tracking-widest">{recommendation?.stopLoss}</span>
+                                 <span className="text-sm font-bold tracking-widest">{formatCurrency(recommendation?.stopLoss || 0)}</span>
                               </div>
                            </div>
 
@@ -1313,7 +1313,7 @@ export default function App() {
                               {recommendation?.targets?.map((tgt: number, i: number) => (
                                 <div key={i} className="flex justify-between items-center bg-tech-bg p-2.5 border border-neon-green/20">
                                    <span className="text-[10px] text-neon-green font-bold uppercase tracking-widest">TARGET_{i+1}</span>
-                                   <span className="text-sm font-bold text-white tracking-widest">{tgt}</span>
+                                   <span className="text-sm font-bold text-white tracking-widest">{formatCurrency(tgt)}</span>
                                 </div>
                               ))}
                            </div>
