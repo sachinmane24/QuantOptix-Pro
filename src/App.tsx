@@ -104,6 +104,19 @@ export default function App() {
   const [scannerSignals, setScannerSignals] = useState<any[]>([]);
   const [sectorStrengths, setSectorStrengths] = useState<any[]>([]);
   const [activeUniverse, setActiveUniverse] = useState<string[]>([]);
+  const [systemLogs, setSystemLogs] = useState<ScannerLog[]>([]);
+
+  const addLog = (symbol: string, action: string, status: ScannerLog['status'], reason: string) => {
+    const newLog: ScannerLog = {
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date(),
+      symbol,
+      action,
+      status,
+      reason
+    };
+    setSystemLogs(prev => [newLog, ...prev].slice(0, 30));
+  };
 
   const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(false);
   const [manualAuthCode, setManualAuthCode] = useState('');
@@ -112,8 +125,10 @@ export default function App() {
 
   const loadMarketData = async () => {
     // Refresh Active Institutional Universe
+    addLog('STOCKS', 'RESCAN', 'INFO', 'Updating top movers universe from NSE Data...');
     const uni = await getActiveInstitutionalUniverse();
     setActiveUniverse(uni);
+    addLog('STOCKS', 'UNIVERSE_READY', 'SUCCESS', `Tracking active symbols: ${uni.join(', ')}`);
 
     const realData = await fetchLiveMarketData();
     let currentStocks: StockData[] = [];
@@ -124,10 +139,17 @@ export default function App() {
     } else {
       currentStocks = getLiveStockData();
       setIsFyersConnected(false);
+      addLog('SYSTEM', 'LIVE_FEED_ERR', 'WARNING', 'Failed to connect to Fyers API. Using simulated data cluster.');
     }
     
     setStocks(currentStocks);
     setMarketInfo(getMarketOverview());
+
+    // Auto-analysis logic for logs
+    const hotStocks = currentStocks.filter(s => uni.includes(s.symbol) && Math.abs(s.pChange) > 2);
+    hotStocks.forEach(s => {
+      addLog(s.symbol, 'MOMENTUM_DETECTOR', 'SUCCESS', `Heavy flux detected: ${s.pChange.toFixed(2)}% move with ${s.relVolume.toFixed(1)}x volume.`);
+    });
 
     // Calculate Sector Strengths
     const sectors = Array.from(new Set(currentStocks.map(s => s.sector)));
@@ -420,6 +442,7 @@ export default function App() {
 
     // Reject if Kill Switch is active
     if (riskSettings.killSwitch) {
+       addLog(stock.symbol, 'RISK_BLOCK', 'ERROR', 'Global Kill Switch is ACTIVE. Halted.');
        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Global Kill Switch is ACTIVE`, ...prev]);
        return;
     }
@@ -432,6 +455,7 @@ export default function App() {
     }).length;
 
     if (tradesToday >= riskSettings.maxTradesPerDay) {
+       addLog(stock.symbol, 'RISK_BLOCK', 'WARNING', `Daily limit reached (${riskSettings.maxTradesPerDay}).`);
        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Max daily trades (${riskSettings.maxTradesPerDay}) reached`, ...prev]);
        return;
     }
@@ -439,18 +463,25 @@ export default function App() {
     // Check Max Capital
     const estimatedMargin = positions.reduce((acc, p) => acc + (p.entry * p.qty), 0);
     if (estimatedMargin >= riskSettings.maxCapital) {
+       addLog(stock.symbol, 'RISK_BLOCK', 'WARNING', 'Max capital allocation reached.');
        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Max capital allocation reached`, ...prev]);
        return;
     }
 
     // Check Max Loss Per Day (Drawdown)
     if (dailyPnL <= -riskSettings.maxLossPerDay) {
+       addLog(stock.symbol, 'RISK_BLOCK', 'ERROR', 'Daily drawdown limit hit.');
        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: Daily SL Limit (${formatCurrency(riskSettings.maxLossPerDay)}) hit`, ...prev]);
        return;
     }
 
     // Check if already in position
-    if (positions.find(p => p.symbol === stock.symbol)) return;
+    if (positions.find(p => p.symbol === stock.symbol)) {
+      addLog(stock.symbol, 'SKIP', 'INFO', 'Position already open for this symbol.');
+      return;
+    }
+
+    addLog(stock.symbol, 'ORDER_INIT', 'INFO', `Initializing institutional ${rec.action} order.`);
 
     const riskAmount = (portfolio?.balance || 1000000) * (riskSettings.riskPerTrade / 100);
     const entry = rec.entryPrice;
@@ -480,11 +511,13 @@ export default function App() {
 
     try {
       await addDoc(collection(db, 'trades'), newPosition);
+      addLog(stock.symbol, 'ORDER_SUCCESS', 'SUCCESS', `Order executed: ${newPosition.qty} units @ ${newPosition.entry}.`);
       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER EXECUTED: ${stock.symbol} ${rec.action} @ ${rec.entryPrice} QTY: ${qty}`, ...prev]);
       
       // Notify Telegram
       sendTelegramNotification(formatTradeEntry(newPosition));
-    } catch (err) {
+    } catch (err: any) {
+      addLog(stock.symbol, 'ORDER_ERR', 'ERROR', `Execution failed: ${err.message}`);
       handleFirestoreError(err, OperationType.CREATE, 'trades');
     }
   };
@@ -884,6 +917,43 @@ export default function App() {
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                  </div>
+
+                  {/* Institutional Console (System Logs) */}
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-end">
+                      <h2 className="text-[10px] font-mono font-bold uppercase tracking-[.3em] text-neutral-500 flex items-center gap-2">
+                        <Terminal size={12} className="text-neon-green" />
+                        Institutional Engine Console
+                      </h2>
+                      <div className="text-[9px] font-mono text-neutral-600 uppercase tracking-widest">Verbosity: High // Trace Enabled</div>
+                    </div>
+                    <div className="bg-[#050608] border border-tech-border h-[250px] overflow-y-auto font-mono p-4 custom-scrollbar">
+                      {systemLogs.length === 0 ? (
+                        <div className="h-full flex items-center justify-center text-neutral-700 text-[10px] uppercase tracking-[0.4em]">
+                          Engine Idle. Listening for institutional flow...
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {systemLogs.map(log => (
+                            <div key={log.id} className="text-[10px] flex gap-3 group">
+                              <span className="text-neutral-600 shrink-0">[{log.timestamp.toLocaleTimeString()}]</span>
+                              <span className={cn(
+                                "flex-none w-20 font-bold",
+                                log.status === 'SUCCESS' ? "text-neon-green" : 
+                                log.status === 'WARNING' ? "text-amber-500" : 
+                                log.status === 'ERROR' ? "text-neon-red" : "text-sky-400"
+                              )}>
+                                {log.action}
+                              </span>
+                              <span className="text-white font-bold shrink-0 w-16">{log.symbol}</span>
+                              <span className="text-neutral-400 group-hover:text-white transition-colors">{log.reason}</span>
+                            </div>
+                          ))}
+                          <div className="pt-2 animate-pulse text-neon-green text-[10px]">_</div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </motion.div>

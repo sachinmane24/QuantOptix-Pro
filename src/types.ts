@@ -80,6 +80,15 @@ export interface TradeRecommendation {
   probability: number;
 }
 
+export interface ScannerLog {
+  id: string;
+  timestamp: Date;
+  symbol: string;
+  action: string;
+  status: 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR';
+  reason: string;
+}
+
 export interface RiskSettings {
   maxCapital: number;
   maxTradesPerDay: number;
