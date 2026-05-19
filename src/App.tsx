@@ -2280,7 +2280,7 @@ export default function App() {
                                 </td>
                                 <td className={cn("px-4 py-3 font-black", (pos.type || '').includes('CE') ? "text-neon-green" : "text-neon-red")}>{pos.type || 'N/A'}</td>
                                 <td className="px-4 py-3 text-center text-neutral-500 font-mono text-[9px]">
-                                  {(pos.createdAt?.toDate?.() || (pos.createdAt instanceof Date ? pos.createdAt : new Date())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+                                  {(pos.timestamp?.toDate?.() || (pos.timestamp instanceof Date ? pos.timestamp : new Date())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
                                 </td>
                                 <td className="px-4 py-3 text-right">
                                   <div className="flex flex-col items-end">
@@ -2927,7 +2927,7 @@ export default function App() {
                                  </td>
                                  <td className="p-4 text-right text-neutral-500 font-mono text-[9px]">
                                    <div className="flex flex-col items-end">
-                                     <span className="text-neutral-400">IN: {(t.createdAt?.toDate?.() || (t.createdAt instanceof Date ? t.createdAt : new Date())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
+                                     <span className="text-neutral-400">IN: {(t.timestamp?.toDate?.() || (t.timestamp instanceof Date ? t.timestamp : new Date())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
                                      <span className="text-white font-black">OUT: {(t.closedAt?.toDate?.() || (t.closedAt instanceof Date ? t.closedAt : new Date())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}</span>
                                    </div>
                                  </td>
@@ -3063,22 +3063,18 @@ export default function App() {
                        <div className="h-[350px]">
                          <ResponsiveContainer width="100%" height="100%">
                            <BarChart data={[
-                             { hour: '09:00', pnl: tradeHistory.filter(t => { const h = (t.createdAt?.toDate?.() || t.createdAt)?.getHours(); return h === 9; }).reduce((s, c) => s + (c.pnl || 0), 0) },
-                             { hour: '10:00', pnl: tradeHistory.filter(t => { const h = (t.createdAt?.toDate?.() || t.createdAt)?.getHours(); return h === 10; }).reduce((s, c) => s + (c.pnl || 0), 0) },
-                             { hour: '11:00', pnl: tradeHistory.filter(t => { const h = (t.createdAt?.toDate?.() || t.createdAt)?.getHours(); return h === 11; }).reduce((s, c) => s + (c.pnl || 0), 0) },
-                             { hour: '12:00', pnl: tradeHistory.filter(t => { const h = (t.createdAt?.toDate?.() || t.createdAt)?.getHours(); return h === 12; }).reduce((s, c) => s + (c.pnl || 0), 0) },
-                             { hour: '13:00', pnl: tradeHistory.filter(t => { const h = (t.createdAt?.toDate?.() || t.createdAt)?.getHours(); return h === 13; }).reduce((s, c) => s + (c.pnl || 0), 0) },
-                             { hour: '14:00', pnl: tradeHistory.filter(t => { const h = (t.createdAt?.toDate?.() || t.createdAt)?.getHours(); return h === 14; }).reduce((s, c) => s + (c.pnl || 0), 0) },
-                             { hour: '15:00', pnl: tradeHistory.filter(t => { const h = (t.createdAt?.toDate?.() || t.createdAt)?.getHours(); return h === 15; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { hour: '09:00', pnl: tradeHistory.filter(t => { const h = (t.timestamp?.toDate?.() || t.timestamp)?.getHours(); return h === 9; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { hour: '10:00', pnl: tradeHistory.filter(t => { const h = (t.timestamp?.toDate?.() || t.timestamp)?.getHours(); return h === 10; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { hour: '11:00', pnl: tradeHistory.filter(t => { const h = (t.timestamp?.toDate?.() || t.timestamp)?.getHours(); return h === 11; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { hour: '12:00', pnl: tradeHistory.filter(t => { const h = (t.timestamp?.toDate?.() || t.timestamp)?.getHours(); return h === 12; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { hour: '13:00', pnl: tradeHistory.filter(t => { const h = (t.timestamp?.toDate?.() || t.timestamp)?.getHours(); return h === 13; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { hour: '14:00', pnl: tradeHistory.filter(t => { const h = (t.timestamp?.toDate?.() || t.timestamp)?.getHours(); return h === 14; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { hour: '15:00', pnl: tradeHistory.filter(t => { const h = (t.timestamp?.toDate?.() || t.timestamp)?.getHours(); return h === 15; }).reduce((s, c) => s + (c.pnl || 0), 0) },
                            ]}>
                              <XAxis dataKey="hour" fontSize={10} axisLine={false} tickLine={false} />
                              <YAxis fontSize={10} axisLine={false} tickLine={false} />
                              <Tooltip cursor={{ fill: 'rgba(255,255,255,0.05)' }} contentStyle={{ backgroundColor: '#0B0E14', border: '1px solid #333', fontSize: '10px' }} />
-                             <Bar dataKey="pnl">
-                               {tradeHistory.map((entry, index) => (
-                                 <Cell key={`cell-${index}`} fill={(entry.pnl || 0) >= 0 ? '#00FF94' : '#FF3131'} />
-                               ))}
-                             </Bar>
+                             <Bar dataKey="pnl" fill="#00FF94" radius={[4, 4, 0, 0]} />
                            </BarChart>
                          </ResponsiveContainer>
                        </div>
@@ -3089,10 +3085,10 @@ export default function App() {
                          <h3 className="text-sm font-black text-white uppercase tracking-tight mb-6">Hold Duration vs Outcome</h3>
                          <div className="space-y-4">
                            {[
-                             { range: '< 15m', trades: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.createdAt?.toDate?.() || t.createdAt)?.getTime()) / 1000 / 60; return d < 15; }).length, pnl: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.createdAt?.toDate?.() || t.createdAt)?.getTime()) / 1000 / 60; return d < 15; }).reduce((s, c) => s + (c.pnl || 0), 0) },
-                             { range: '15-60m', trades: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.createdAt?.toDate?.() || t.createdAt)?.getTime()) / 1000 / 60; return d >= 15 && d < 60; }).length, pnl: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.createdAt?.toDate?.() || t.createdAt)?.getTime()) / 1000 / 60; return d >= 15 && d < 60; }).reduce((s, c) => s + (c.pnl || 0), 0) },
-                             { range: '1-3h', trades: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.createdAt?.toDate?.() || t.createdAt)?.getTime()) / 1000 / 60; return d >= 60 && d < 180; }).length, pnl: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.createdAt?.toDate?.() || t.createdAt)?.getTime()) / 1000 / 60; return d >= 60 && d < 180; }).reduce((s, c) => s + (c.pnl || 0), 0) },
-                             { range: 'EOD', trades: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.createdAt?.toDate?.() || t.createdAt)?.getTime()) / 1000 / 60; return d >= 180; }).length, pnl: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.createdAt?.toDate?.() || t.createdAt)?.getTime()) / 1000 / 60; return d >= 180; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { range: '< 15m', trades: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.timestamp?.toDate?.() || t.timestamp)?.getTime()) / 1000 / 60; return d < 15; }).length, pnl: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.timestamp?.toDate?.() || t.timestamp)?.getTime()) / 1000 / 60; return d < 15; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { range: '15-60m', trades: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.timestamp?.toDate?.() || t.timestamp)?.getTime()) / 1000 / 60; return d >= 15 && d < 60; }).length, pnl: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.timestamp?.toDate?.() || t.timestamp)?.getTime()) / 1000 / 60; return d >= 15 && d < 60; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { range: '1-3h', trades: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.timestamp?.toDate?.() || t.timestamp)?.getTime()) / 1000 / 60; return d >= 60 && d < 180; }).length, pnl: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.timestamp?.toDate?.() || t.timestamp)?.getTime()) / 1000 / 60; return d >= 60 && d < 180; }).reduce((s, c) => s + (c.pnl || 0), 0) },
+                             { range: 'EOD', trades: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.timestamp?.toDate?.() || t.timestamp)?.getTime()) / 1000 / 60; return d >= 180; }).length, pnl: tradeHistory.filter(t => { const d = ((t.closedAt?.toDate?.() || t.closedAt)?.getTime() - (t.timestamp?.toDate?.() || t.timestamp)?.getTime()) / 1000 / 60; return d >= 180; }).reduce((s, c) => s + (c.pnl || 0), 0) },
                            ].map((item, i) => (
                              <div key={i} className="flex justify-between items-center p-3 border border-tech-border hover:bg-white/5 transition-all">
                                <span className="text-[10px] font-mono text-neutral-500">{item.range}</span>
