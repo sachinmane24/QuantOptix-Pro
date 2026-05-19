@@ -615,18 +615,26 @@ async function startServer() {
     const chatId = process.env.TELEGRAM_CHAT_ID;
 
     if (!botToken || !chatId) {
-      return res.status(500).json({ error: "Telegram configuration missing" });
+      console.error("[Telegram] ERR: Configuration missing. Token:", !!botToken, "ChatId:", !!chatId);
+      return res.status(400).json({ 
+        error: "Telegram configuration missing", 
+        details: "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not found in environment." 
+      });
     }
 
     try {
-      await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      const response = await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         chat_id: chatId,
         text: message,
         parse_mode: 'HTML',
       });
-      res.json({ success: true });
+      res.json({ success: true, api_response: response.data });
     } catch (error: any) {
-      res.status(500).json({ error: "Failed to send Telegram message", details: error.response?.data || error.message });
+      console.error("[Telegram] ERR: Failed to send message.", error.response?.data || error.message);
+      res.status(500).json({ 
+        error: "Failed to send Telegram message", 
+        details: error.response?.data || error.message 
+      });
     }
   });
 
@@ -727,10 +735,12 @@ async function startServer() {
       userId: !!process.env.FYERS_USER_ID,
       totp: !!process.env.FYERS_TOTP_SECRET,
       pin: !!process.env.FYERS_PIN,
+      telegramBot: !!process.env.TELEGRAM_BOT_TOKEN,
+      telegramChat: !!process.env.TELEGRAM_CHAT_ID,
       appUrl: process.env.APP_URL || "MISSING",
       redirectUri: process.env.FYERS_REDIRECT_URI || "DETECTION_MODE"
     };
-    console.log(`[Config Status] ClientID: ${cfg.clientId}, AppURL: ${cfg.appUrl}, AutoLogin Ready: ${cfg.userId && cfg.totp && cfg.pin}`);
+    console.log(`[Config Status] ClientID: ${cfg.clientId}, Telegram Ready: ${cfg.telegramBot && cfg.telegramChat}, AutoLogin Ready: ${cfg.userId && cfg.totp && cfg.pin}`);
 
     // Try auto-login AFTER server is listening
     if (!process.env.FYERS_ACCESS_TOKEN && process.env.FYERS_TOTP_SECRET) {

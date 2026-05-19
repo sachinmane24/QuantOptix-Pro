@@ -822,7 +822,8 @@ export default function App() {
       if (data.success) {
         alert("SUCCESS: Test message delivered to Telegram!");
       } else {
-        alert(`ERROR: ${data.details || data.error || "Unknown error"}. Ensure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in Secrets.`);
+        const errorDetail = typeof data.details === 'object' ? JSON.stringify(data.details) : (data.details || data.error || "Unknown error");
+        alert(`ERROR: ${errorDetail}.\n\nDouble-check your Token and Chat ID. Ensure your bot is started and has permissions to post.`);
       }
     } catch (e: any) {
       alert("FAILED: Network error or server unreachable. " + e.message);
