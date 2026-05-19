@@ -578,7 +578,9 @@ export default function App() {
         setIsFyersConnected(true);
         loadMarketData();
       } else {
-        alert(data.message || "Auto-login failed");
+        const details = data.details ? `\n\nReason: ${typeof data.details === 'object' ? JSON.stringify(data.details) : data.details}` : "";
+        const debug = data.debug_info ? `\n\nEnvironment (Masked):\n- Client: ${data.debug_info.clientId}\n- User: ${data.debug_info.userId}\n- PIN: ${data.debug_info.pin}\n- TOTP: ${data.debug_info.totp}` : "";
+        alert(`${data.message || "Auto-login failed"}${details}${debug}`);
       }
     } catch (e) {
       console.error("Auto-login request failed:", e);

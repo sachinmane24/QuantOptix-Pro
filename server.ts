@@ -6,8 +6,7 @@ import dotenv from "dotenv";
 import { Server } from "socket.io";
 import http from "http";
 import crypto from "crypto";
-// @ts-ignore
-import otplib from "otplib";
+import * as otplib from "otplib";
 const { authenticator } = otplib;
 // @ts-ignore
 import fyers from "fyers-api-v3";
@@ -48,12 +47,13 @@ async function performAutoLogin() {
     if (!redirectUri) missing.push("FYERS_REDIRECT_URI/URL");
     
     console.log(`[AutoLogin] Missing automated login credentials: ${missing.join(", ")}. Skipping...`);
-    return null;
+    return { success: false, error: "Missing credentials", missing };
   }
 
   loginPromise = (async () => {
     try {
-      console.log(`[AutoLogin] Starting automated session for USER: ${userId} with CLIENT: ${clientId}`);
+      const mask = (s: string | undefined) => s ? `${s.substring(0, 2)}...${s.substring(s.length - 2)} (len: ${s.length})` : "MISSING";
+      console.log(`[AutoLogin Debug] Starting: USER=${userId}, CLIENT=${clientId}, PIN=${mask(pin)}, TOTP=${mask(totpSecret)}`);
 
       // Helper for base64
       const b64 = (s: string) => Buffer.from(s).toString('base64');
@@ -156,12 +156,12 @@ async function performAutoLogin() {
       console.log("[AutoLogin] Success! Access token generated.");
       
       process.env.FYERS_ACCESS_TOKEN = finalAccessToken;
-      return finalAccessToken;
+      return { success: true, token: finalAccessToken };
 
     } catch (error: any) {
       const respData = error.response?.data || error.message;
       console.error("[AutoLogin] Failed:", respData);
-      return null;
+      return { success: false, error: respData };
     } finally {
       loginPromise = null;
     }
@@ -362,12 +362,23 @@ async function startServer() {
       });
     }
 
-    const token = await performAutoLogin();
-    if (token) {
+    const result = await performAutoLogin();
+    if (result && result.success) {
       try { setupFyersSocket(); } catch (e) {}
-      res.json({ success: true, message: "Auto-login successful", token: token.substring(0, 10) + "..." });
+      res.json({ success: true, message: "Auto-login successful", token: result.token.substring(0, 10) + "..." });
     } else {
-      res.status(500).json({ success: false, message: "Auto-login failed. Verify PIN and TOTP Secret in environment secrets." });
+      const mask = (s: string | undefined) => s ? `${s.substring(0, 2)}...${s.substring(s.length - 2)} (len: ${s.length})` : "MISSING";
+      res.status(500).json({ 
+        success: false, 
+        message: "Auto-login failed.", 
+        details: result?.error || "Unknown reason",
+        debug_info: {
+          clientId: mask(clientId),
+          userId: userId,
+          pin: mask(process.env.FYERS_PIN),
+          totp: mask(totpSecret)
+        }
+      });
     }
   });
 
