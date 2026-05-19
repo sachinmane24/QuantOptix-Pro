@@ -757,7 +757,7 @@ export default function App() {
           winRate: 0,
           netPnl: 0
         };
-        setDoc(doc(db, 'portfolios', user.uid), initial);
+        setDoc(doc(db, 'portfolios', user.uid), initial).catch(err => handleFirestoreError(err, OperationType.CREATE, `portfolios/${user.uid}`));
         setPortfolio(initial);
       }
     }, (err) => handleFirestoreError(err, OperationType.GET, `portfolios/${user.uid}`));
@@ -812,7 +812,7 @@ export default function App() {
           maxConcurrentTrades: 5,
           maxCapitalPerTrade: 200000
         };
-        setDoc(doc(db, 'settings', user.uid), initial);
+        setDoc(doc(db, 'settings', user.uid), initial).catch(err => handleFirestoreError(err, OperationType.CREATE, `settings/${user.uid}`));
         setRiskSettings(initial);
         setEditingSettings(initial);
       }
@@ -935,7 +935,7 @@ export default function App() {
 
     // Auto-Trading Logic
     if (isAutoTrading && analysis.winProbability >= 80) {
-      executeTrade(stock, rec, analysis);
+      executeTrade(stock, rec, analysis).catch(e => console.error("[AutoSelect] Trade execution failed:", e));
     }
   };
 
@@ -1339,7 +1339,7 @@ export default function App() {
                       CONNECT
                     </a>
                     <button 
-                      onClick={triggerAutoLogin}
+                      onClick={() => triggerAutoLogin().catch(() => {})}
                       disabled={isAutoLoggingIn}
                       className="text-[9px] bg-neutral-800 hover:bg-neutral-700 text-neutral-400 py-0.5 px-1.5 transition-colors uppercase font-bold"
                     >
@@ -1362,7 +1362,7 @@ export default function App() {
                         className="bg-black border border-tech-border text-[9px] px-1 py-0.5 w-24 text-white focus:border-neon-green outline-none"
                       />
                       <button 
-                        onClick={submitManualCode}
+                        onClick={() => submitManualCode().catch(() => {})}
                         disabled={isSubmittingCode}
                         className="text-[9px] bg-neon-green/20 hover:bg-neon-green/40 text-neon-green py-0.5 px-1.5 transition-colors uppercase font-bold border border-neon-green/30"
                       >
@@ -1377,7 +1377,7 @@ export default function App() {
             <div className="bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono flex items-center gap-3">
               <span className="text-neutral-500 uppercase tracking-widest text-[9px]">Alerts:</span>
               <button 
-                onClick={sendTestTelegram}
+                onClick={() => sendTestTelegram().catch(() => {})}
                 disabled={isSendingTelegram}
                 className="text-sky-400 hover:text-white transition-colors font-bold flex items-center gap-1"
               >
@@ -1385,7 +1385,7 @@ export default function App() {
               </button>
               <div className="w-px h-3 bg-tech-border"></div>
               <button 
-                onClick={forceTradeDebug}
+                onClick={() => forceTradeDebug().catch(() => {})}
                 className="text-amber-400 hover:text-white transition-colors font-bold text-[9px]"
               >
                 DEBUG_EXEC
@@ -1987,7 +1987,7 @@ export default function App() {
                            </div>
 
                            <button 
-                             onClick={() => executeTrade(selectedStock, recommendation!, aiAnalysis!)}
+                             onClick={() => executeTrade(selectedStock, recommendation!, aiAnalysis!).catch(e => console.error("[UI] Manual execution failed:", e))}
                              disabled={isAutoTrading}
                              className={cn(
                                "w-full py-4 font-black uppercase tracking-[.3em] text-xs transition-all flex items-center justify-center gap-3",
@@ -2314,7 +2314,7 @@ export default function App() {
                                 </td>
                                 <td className="px-4 py-3 text-right">
                                   <button 
-                                    onClick={() => closePosition(pos.id)}
+                                    onClick={() => closePosition(pos.id).catch(e => console.error("[UI] Manual close failed:", e))}
                                     className="text-neutral-500 hover:text-white uppercase text-[8px] font-black tracking-[.2em] border border-tech-border px-3 py-1 hover:border-white transition-all focus:outline-none"
                                   >
                                     LIQUIDATE
@@ -2493,7 +2493,7 @@ export default function App() {
                             <h2 className="text-xl font-black uppercase tracking-tighter">Global Risk Management</h2>
                          </div>
                          <button 
-                            onClick={() => updateRiskSettings({ killSwitch: !riskSettings?.killSwitch })}
+                            onClick={() => updateRiskSettings({ killSwitch: !riskSettings?.killSwitch }).catch(() => {})}
                             className={cn(
                                "px-6 py-2 text-[10px] font-black uppercase tracking-[.3em] transition-all border",
                                riskSettings?.killSwitch 
@@ -2554,7 +2554,7 @@ export default function App() {
 
                       <div className="flex justify-end pt-4">
                          <button
-                            onClick={() => editingSettings && updateRiskSettings(editingSettings)}
+                            onClick={() => editingSettings && updateRiskSettings(editingSettings).catch(() => {})}
                             disabled={riskSettings?.killSwitch || JSON.stringify(riskSettings) === JSON.stringify(editingSettings)}
                             className={cn(
                                "px-8 py-3 text-[10px] font-black uppercase tracking-[.4em] transition-all",
