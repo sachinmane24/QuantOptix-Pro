@@ -160,9 +160,26 @@ export default function App() {
             
             if (timeValue >= 1500) {
               exitReason = 'INTRADAY_SQUARE_OFF';
-            } else if (currentPrice <= pos.sl) {
-              exitReason = 'STOP_LOSS';
+            } else if (currentPrice <= (pos.tsl || pos.sl)) {
+              exitReason = pos.tsl ? 'TRAILING_STOP_HIT' : 'STOP_LOSS';
             } else {
+              // --- Trailing Stop Loss Activation ---
+              // If price moves > 10% in favor, move SL to entry (BE)
+              if (currentPrice >= pos.entry * 1.10 && pos.sl < pos.entry) {
+                const docRef = doc(db, 'trades', pos.id);
+                updateDoc(docRef, { sl: pos.entry });
+                addLog(pos.symbol, 'TSL_UPDATE', 'SUCCESS', `Stop Loss moved to Breakeven @ ${formatCurrency(pos.entry)}`);
+              }
+              // If price moves > 20% in favor, activate/update Trailing Stop
+              if (currentPrice >= pos.entry * 1.25) {
+                const idealTsl = currentPrice * 0.90; // Trail with 10% buffer for options
+                if (!pos.tsl || idealTsl > pos.tsl) {
+                   const docRef = doc(db, 'trades', pos.id);
+                   updateDoc(docRef, { tsl: idealTsl });
+                   addLog(pos.symbol, 'TSL_UPDATE', 'SUCCESS', `Trailing Stop updated to ${formatCurrency(idealTsl)}`);
+                }
+              }
+
               const targets = pos.targets || [];
               if (targets.length > 0) {
                 const sortedTargets = [...targets].sort((a, b) => b - a);
@@ -783,7 +800,19 @@ export default function App() {
       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] REJECTED: Post 3:00 PM trade restriction`, ...prev]);
       return;
     }
-    // ----------------------------------------------------
+
+    // --- Institutional Confluence Filter ---
+    const bias = stock.higherTimeframeBias;
+    const isBullishTrade = rec.action.includes('CE') || rec.action.includes('BUY');
+    if (isBullishTrade && bias === 'BEARISH') {
+      addLog(stock.symbol, 'CONFLUENCE_ERR', 'ERROR', 'Trade REJECTED: Higher Timeframe Bias is BEARISH while attempting BUY/CE.');
+      return;
+    }
+    if (!isBullishTrade && bias === 'BULLISH') {
+      addLog(stock.symbol, 'CONFLUENCE_ERR', 'ERROR', 'Trade REJECTED: Higher Timeframe Bias is BULLISH while attempting SELL/PE.');
+      return;
+    }
+    // ----------------------------------------
 
     tradingLock.current[lockKey] = true;
     
@@ -1336,7 +1365,7 @@ export default function App() {
                             <th className="px-4 py-3 tracking-widest">Change</th>
                             <th className="px-4 py-3 tracking-widest">OI Change%</th>
                             <th className="px-4 py-3 tracking-widest">Buildup</th>
-                            <th className="px-4 py-3 tracking-widest">PCR</th>
+                            <th className="px-4 py-3 tracking-widest">CONFLUENCE</th>
                             <th className="px-4 py-3 tracking-widest text-right">Signal</th>
                           </tr>
                         </thead>
@@ -1353,6 +1382,18 @@ export default function App() {
                                 {stock.trend === Trend.BULLISH ? "LONG BUILDUP" : stock.trend === Trend.BEARISH ? "SHORT BUILDUP" : "NEUTRAL"}
                               </td>
                               <td className="px-4 py-3 text-neutral-500">{(0.6 + Math.random() * 0.8).toFixed(2)}</td>
+                              <td className="px-4 py-3">
+                                <div className="flex flex-col">
+                                  <span className={cn(
+                                    "text-[9px] font-bold px-1.5 py-0.5 border w-fit font-mono",
+                                    stock.higherTimeframeBias === 'BULLISH' ? "border-neon-green/30 text-neon-green bg-neon-green/5" :
+                                    stock.higherTimeframeBias === 'BEARISH' ? "border-neon-red/30 text-neon-red bg-neon-red/5" :
+                                    "border-neutral-700 text-neutral-400"
+                                  )}>
+                                    H1: {stock.higherTimeframeBias || 'NEUTRAL'}
+                                  </span>
+                                </div>
+                              </td>
                               <td className={cn("px-4 py-3 text-right font-bold", 
                                 stock.trend === Trend.BULLISH ? "text-neon-green glow-green" : 
                                 stock.trend === Trend.BEARISH ? "text-neon-red glow-red" : "text-neutral-700"

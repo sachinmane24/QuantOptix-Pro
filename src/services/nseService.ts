@@ -51,6 +51,7 @@ export function getLiveStockData(): StockData[] {
       trend,
       rsi: 30 + Math.random() * 40,
       pulse: (pChange * 0.8) + (Math.random() * 0.4),
+      higherTimeframeBias: Math.random() > 0.5 ? 'BULLISH' : 'BEARISH',
       lotSize: info?.lotSize || 1,
       atr: lastPrice * (0.012 + Math.random() * 0.008), // 1.2% - 2% ATR
       adr: lastPrice * (0.025 + Math.random() * 0.015)  // 2.5% - 4% ADR
@@ -264,6 +265,7 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
             trend: pChange > 0 ? Trend.BULLISH : Trend.BEARISH,
             rsi: 40 + (pChange * 2),
             pulse: pChange * 0.7, // Simplified pulse
+            higherTimeframeBias: pChange > 0.5 ? 'BULLISH' : pChange < -0.5 ? 'BEARISH' : 'NEUTRAL',
             lotSize: FNO_DATA[symbol]?.lotSize || 1,
             atr: lastPrice * (0.015), // Standard approx
             adr: lastPrice * (0.03) // Standard approx

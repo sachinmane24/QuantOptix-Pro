@@ -69,6 +69,7 @@ export async function analyzeTradeProbability(
       Price Change: ${stock.pChange}%
       Relative Volume: ${stock.relVolume}
       Futures OI Change: ${stock.oiChange}%
+      Higher Timeframe (H1) Bias: ${stock.higherTimeframeBias || 'NEUTRAL'}
       Trend: ${stock.trend}
       Market Regime: ${stock.marketRegime}
       Sector: ${stock.sector}
@@ -79,6 +80,7 @@ export async function analyzeTradeProbability(
       
       Focus on HIGH PROBABILITY OPTIONS BUYING opportunities. 
       Analyze institutional activity, momentum, and volatility expansion.
+      Factor in the Higher Timeframe Bias: Entry should ideally align with the H1 trend.
       Provide a concise summary and scores.
     `;
 

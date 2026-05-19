@@ -39,6 +39,7 @@ export interface StockData {
   trend: Trend;
   rsi: number;
   pulse: number;
+  higherTimeframeBias?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   lotSize?: number;
   atr?: number;
   adr?: number;
@@ -89,6 +90,28 @@ export interface ScannerLog {
   action: string;
   status: 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR';
   reason: string;
+}
+
+export interface Position {
+  id: string;
+  userId: string;
+  symbol: string;
+  fyersSymbol: string;
+  type: string;
+  optionType: 'CE' | 'PUT' | 'PE';
+  strike: number;
+  qty: number;
+  entry: number;
+  sl: number;
+  tsl?: number;
+  targets: number[];
+  pnl: number;
+  currentPrice: number;
+  status: 'ACTIVE' | 'OPEN' | 'CLOSED';
+  timestamp: any;
+  prob?: number;
+  exit?: number;
+  closedAt?: any;
 }
 
 export interface RiskSettings {
