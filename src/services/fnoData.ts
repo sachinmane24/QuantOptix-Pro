@@ -125,6 +125,7 @@ export const FNO_DATA: Record<string, FnoStockInfo> = {
   'LTF': { symbol: 'LTF', lotSize: 4424, sector: 'Financial Services' },
   'LICHSGFIN': { symbol: 'LICHSGFIN', lotSize: 1000, sector: 'Financial Services' },
   'LTIM': { symbol: 'LTIM', lotSize: 150, sector: 'IT' },
+  'LTM': { symbol: 'LTM', lotSize: 150, sector: 'IT' },
   'LT': { symbol: 'LT', lotSize: 300, sector: 'Capital Goods' },
   'LAURUSLABS': { symbol: 'LAURUSLABS', lotSize: 1500, sector: 'Pharma' },
   'LICI': { symbol: 'LICI', lotSize: 300, sector: 'Financial Services' },

@@ -81,6 +81,12 @@ export interface TradeRecommendation {
   riskReward: number;
   positionSize: string;
   probability: number;
+  greeks?: {
+    delta: number;
+    gamma: number;
+    theta: number;
+    vega: number;
+  };
 }
 
 export interface ScannerLog {
@@ -110,6 +116,9 @@ export interface Position {
   status: 'ACTIVE' | 'OPEN' | 'CLOSED';
   timestamp: any;
   prob?: number;
+  entryGreeks?: any;
+  exitGreeks?: any;
+  exitReason?: string;
   exit?: number;
   closedAt?: any;
 }
@@ -121,4 +130,6 @@ export interface RiskSettings {
   maxLossPerDay: number;
   riskPerTrade: number; // percentage
   killSwitch: boolean;
+  maxConcurrentTrades?: number;
+  maxCapitalPerTrade?: number;
 }

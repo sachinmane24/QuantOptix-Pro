@@ -196,7 +196,13 @@ export function generateRecommendation(
     ],
     riskReward: parseFloat(((target1 - entryPrice) / riskValue).toFixed(2)),
     positionSize: `${stock.lotSize || 1} Units (1 Lot)`,
-    probability: aiModel.winProbability
+    probability: aiModel.winProbability,
+    greeks: {
+      delta: bestContract.delta,
+      gamma: bestContract.gamma,
+      theta: bestContract.theta,
+      vega: bestContract.vega
+    }
   };
 }
 

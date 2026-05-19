@@ -187,10 +187,12 @@ export async function getActiveInstitutionalUniverse(): Promise<string[]> {
   }
 }
 
-export async function fetchLiveMarketData(): Promise<StockData[] | null> {
+export async function fetchLiveMarketData(trackedSymbols: string[] = []): Promise<StockData[] | null> {
   try {
     const activeUniverse = await getActiveInstitutionalUniverse();
-    const stockSymbols = activeUniverse.map(s => `NSE:${s}-EQ`).join(',');
+    const combinedUniverse = [...new Set([...activeUniverse, ...trackedSymbols])];
+    
+    const stockSymbols = combinedUniverse.map(s => `NSE:${s}-EQ`).join(',');
     const indexSymbols = 'NSE:NIFTY50-INDEX,NSE:NIFTYBANK-INDEX,NSE:INDIAVIX-INDEX';
     const queryParams = new URLSearchParams({ symbols: `${stockSymbols},${indexSymbols}` });
     const response = await fetch(`/api/market/quotes?${queryParams.toString()}`);
@@ -240,9 +242,9 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
 
       // Filter and map stocks
       return data.d
-        .filter((item: any) => item.n.includes('-EQ'))
+        .filter((item: any) => item.n.includes('-EQ') || item.n.includes('-INDEX'))
         .map((item: any) => {
-          const symbol = item.n.split(':')[1].split('-')[0];
+          const symbol = item.n.includes('-INDEX') ? item.n : item.n.split(':')[1].split('-')[0];
           const v = item.v;
           const lastPrice = v.lp;
           const pChange = v.chp;
@@ -254,21 +256,21 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
             pChange,
             volume: v.vol,
             relVolume: 0.9 + Math.random() * 1.5,
-            futuresOI: v.oi || Math.floor(Math.random() * 1000000), 
-            oiChange: v.oic || ((pChange * 2) + (Math.random() * 2 - 1)),
+            futuresOI: v.oi || 0,
+            oiChange: v.oic || 0,
             vwap: v.avg_price || lastPrice,
             ema20: lastPrice * (1 - (Math.random() * 0.02)),
             ema50: lastPrice * (1 - (Math.random() * 0.04)),
-            sector: FNO_DATA[symbol]?.sector || 'Diversified', 
+            sector: FNO_DATA[symbol]?.sector || 'Index',
             relativeStrength: (pChange - (nifty?.v?.chp || 0)),
             marketRegime: Math.abs(pChange) > 2 ? MarketRegime.BREAKOUT : MarketRegime.SIDEWAYS,
             trend: pChange > 0 ? Trend.BULLISH : Trend.BEARISH,
             rsi: 40 + (pChange * 2),
-            pulse: pChange * 0.7, // Simplified pulse
+            pulse: pChange * 0.7,
             higherTimeframeBias: pChange > 0.5 ? 'BULLISH' : pChange < -0.5 ? 'BEARISH' : 'NEUTRAL',
             lotSize: FNO_DATA[symbol]?.lotSize || 1,
-            atr: lastPrice * (0.015), // Standard approx
-            adr: lastPrice * (0.03) // Standard approx
+            atr: lastPrice * (0.015),
+            adr: lastPrice * (0.03)
           };
         });
     }
@@ -276,6 +278,30 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
   } catch (error) {
     console.error("Error fetching Fyers data:", error);
     return null;
+  }
+}
+
+/**
+ * Fetches real quotes for a specific list of symbols (including options)
+ */
+export async function fetchQuotes(symbols: string[]): Promise<Record<string, any>> {
+  if (symbols.length === 0) return {};
+  
+  try {
+    const symbolsStr = symbols.join(',');
+    const response = await fetch(`/api/market/quotes?symbols=${symbolsStr}`);
+    const data = await response.json();
+    
+    const quotes: Record<string, any> = {};
+    if (data.d && Array.isArray(data.d)) {
+      data.d.forEach((item: any) => {
+        quotes[item.n] = item.v;
+      });
+    }
+    return quotes;
+  } catch (error) {
+    console.error("Fetch Quotes Failed:", error);
+    return {};
   }
 }
 
