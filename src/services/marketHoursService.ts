@@ -68,6 +68,28 @@ export function isMarketOpen(date: Date = new Date()): { open: boolean, reason: 
   return { open: true, reason: 'Market session active' };
 }
 
+export function isExpiryDay(date: Date = new Date()): boolean {
+  // Most Indian index expiries are on Wednesday/Thursday
+  const dayOfWeek = date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
+  // Dynamic check for typical weekly expiries
+  return dayOfWeek === 'Wed' || dayOfWeek === 'Thu';
+}
+
+export function isLateDay(date: Date = new Date()): boolean {
+  const istFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+  const parts = istFormatter.formatToParts(date);
+  const hours = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+  const minutes = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+  const currentTime = hours * 100 + minutes;
+  
+  return currentTime >= 1430; // After 2:30 PM IST
+}
+
 export function isLoginTime(date: Date = new Date()): boolean {
   const istTime = date.toLocaleTimeString('en-US', { 
     timeZone: 'Asia/Kolkata', 

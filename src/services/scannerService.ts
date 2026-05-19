@@ -1,7 +1,7 @@
 import axios from "axios";
-import { RSI } from "technicalindicators";
+import { RSI, EMA } from "technicalindicators";
 import { Server } from "socket.io";
-import { isMarketOpen } from "./marketHoursService";
+import { isMarketOpen, isLateDay } from "./marketHoursService";
 
 export interface Candle {
   time: number;
@@ -50,7 +50,6 @@ export class ScannerService {
     const market = isMarketOpen();
     if (!market.open) {
       console.log(`[Scanner] Cannot start: ${market.reason}`);
-      this.io.emit("bot-log", `SYSTEM: Scanner launch aborted (${market.reason})`);
       return;
     }
 
@@ -192,7 +191,30 @@ export class ScannerService {
 
     const currentRsi = rsiValues[rsiValues.length - 1];
     const prevRsi = rsiValues[rsiValues.length - 2];
-    const currentPrice = candles[candles.length - 1].close;
+    const latestCandle = candles[candles.length - 1];
+    const currentPrice = latestCandle.close;
+
+    // Institutional Fix: Late entry control
+    // No new entries after 14:30 unless it's a "fresh" breakout (not implemented here but noted)
+    if (isLateDay()) {
+      return; 
+    }
+
+    // Institutional Fix: Advanced Sideways / Chop Filter
+    // 1. VWAP Pinning check
+    const vwap = state.candles.reduce((acc, c) => acc + (c.close * c.volume), 0) / state.candles.reduce((acc, c) => acc + c.volume, 0);
+    const distFromVwap = Math.abs(currentPrice - vwap) / vwap;
+    const isVwapPinning = distFromVwap < 0.0005; // Hugging VWAP closely
+    
+    // 2. High ATR / Low Movement (Compression)
+    const prices = state.candles.slice(-10).map(c => c.close);
+    const range = Math.max(...prices) - Math.min(...prices);
+    const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+    const isChoppy = (range / avgPrice) < 0.001; // Less than 0.1% move in 10 mins
+
+    if (isVwapPinning || isChoppy) {
+      return; // Skip signals in chop zones
+    }
 
     // 1. RSI BREAKOUT
     if (currentRsi > 70 && prevRsi <= 70) {

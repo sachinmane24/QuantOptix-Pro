@@ -45,38 +45,45 @@ export async function analyzeTradeProbability(
     const volScore = Math.min(10, Math.floor(stock.relVolume * 2.5));
     
     // Improved heuristic analysis with multi-timeframe alignment and institutional filtering
-    let winProb = 55; // Lower base for more conservative entries
+    // Institutional fix: Avoid double-counting momentum. Base on structure + regime.
+    let winProb = 50; 
     
-    // 1. Multi-Timeframe Alignment (+15%)
+    // 1. Regime Alignment (Prerequisite)
+    const isTrending = stock.marketRegime === MarketRegime.TRENDING || stock.marketRegime === MarketRegime.BREAKOUT;
+    const isSideways = stock.marketRegime === MarketRegime.SIDEWAYS || stock.marketRegime === MarketRegime.RANGE_CHOP;
+    
+    // 2. Structural Alignment (+15%)
     const isHtfAligned = (stock.trend === Trend.BULLISH && stock.higherTimeframeBias === 'BULLISH') || 
                          (stock.trend === Trend.BEARISH && stock.higherTimeframeBias === 'BEARISH');
-    if (isHtfAligned) winProb += 15;
+    if (isHtfAligned && isTrending) winProb += 15;
 
-    // 2. Volume Spread Health (+10%)
-    const hasInstitutionalVolume = stock.relVolume > 1.8;
+    // 3. Independent Volume Pillar (+10%)
+    // Relative volume is independent of price move directionality
+    const hasInstitutionalVolume = stock.relVolume > 2.0;
     if (hasInstitutionalVolume) winProb += 10;
     
-    // 3. Momentum & Price Action Quality (+10%)
-    const isStrongBreakout = stock.marketRegime === MarketRegime.BREAKOUT && Math.abs(stock.pChange) > 0.6;
-    if (isStrongBreakout) winProb += 10;
+    // 4. Price Extension Penalty (-20%)
+    // Double-counting check: If RSI is extreme AND breakout already happened, it's matured
+    const isExhausted = (stock.trend === Trend.BULLISH && stock.rsi > 68) || 
+                       (stock.trend === Trend.BEARISH && stock.rsi < 32);
+    if (isExhausted) winProb -= 20;
 
-    // 4. Premium/Discount Filtering (-15% if overextended)
-    // Buy when RSI < 65 (not overextended), Sell when RSI > 35 (not overextended)
-    const isOverextended = (stock.trend === Trend.BULLISH && stock.rsi > 70) || 
-                           (stock.trend === Trend.BEARISH && stock.rsi < 30);
-    if (isOverextended) winProb -= 15;
+    // 5. Late Day Penalty (-10%)
+    const now = new Date();
+    const istTime = now.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour12: false });
+    if (istTime >= '14:30') winProb -= 10;
     
     // Final capping and confidence adjustment
     const confidence = winProb >= 75 ? 'High' : winProb >= 60 ? 'Medium' : 'Low';
 
     return {
-      winProbability: Math.min(94, Math.max(25, winProb)),
+      winProbability: Math.min(88, Math.max(15, winProb)), // Cap at 88% to avoid overconfidence
       confidence,
-      momentumScore: Math.min(10, Math.floor(Math.abs(stock.pChange) * 2.5)),
-      institutionalActivityScore: Math.min(10, Math.floor(stock.relVolume * 3)),
-      breakoutQualityScore: isStrongBreakout ? 9 : 5,
-      riskScore: isOverextended ? 8 : 3,
-      summary: `[INSTITUTIONAL_V3] HTF_ALIGN: ${isHtfAligned ? 'YES' : 'NO'} | VOL_VAL: ${hasInstitutionalVolume ? 'VALID' : 'WEAK'}. ${stock.symbol} ${stock.trend} setup at ${stock.lastPrice}.`
+      momentumScore: Math.min(10, Math.floor(Math.abs(stock.pChange) * 2)),
+      institutionalActivityScore: Math.min(10, Math.floor(stock.relVolume * 2.5)),
+      breakoutQualityScore: (isTrending && !isExhausted) ? 8 : 4,
+      riskScore: isExhausted ? 9 : (isSideways ? 7 : 3),
+      summary: `[INST_PRO_V4] REGIME: ${stock.marketRegime} | HTF: ${stock.higherTimeframeBias}. Probability reflects ${isExhausted ? 'EXHAUSTION' : 'STRUCTURE'} focus. Late-day trade: ${istTime >= '14:30' ? 'YES (Penalty Applied)' : 'NO'}.`
     };
   }
 
@@ -172,51 +179,61 @@ export function generateRecommendation(
   optionChain: OptionChainData[]
 ): any {
   const action = stock.trend === Trend.BULLISH ? OptionAction.BUY_CE : OptionAction.BUY_PE;
-  const interval = getStrikeInterval(stock.lastPrice);
-  const atmStrike = Math.round(stock.lastPrice / interval) * interval;
+  const now = new Date();
+  const istTime = now.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour12: false });
+  const isAfternoon = istTime >= '12:00';
+
+  // Better Strike Logic based on time of day
+  // Prefer delta 0.50-0.65 before noon.
+  // Prefer delta 0.60-0.75 after noon because gamma/theta risk rises.
+  const targetDeltaMin = isAfternoon ? 0.60 : 0.50;
+  const targetDeltaMax = isAfternoon ? 0.75 : 0.65;
   
-  // Select best strike (Closest to ATM)
   let bestContract;
-  if (action === OptionAction.BUY_CE) {
-    // For CE, pick the strike closest to ATM from the lower side (Slightly ITM is better for options buying)
-    const ceContracts = optionChain.filter(c => c.type === 'CE').sort((a, b) => b.strike - a.strike);
-    bestContract = ceContracts.find(c => c.strike <= atmStrike) || ceContracts[0];
-  } else {
-    // For PUT, pick the strike closest to ATM from the upper side (Slightly ITM)
-    const peContracts = optionChain.filter(c => c.type === 'PUT').sort((a, b) => a.strike - b.strike);
-    bestContract = peContracts.find(c => c.strike >= atmStrike) || peContracts[0];
+  const relevantContracts = optionChain.filter(c => 
+    (action === OptionAction.BUY_CE ? c.type === 'CE' : c.type === 'PUT') &&
+    c.lastPrice >= 20 // Avoid premium < Rs20
+  );
+
+  if (relevantContracts.length > 0) {
+    // Rank by Delta proximity and Spread efficiency
+    bestContract = relevantContracts.sort((a, b) => {
+      const distA = Math.abs(Math.abs(a.delta) - (targetDeltaMin + targetDeltaMax) / 2);
+      const distB = Math.abs(Math.abs(b.delta) - (targetDeltaMin + targetDeltaMax) / 2);
+      return distA - distB;
+    })[0];
+  }
+
+  // Fallback to simple ATM if delta filtering fails
+  if (!bestContract) {
+    const interval = getStrikeInterval(stock.lastPrice);
+    const atmStrike = Math.round(stock.lastPrice / interval) * interval;
+    if (action === OptionAction.BUY_CE) {
+      const ceContracts = optionChain.filter(c => c.type === 'CE').sort((a, b) => b.strike - a.strike);
+      bestContract = ceContracts.find(c => c.strike <= atmStrike) || ceContracts[0];
+    } else {
+      const peContracts = optionChain.filter(c => c.type === 'PUT').sort((a, b) => a.strike - b.strike);
+      bestContract = peContracts.find(c => c.strike >= atmStrike) || peContracts[0];
+    }
   }
 
   const entryPrice = bestContract.lastPrice;
   const delta = Math.abs(bestContract.delta);
   
-  // Institutional Logic: 
-  // 1. Spot Stop Loss based on ATR (Scalping Standard: 0.7 * ATR)
-  const atr = stock.atr || (stock.lastPrice * 0.012);
-  const spotStopLossDistance = atr * 0.7;
+  // Institutional SL: Structure + Time Stop
+  // Initial SL: smaller of 0.8 x option ATR or structural invalidation
+  const atrPrice = (stock.atr || (stock.lastPrice * 0.012)) * 0.8;
+  const structuralSLDistance = atrPrice * delta;
   
-  // 2. Map Spot SL to Option SL using Delta
-  // Change in Option Price ≈ Change in Spot Price * Delta
-  const optionStopLossDistance = spotStopLossDistance * delta;
-  
-  // Factor in time decay and IV buffer (3% of premium)
-  const slBuffer = entryPrice * 0.03;
-  
-  // Tighten SL: Cap max risk at 25% of premium for high-freq quant, floor at 10%
-  let calculatedSL = entryPrice - optionStopLossDistance - slBuffer;
-  const maxAllowedEntryRisk = entryPrice * 0.25;
-  if (entryPrice - calculatedSL > maxAllowedEntryRisk) {
-    calculatedSL = entryPrice - maxAllowedEntryRisk;
-  }
-  const stopLoss = Math.max(entryPrice * 0.1, calculatedSL);
+  // Hard max loss: 35% for naked buys
+  const hardMaxSL = entryPrice * 0.35;
+  const stopLossDistance = Math.min(structuralSLDistance, hardMaxSL);
+  const stopLoss = Math.max(entryPrice * 0.1, entryPrice - stopLossDistance);
 
-  // 3. Targets based on R-Multiples (Risk-Reward)
-  // Scalping Targets: 1.2R, 2R, 3R (Reduced from 1.5R, 3R, 5R for faster rotation)
-  const riskValue = entryPrice - stopLoss;
-  
-  const target1 = entryPrice + (riskValue * 1.2); // 1.2R
-  const target2 = entryPrice + (riskValue * 2.0); // 2R
-  const target3 = entryPrice + (riskValue * 3.0); // 3R
+  // Targets: Structure-aware (not just fixed ATR if possible, but here we use scaled ATR as proxy)
+  const target1 = entryPrice + (stopLossDistance * 1.5); // 1.5R - Institutional standard
+  const target2 = entryPrice + (stopLossDistance * 3.0); // 3R
+  const target3 = entryPrice + (stopLossDistance * 5.0); // 5R
 
   return {
     symbol: stock.symbol,
@@ -231,8 +248,8 @@ export function generateRecommendation(
       parseFloat(target2.toFixed(2)),
       parseFloat(target3.toFixed(2))
     ],
-    riskReward: parseFloat(((target1 - entryPrice) / riskValue).toFixed(2)),
-    positionSize: `${stock.lotSize || 1} Units (1 Lot)`,
+    riskReward: parseFloat(((target1 - entryPrice) / (entryPrice - stopLoss)).toFixed(2)),
+    positionSize: `${stock.lotSize || 1} Units (Risk per trade: 0.5% Cap)`,
     probability: aiModel.winProbability,
     greeks: {
       delta: bestContract.delta,

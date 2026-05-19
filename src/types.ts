@@ -13,7 +13,19 @@ export enum MarketRegime {
   TRENDING = 'Trending',
   SIDEWAYS = 'Sideways',
   BREAKOUT = 'Breakout',
+  RANGE_CHOP = 'Range Chop',
+  MEAN_REVERSION = 'Mean Reversion',
   HIGH_VOLATILITY = 'High Volatility',
+  EXPIRED_PINNING = 'Expiry Pinning'
+}
+
+export interface RegimeData {
+  regime: MarketRegime;
+  adx: number;
+  adXSlope: 'RISING' | 'FALLING' | 'FLAT';
+  vixPercentile: number;
+  breadth: number; // percentage of stocks advancing
+  description: string;
 }
 
 export enum OptionAction {

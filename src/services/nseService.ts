@@ -266,14 +266,24 @@ export async function fetchLiveMarketData(trackedSymbols: string[] = []): Promis
           const v = item.v;
           const lastPrice = v.lp;
           const pChange = v.chp;
+          const relVolume = 0.9 + Math.random() * 1.5;
           
+          let marketRegime = MarketRegime.SIDEWAYS;
+          if (Math.abs(pChange) > 2.0 && relVolume > 1.8) {
+            marketRegime = MarketRegime.BREAKOUT;
+          } else if (Math.abs(pChange) > 1.2) {
+            marketRegime = MarketRegime.TRENDING;
+          } else if (Math.abs(pChange) < 0.3 && relVolume < 1.0) {
+            marketRegime = MarketRegime.RANGE_CHOP;
+          }
+
           return {
             symbol,
             name: symbol,
             lastPrice,
             pChange,
             volume: v.vol,
-            relVolume: 0.9 + Math.random() * 1.5,
+            relVolume,
             futuresOI: v.oi || 0,
             oiChange: v.oic || 0,
             vwap: v.avg_price || lastPrice,
@@ -281,7 +291,7 @@ export async function fetchLiveMarketData(trackedSymbols: string[] = []): Promis
             ema50: lastPrice * (1 - (Math.random() * 0.04)),
             sector: FNO_DATA[symbol]?.sector || 'Index',
             relativeStrength: (pChange - (nifty?.v?.chp || 0)),
-            marketRegime: Math.abs(pChange) > 2 ? MarketRegime.BREAKOUT : MarketRegime.SIDEWAYS,
+            marketRegime,
             trend: pChange > 0 ? Trend.BULLISH : Trend.BEARISH,
             rsi: 40 + (pChange * 2),
             pulse: pChange * 0.7,

@@ -32,7 +32,7 @@ export class PaperTradingService {
   private maxDailyLoss: number = 20000; // Stop bot if lost > 20k in a day
   private dailyPnL: number = 0;
   private lastResetDate: string = new Date().toDateString();
-  public onTradeNotify?: (message: string) => void;
+  public onTradeNotify?: (message: string) => Promise<void>;
 
   constructor(io: Server) {
     this.io = io;
@@ -90,12 +90,17 @@ export class PaperTradingService {
       return;
     }
 
-    // 4. Position Sizing: Use 10% of capital per trade
-    const capitalPerTrade = this.virtualBalance * 0.1;
-    const qty = Math.floor(capitalPerTrade / signal.price);
+    // 4. Fixed Fractional Risk Sizing: Risk 0.5% of capital per trade
+    // Required SL in decimal (e.g. 10% SL = 0.1)
+    const riskPerTradeAmount = this.virtualBalance * 0.005; // 0.5% risk
+    
+    // We assume a standard 20% SL on options premium as proxy if not specified
+    const stopLossPct = 0.20; 
+    const optionPremium = signal.price;
+    const qty = Math.floor(riskPerTradeAmount / (optionPremium * stopLossPct));
 
     if (qty <= 0) {
-      this.emitLog(`ORDER REJECTED: Insufficient balance for ${signal.symbol}`, "REJECTED");
+      this.emitLog(`ORDER REJECTED: Low capital for calculated risk units and price ${signal.price}`, "REJECTED");
       return;
     }
 
@@ -150,7 +155,7 @@ export class PaperTradingService {
                       `<b>Quantity:</b> ${qty}\n` +
                       `<b>Signal:</b> ${signal.type}\n` +
                       `<i>Status: Execution successful on Quant Engine.</i>`;
-      this.onTradeNotify(message);
+      this.onTradeNotify(message).catch(e => console.error("[PaperTrade] Notification error:", e));
     }
   }
 
@@ -168,13 +173,27 @@ export class PaperTradingService {
       pos.pnl = (pos.entryPrice - ltp) * pos.qty;
     }
 
-    // Auto-Exit Logic (Simple Stop Loss / Take Profit)
+    // Auto-Exit Logic (Institutional Improvements)
     const pnlPct = (pos.pnl / (pos.entryPrice * pos.qty)) * 100;
+    const minutesElapsed = (Date.now() - pos.timestamp) / (1000 * 60);
     
-    if (pnlPct >= 1.0) { // 1% Take Profit
-      this.closePosition(symbol, ltp, "TAKE_PROFIT");
-    } else if (pnlPct <= -0.5) { // 0.5% Stop Loss
-      this.closePosition(symbol, ltp, "STOP_LOSS");
+    // 1. Dynamic Targets (Scaled 2% Profit / 1% Loss for scalping)
+    if (pnlPct >= 2.0) { 
+      this.closePosition(symbol, ltp, "TAKE_PROFIT (2%)");
+    } else if (pnlPct <= -1.0) { 
+      this.closePosition(symbol, ltp, "STOP_LOSS (1%)");
+    }
+    
+    // 2. Time Stop: Exit if no movement after 15 mins (stagnant)
+    if (minutesElapsed > 15 && Math.abs(pnlPct) < 0.2) {
+      this.closePosition(symbol, ltp, "TIME_STOP (Stagnant 15m)");
+    }
+    
+    // 3. Late Day Flush: Exit all by 15:15
+    const now = new Date();
+    const istTime = now.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour12: false });
+    if (istTime >= '15:15') {
+       this.closePosition(symbol, ltp, "MARKET_CLOSE_AUTO_EXIT");
     }
 
     this.broadcastUpdate();
@@ -213,7 +232,7 @@ export class PaperTradingService {
                       `<b>Exit:</b> ₹${price.toFixed(2)}\n` +
                       `<b>Net PnL:</b> <b>${isProfit ? '+' : ''}₹${pos.pnl.toLocaleString()}</b>\n` +
                       `<b>Reason:</b> ${reason}`;
-      this.onTradeNotify(message);
+      this.onTradeNotify(message).catch(e => console.error("[PaperTrade] Close notification error:", e));
     }
   }
 

@@ -12,8 +12,21 @@ import fyers from "fyers-api-v3";
 import { ScannerService, TradeSignal } from "./src/services/scannerService";
 import { PaperTradingService } from "./src/services/paperTradingService";
 import { isMarketOpen, isLoginTime } from "./src/services/marketHoursService";
+import { MarketRegimeService } from "./src/services/marketRegimeService";
+import { MarketRegime, StockData, Trend } from "./src/types";
 
 dotenv.config();
+
+// Global error handlers to prevent unhandled rejections/exceptions
+process.on('unhandledRejection', (reason: any, promise) => {
+  console.error('[Unhandled Rejection] at:', promise, 'reason:', reason);
+  if (reason instanceof Error) console.error(reason.stack);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Uncaught Exception]:', err);
+  if (err instanceof Error) console.error(err.stack);
+});
 
 // Helper to get TOTP code accurately
 const getTOTPToken = (secret: string) => {
@@ -37,6 +50,12 @@ const getTOTPToken = (secret: string) => {
 let loginPromise: Promise<any> | null = null;
 let scannerService: ScannerService | null = null;
 let tradingService: PaperTradingService | null = null;
+
+// Regional/Global State for Market Context
+let niftyHistory: number[] = [];
+let currentRegime: any = { regime: MarketRegime.SIDEWAYS, description: "Initializing regime analyzer..." };
+let advances = 0;
+let declines = 0;
 
 /**
  * Automates the login flow for Fyers V3 using TOTP and PIN.
@@ -201,7 +220,6 @@ async function performAutoLogin() {
       }
 
       return { success: true, token: finalAccessToken };
-
     } catch (error: any) {
       const respData = error.response?.data || error.message;
       console.error("[AutoLogin] Failed:", respData);
@@ -209,7 +227,10 @@ async function performAutoLogin() {
     } finally {
       loginPromise = null;
     }
-  })();
+  })().catch(err => {
+    console.error("[AutoLogin] IIFE Rejection:", err);
+    return { success: false, error: err.message };
+  });
 
   return loginPromise;
 }
@@ -296,8 +317,26 @@ async function startServer() {
         // Broadcast to all connected socket.io clients
         io.emit("market-update", message);
 
+        // Update Context: Nifty & Breadth
+        if (message.symbol === "NSE:NIFTY50-INDEX" && message.ltp) {
+          const ltp = message.ltp;
+          if (niftyHistory.length === 0 || ltp !== niftyHistory[niftyHistory.length - 1]) {
+            niftyHistory.push(ltp);
+            if (niftyHistory.length > 50) niftyHistory.shift();
+          }
+        }
+
         // Pipe to scanner and trading engine
         if (message.symbol && message.ltp) {
+          // Update Breadth (Very rough estimate based on incoming ticks)
+          if (message.symbol.includes('-EQ')) {
+             if (message.chp > 0) advances++;
+             else if (message.chp < 0) declines++;
+             
+             // Decay/Reset breadth every few mins to keep it a rolling measure
+             if (advances + declines > 1000) { advances *= 0.5; declines *= 0.5; }
+          }
+
           if (scannerService) {
             scannerService.handleTick(
               message.symbol, 
@@ -754,6 +793,25 @@ async function startServer() {
     try {
       const now = new Date();
       
+      // Calculate Regime if we have data
+      if (niftyHistory.length > 5) {
+        // Find latest Nifty and VIX from tick records if possible, 
+        // fallback to placeholder StockData since we are in the scheduler
+        const niftyPlaceholder: StockData = { symbol: "NIFTY50", lastPrice: niftyHistory[niftyHistory.length-1], vwap: niftyHistory[niftyHistory.length-1] } as any;
+        const vixPlaceholder: StockData = { symbol: "VIX", lastPrice: 15 } as any;
+        
+        const regime = MarketRegimeService.calculateRegime(
+          niftyPlaceholder,
+          vixPlaceholder,
+          Math.max(1, advances),
+          Math.max(1, declines),
+          niftyHistory
+        );
+        currentRegime = regime;
+        console.log(`[Scheduler] Regime Updated: ${regime.regime} (${regime.description})`);
+        io.emit("market-regime-update", regime);
+      }
+
       // 1. Check for Auto-Login at 08:55 AM IST
       if (isLoginTime(now)) {
         console.log("[Scheduler] 08:55 AM IST detected. Triggering automated Fyers login...");
@@ -765,19 +823,17 @@ async function startServer() {
       }
   
       // 2. Check Market Status & Optimize Services
-      const market = isMarketOpen(now);
-      if (!market.open) {
-        if (scannerService && scannerService.isRunning) {
-          console.log(`[Scheduler] Market is CLOSED (${market.reason}). Suspending scanner...`);
-          scannerService.stop();
-          // Notify via socket to update UI status
-          io.emit("bot-log", `SYSTEM: Scanner suspended (Reason: ${market.reason})`);
-        }
-      } else {
+      const marketStatus = isMarketOpen(now);
+      if (marketStatus.open) {
         if (scannerService && !scannerService.isRunning && process.env.FYERS_ACCESS_TOKEN) {
           console.log(`[Scheduler] Market is OPEN. Starting scanner...`);
-          scannerService.start();
+          scannerService.start().catch(e => console.error("[Scheduler] Scanner start failed:", e));
           io.emit("bot-log", `SYSTEM: Scanner resumed (Reason: Market open)`);
+        }
+      } else {
+        if (scannerService && scannerService.isRunning) {
+          console.log(`[Scheduler] Market is CLOSED (${marketStatus.reason}). Suspending scanner...`);
+          scannerService.stop();
         }
       }
     } catch (e: any) {

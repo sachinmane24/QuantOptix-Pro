@@ -88,6 +88,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(GUEST_USER);
   const [stocks, setStocks] = useState<StockData[]>([]);
   const [marketInfo, setMarketInfo] = useState<any>(null);
+  const [regimeData, setRegimeData] = useState<any>(null);
   const [selectedStock, setSelectedStock] = useState<StockData | null>(null);
   const [optionChain, setOptionChain] = useState<any[]>([]);
   const [aiAnalysis, setAiAnalysis] = useState<AIProbabilityModel | null>(null);
@@ -253,7 +254,7 @@ export default function App() {
 
         const newPrices: Record<string, number> = {};
 
-        positions.forEach(async (pos) => {
+        positions.forEach((pos) => {
           if (pos.status !== 'OPEN') return;
 
           let currentPrice = 0;
@@ -286,7 +287,7 @@ export default function App() {
               updateDoc(docRef, { 
                 currentPrice,
                 pnl: currentPnl
-              });
+              }).catch(e => console.error("Update PnL error:", e));
             }
 
             let exitReason = null;
@@ -305,14 +306,14 @@ export default function App() {
               // ... trailing logic ...
               if (currentPrice >= pos.entry * 1.10 && (pos.sl < pos.entry)) {
                 const docRef = doc(db, 'trades', pos.id);
-                updateDoc(docRef, { sl: pos.entry });
+                updateDoc(docRef, { sl: pos.entry }).catch(() => {});
                 addLog(pos.symbol, 'TSL_UPDATE', 'SUCCESS', `Stop Loss moved to Breakeven @ ₹${pos.entry.toFixed(2)}`);
               }
               if (currentPrice >= pos.entry * 1.25) {
                 const idealTsl = currentPrice * 0.90;
                 if (!pos.tsl || idealTsl > pos.tsl) {
                    const docRef = doc(db, 'trades', pos.id);
-                   updateDoc(docRef, { tsl: idealTsl });
+                   updateDoc(docRef, { tsl: idealTsl }).catch(() => {});
                    addLog(pos.symbol, 'TSL_UPDATE', 'SUCCESS', `Trailing Stop updated to ₹${idealTsl.toFixed(2)}`);
                 }
               }
@@ -331,7 +332,7 @@ export default function App() {
 
             if (exitReason) {
               addLog(pos.symbol, 'CORE_EXIT', 'WARNING', `Market condition met: ${exitReason} @ ₹${currentPrice.toFixed(2)}`);
-              closePosition(pos.id, exitReason);
+              closePosition(pos.id, exitReason).catch(e => console.error("Auto-close error:", e));
             }
           }
         });
@@ -577,9 +578,16 @@ export default function App() {
         setIsFyersConnected(true);
         loadMarketData();
       } else {
+        let errorMsg = data.message || "Auto-login failed";
+        if (data.details && typeof data.details === 'string' && data.details.includes('Account blocked')) {
+          errorMsg = "Your Fyers account is currently BLOCKED. This usually happens after multiple failed login attempts or security triggers. Please log in manually at fyers.in once to unblock your account.";
+        } else if (data.details && typeof data.details === 'object' && JSON.stringify(data.details).includes('Account blocked')) {
+          errorMsg = "Your Fyers account is currently BLOCKED. Please log in manually at fyers.in once to unblock your account.";
+        }
+        
         const details = data.details ? `\n\nReason: ${typeof data.details === 'object' ? JSON.stringify(data.details) : data.details}` : "";
         const debug = data.debug_info ? `\n\nEnvironment (Masked):\n- Client: ${data.debug_info.clientId}\n- User: ${data.debug_info.userId}\n- PIN: ${data.debug_info.pin}\n- TOTP: ${data.debug_info.totp}` : "";
-        alert(`${data.message || "Auto-login failed"}${details}${debug}`);
+        alert(`${errorMsg}${details}${debug}`);
       }
     } catch (e) {
       console.error("Auto-login request failed:", e);
@@ -698,6 +706,12 @@ export default function App() {
         setTradeLogs(prev => [log, ...prev].slice(0, 100));
       }
     );
+
+    if (socket) {
+      socket.on('market-regime-update', (data) => {
+        setRegimeData(data);
+      });
+    }
 
     const interval = setInterval(loadMarketData, 30000); // Pulse every 30s as fallback
 
@@ -1442,6 +1456,35 @@ export default function App() {
                 >
                   {/* Session Summary Bar */}
                   <div className="flex flex-wrap gap-4 items-center bg-tech-surface border border-tech-border p-4 mb-2">
+                    {regimeData && (
+                      <div className="w-full flex items-center gap-4 border-b border-tech-border pb-4 mb-2">
+                        <div className="flex flex-col">
+                          <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Market Regime</span>
+                          <span className="text-sm font-black text-neon-green uppercase tracking-tighter">
+                            {regimeData.regime.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="h-8 w-px bg-tech-border hidden md:block"></div>
+                        <div className="hidden md:flex flex-col flex-1">
+                          <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Regime Context</span>
+                          <span className="text-[11px] text-neutral-400 font-mono italic leading-none mt-1">
+                            {regimeData.description}
+                          </span>
+                        </div>
+                        <div className="ml-auto flex gap-6 text-[10px] font-mono text-neutral-500">
+                          <div className="flex flex-col items-end">
+                            <span className="text-[7px] uppercase tracking-widest">Nifty ADX</span>
+                            <span className="text-white font-bold">{regimeData.adx.toFixed(1)} <span className="text-[8px] text-neutral-600">({regimeData.adXSlope})</span></span>
+                          </div>
+                          <div className="flex flex-col items-end">
+                            <span className="text-[7px] uppercase tracking-widest">Breadth</span>
+                            <span className={cn("font-bold", regimeData.breadth > 60 ? "text-neon-green" : regimeData.breadth < 40 ? "text-neon-red" : "text-white")}>
+                              {regimeData.breadth.toFixed(1)}%
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex gap-8">
                       <div className="flex flex-col">
                         <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">Realized PnL</span>
