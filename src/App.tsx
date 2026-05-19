@@ -296,7 +296,7 @@ export default function App() {
             const hours = istTime.getUTCHours();
             const timeValue = hours * 100 + istTime.getUTCMinutes();
             
-            if (timeValue >= 1500) {
+            if (timeValue >= 1515) {
               exitReason = 'INTRADAY_SQUARE_OFF';
             } else if (currentPrice <= (pos.tsl || pos.sl)) {
               exitReason = pos.tsl ? 'TRAILING_STOP_HIT' : 'STOP_LOSS';
@@ -988,9 +988,9 @@ export default function App() {
       return;
     }
 
-    if (timeValue >= 1500) {
-      addLog(stock.symbol, 'TIMING_BLOCK', 'WARNING', 'Intraday Square-off Protocol Active (After 3:00 PM). No new trades.');
-      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] REJECTED: Post 3:00 PM trade restriction`, ...prev]);
+    if (timeValue >= 1515) {
+      addLog(stock.symbol, 'TIMING_BLOCK', 'WARNING', 'Intraday Square-off Protocol Active (After 3:15 PM). No new trades.');
+      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] REJECTED: Post 3:15 PM trade restriction`, ...prev]);
       return;
     }
 

@@ -32,6 +32,7 @@ export class PaperTradingService {
   private maxDailyLoss: number = 20000; // Stop bot if lost > 20k in a day
   private dailyPnL: number = 0;
   private lastResetDate: string = new Date().toDateString();
+  public onTradeNotify?: (message: string) => void;
 
   constructor(io: Server) {
     this.io = io;
@@ -138,6 +139,19 @@ export class PaperTradingService {
     // Notify Frontend
     this.io.emit("paper-trade-executed", trade);
     this.broadcastUpdate();
+
+    // Trigger Telegram Notification via hook
+    if (this.onTradeNotify) {
+      const typeLabel = type === "BUY" ? "🟢 CALL/BUY" : "🔴 PUT/SELL";
+      const message = `🚀 <b>NEW TRADE EXECUTED</b>\n\n` +
+                      `<b>Symbol:</b> <code>${signal.symbol}</code>\n` +
+                      `<b>Action:</b> ${typeLabel}\n` +
+                      `<b>Price:</b> ₹${signal.price.toFixed(2)}\n` +
+                      `<b>Quantity:</b> ${qty}\n` +
+                      `<b>Signal:</b> ${signal.type}\n` +
+                      `<i>Status: Execution successful on Quant Engine.</i>`;
+      this.onTradeNotify(message);
+    }
   }
 
   /**
@@ -188,6 +202,19 @@ export class PaperTradingService {
     
     this.io.emit("position-closed", { symbol, pnl: pos.pnl, reason });
     this.broadcastUpdate();
+
+    // Trigger Telegram Notification via hook
+    if (this.onTradeNotify) {
+      const isProfit = pos.pnl >= 0;
+      const message = `🏁 <b>TRADE CLOSED</b>\n\n` +
+                      `<b>Symbol:</b> <code>${symbol}</code>\n` +
+                      `<b>Status:</b> ${isProfit ? '💰 PROFIT' : '🛑 EXIT'}\n` +
+                      `<b>Entry:</b> ₹${pos.entryPrice.toFixed(2)}\n` +
+                      `<b>Exit:</b> ₹${price.toFixed(2)}\n` +
+                      `<b>Net PnL:</b> <b>${isProfit ? '+' : ''}₹${pos.pnl.toLocaleString()}</b>\n` +
+                      `<b>Reason:</b> ${reason}`;
+      this.onTradeNotify(message);
+    }
   }
 
   private emitLog(message: string, type: "EXECUTED" | "REJECTED" | "CLOSED" | "INFO") {

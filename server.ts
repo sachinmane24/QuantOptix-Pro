@@ -13,6 +13,7 @@ const { authenticator } = otplib;
 import fyers from "fyers-api-v3";
 import { ScannerService, TradeSignal } from "./src/services/scannerService";
 import { PaperTradingService } from "./src/services/paperTradingService";
+import { isMarketOpen, isLoginTime } from "./src/services/marketHoursService";
 
 dotenv.config();
 
@@ -185,6 +186,23 @@ async function startServer() {
   console.log("[Server] Core services initializing...");
   scannerService = new ScannerService(io);
   tradingService = new PaperTradingService(io);
+
+  // Hook Telegram Notifications
+  tradingService.onTradeNotify = async (message: string) => {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (botToken && chatId) {
+      try {
+        await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          chat_id: chatId,
+          text: message,
+          parse_mode: 'HTML',
+        });
+      } catch (e: any) {
+        console.error("[Telegram Notification Error]", e.message);
+      }
+    }
+  };
 
   scannerService.onSignal = (signal) => {
     if (tradingService) {
@@ -666,6 +684,38 @@ async function startServer() {
       console.log("[Socket] Client disconnected:", socket.id);
     });
   });
+
+  // BACKGROUND SCHEDULER (Every 60 seconds)
+  setInterval(async () => {
+    const now = new Date();
+    
+    // 1. Check for Auto-Login at 08:55 AM IST
+    if (isLoginTime(now)) {
+      console.log("[Scheduler] 08:55 AM IST detected. Triggering automated Fyers login...");
+      const token = await performAutoLogin();
+      if (token) {
+        console.log("[Scheduler] Automated login successful. Renewing sockets...");
+        setupFyersSocket();
+      }
+    }
+
+    // 2. Check Market Status & Optimize Services
+    const market = isMarketOpen(now);
+    if (!market.open) {
+      if (scannerService && scannerService.isRunning) {
+        console.log(`[Scheduler] Market is CLOSED (${market.reason}). Suspending scanner...`);
+        scannerService.stop();
+        // Notify via socket to update UI status
+        io.emit("bot-log", `SYSTEM: Scanner suspended (Reason: ${market.reason})`);
+      }
+    } else {
+      if (scannerService && !scannerService.isRunning && process.env.FYERS_ACCESS_TOKEN) {
+        console.log(`[Scheduler] Market is OPEN. Starting scanner...`);
+        scannerService.start();
+        io.emit("bot-log", `SYSTEM: Scanner resumed (Reason: Market open)`);
+      }
+    }
+  }, 60000);
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 [Server] Quantitative Trading Engine running on http://0.0.0.0:${PORT}`);

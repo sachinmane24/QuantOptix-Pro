@@ -36,7 +36,7 @@ export class ScannerService {
   ];
   private states: Map<string, SymbolState> = new Map();
   private io: Server;
-  private isRunning: boolean = false;
+  public isRunning: boolean = false;
   public onSignal?: (signal: TradeSignal) => void;
 
   constructor(io: Server) {
@@ -59,6 +59,12 @@ export class ScannerService {
     await this.initializeHistory();
 
     console.log("[Scanner] Scanner initialized and running.");
+  }
+
+  public stop() {
+    console.log("[Scanner] Stopping Scanner Service...");
+    this.isRunning = false;
+    this.states.clear();
   }
 
   private async initializeHistory() {
@@ -131,6 +137,7 @@ export class ScannerService {
    * Called whenever a new tick arrives from WebSocket
    */
   public handleTick(symbol: string, ltp: number, high: number, low: number, volume: number) {
+    if (!this.isRunning) return;
     const state = this.states.get(symbol);
     if (!state) return;
 
