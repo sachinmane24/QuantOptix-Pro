@@ -264,7 +264,7 @@ export default function App() {
   }, [tradeHistory]);
 
   const analytics = useMemo(() => {
-    if (tradeHistory.length === 0) return {
+    if (!tradeHistory || tradeHistory.length === 0) return {
       winRate: 0,
       expectancy: 0,
       avgRR: 0,
@@ -274,12 +274,12 @@ export default function App() {
       avgLoss: 0
     };
 
-    const wins = tradeHistory.filter(t => t.pnl > 0);
-    const losses = tradeHistory.filter(t => t.pnl <= 0);
+    const wins = tradeHistory.filter(t => (t.pnl || 0) > 0);
+    const losses = tradeHistory.filter(t => (t.pnl || 0) <= 0);
     const winRate = (wins.length / tradeHistory.length) * 100;
     
-    const avgWin = wins.length > 0 ? wins.reduce((acc, t) => acc + t.pnl, 0) / wins.length : 0;
-    const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((acc, t) => acc + t.pnl, 0) / losses.length) : 0;
+    const avgWin = wins.length > 0 ? wins.reduce((acc, t) => acc + (t.pnl || 0), 0) / wins.length : 0;
+    const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((acc, t) => acc + (t.pnl || 0), 0) / losses.length) : 0;
     
     const expectancy = (winRate / 100 * avgWin) - ((1 - winRate / 100) * avgLoss);
     const avgRR = avgLoss > 0 ? avgWin / avgLoss : 0;
@@ -290,13 +290,13 @@ export default function App() {
     let currentLossStreak = 0;
 
     const sortedHistory = [...tradeHistory].sort((a, b) => {
-       const dateA = a.closedAt?.toDate?.() || new Date();
-       const dateB = b.closedAt?.toDate?.() || new Date();
+       const dateA = a.closedAt?.toDate?.() || (a.closedAt instanceof Date ? a.closedAt : new Date());
+       const dateB = b.closedAt?.toDate?.() || (b.closedAt instanceof Date ? b.closedAt : new Date());
        return dateA.getTime() - dateB.getTime();
     });
 
     sortedHistory.forEach(t => {
-      if (t.pnl > 0) {
+      if ((t.pnl || 0) > 0) {
         currentWinStreak++;
         currentLossStreak = 0;
         maxWinStreak = Math.max(maxWinStreak, currentWinStreak);
@@ -2037,11 +2037,11 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <StatCard title="Account Balance" value={formatCurrency(portfolio?.balance || 0)} />
-                <StatCard title="Capital Deployed" value={formatCurrency(positions.reduce((acc, p) => acc + (p.entry * p.qty), 0))} />
-                <StatCard title="Active PnL" value={formatCurrency(positions.reduce((acc, p) => acc + p.pnl, 0))} change={1.2} />
-                <StatCard title="Net ROI" value="1.42" suffix="%" change={0.8} />
+                <StatCard title="Capital Deployed" value={formatCurrency(positions.reduce((acc, p) => acc + ((p.entry || 0) * (p.qty || 0)), 0))} />
+                <StatCard title="Active PnL" value={formatCurrency(unrealizedPnL)} change={portfolio?.balance ? (unrealizedPnL / portfolio.balance * 100) : 0} />
+                <StatCard title="Net ROI" value={portfolio?.balance ? (dailyPnL / portfolio.balance * 100).toFixed(2) : "0.00"} suffix="%" change={0.8} />
               </div>
 
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -2087,12 +2087,12 @@ export default function App() {
                                     <span className="text-[9px] text-neutral-500 uppercase tracking-widest">Strike: {pos.strike}</span>
                                   </div>
                                 </td>
-                                <td className={cn("px-4 py-3 font-black", pos.type.includes('CE') ? "text-neon-green" : "text-neon-red")}>{pos.type}</td>
-                                <td className="px-4 py-3 text-neutral-400 text-right">{pos.entry.toFixed(2)}</td>
-                                <td className={cn("px-4 py-3 font-bold text-right", livePrice >= pos.entry ? "text-neon-green" : "text-neon-red")}>
+                                <td className={cn("px-4 py-3 font-black", (pos.type || '').includes('CE') ? "text-neon-green" : "text-neon-red")}>{pos.type || 'N/A'}</td>
+                                <td className="px-4 py-3 text-neutral-400 text-right">{(pos.entry || 0).toFixed(2)}</td>
+                                <td className={cn("px-4 py-3 font-bold text-right", livePrice >= (pos.entry || 0) ? "text-neon-green" : "text-neon-red")}>
                                   {livePrice.toFixed(2)}
                                 </td>
-                                <td className="px-4 py-3 text-neon-red/70 text-right">{pos.sl.toFixed(2)}</td>
+                                <td className="px-4 py-3 text-neon-red/70 text-right">{(pos.sl || 0).toFixed(2)}</td>
                                 <td className="px-4 py-3 text-neon-green/70 text-right">
                                   <div className="flex flex-col items-end">
                                     {(() => {
@@ -2107,7 +2107,7 @@ export default function App() {
                                     })()}
                                   </div>
                                 </td>
-                                <td className="px-4 py-3 text-white font-bold bg-white/5 text-right">{formatCurrency(pos.entry * pos.qty)}</td>
+                                <td className="px-4 py-3 text-white font-bold bg-white/5 text-right font-mono">{formatCurrency((pos.entry || 0) * (pos.qty || 0))}</td>
                                 <td className={cn("px-4 py-3 font-black text-right", currentPnl >= 0 ? "text-neon-green glow-green" : "text-neon-red glow-red")}>
                                   {formatCurrency(currentPnl)}
                                 </td>
@@ -2518,15 +2518,15 @@ export default function App() {
                                    </div>
                                  </td>
                                  <td className={cn("p-3 font-bold", (t.type || '').includes('CE') ? "text-neon-green" : "text-neon-red")}>{t.type}</td>
-                                 <td className="p-3 text-right text-neutral-400">₹{t.entry?.toFixed(2)}</td>
-                                 <td className="p-3 text-right text-white font-bold">₹{t.exit?.toFixed(2)}</td>
-                                 <td className={cn("p-3 font-bold text-right", t.pnl >= 0 ? "text-neon-green" : "text-neon-red")}>{formatCurrency(t.pnl)}</td>
+                                 <td className="p-3 text-right text-neutral-400">₹{(t.entry || 0).toFixed(2)}</td>
+                                 <td className="p-3 text-right text-white font-bold">₹{(t.exit || 0).toFixed(2)}</td>
+                                 <td className={cn("p-3 font-bold text-right font-mono", (t.pnl || 0) >= 0 ? "text-neon-green" : "text-neon-red")}>{formatCurrency(t.pnl || 0)}</td>
                                  <td className="p-3">
                                    <div className="flex flex-col text-[8px] text-neutral-500 font-mono">
                                      {t.entryGreeks ? (
                                        <>
-                                         <span>D: {t.entryGreeks.delta?.toFixed(2)}</span>
-                                         <span>T: {t.entryGreeks.theta?.toFixed(1)}</span>
+                                         <span className="font-mono">D: {(t.entryGreeks.delta || 0).toFixed(2)}</span>
+                                         <span className="font-mono">T: {(t.entryGreeks.theta || 0).toFixed(1)}</span>
                                        </>
                                      ) : (
                                        <span className="opacity-30">N/A</span>
