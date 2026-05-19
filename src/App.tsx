@@ -128,7 +128,7 @@ export default function App() {
   }, []);
   
   // Institutional Trade Monitor (Options Price Monitoring)
-  const tradingLock = React.useRef<Record<string, boolean>>({});
+  const tradingLock = React.useRef<Record<string, any>>({});
 
   useEffect(() => {
     if (positions.length === 0) return;
@@ -148,8 +148,21 @@ export default function App() {
 
           if (contract) {
             const currentPrice = contract.lastPrice;
+            const currentPnl = (currentPrice - pos.entry) * pos.qty;
             setMonitoredPrices(prev => ({ ...prev, [pos.id]: currentPrice }));
             
+            // Heartbeat: Sync Current PnL and Price to Firestore every 15s to ensure accuracy on exit
+            const lastSyncKey = `last_sync_${pos.id}`;
+            const nowTime = Date.now();
+            if (!tradingLock.current[lastSyncKey] || nowTime - (tradingLock.current[lastSyncKey] as any) > 15000) {
+              tradingLock.current[lastSyncKey] = nowTime as any;
+              const docRef = doc(db, 'trades', pos.id);
+              updateDoc(docRef, { 
+                currentPrice,
+                pnl: currentPnl
+              });
+            }
+
             let exitReason = null;
 
             // --- Auto-Exit Rule (3:00 PM IST) ---
@@ -889,30 +902,12 @@ export default function App() {
       addLog(stock.symbol, 'ORDER_SUCCESS', 'SUCCESS', `Order executed: ${newPosition.qty} units @ ${newPosition.entry}.`);
       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER EXECUTED: ${rec.fyersSymbol || stock.symbol} ${rec.action} @ ${rec.entryPrice} QTY: ${qty}`, ...prev]);
       
-      // REAL ORDER EXECUTION ON FYERS (IF CONNECTED)
+      // REAL ORDER EXECUTION ON FYERS (REMOVED - PAPER TRADING ONLY)
+      /*
       if (isFyersConnected && rec.fyersSymbol) {
-        addLog(stock.symbol, 'REAL_ORDER', 'INFO', `Attempting execution on FYERS for ${rec.fyersSymbol}...`);
-        try {
-          const resp = await fetch('/api/trade/place', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              symbol: rec.fyersSymbol,
-              qty: qty,
-              side: rec.action.includes('BUY') ? 'BUY' : 'SELL',
-              price: entry
-            })
-          });
-          const data = await resp.json();
-          if (data.success) {
-            addLog(stock.symbol, 'FYERS_API', 'SUCCESS', `FYERS Order ${data.orderId} confirmed.`);
-          } else {
-            addLog(stock.symbol, 'FYERS_ERR', 'ERROR', `FYERS rejected: ${data.message}`);
-          }
-        } catch (e: any) {
-          addLog(stock.symbol, 'FYERS_API_FAIL', 'ERROR', `Network error during FYERS sync: ${e.message}`);
-        }
+        ...
       }
+      */
 
       // Notify Telegram
       sendTelegramNotification(formatTradeEntry(newPosition));
@@ -934,10 +929,14 @@ export default function App() {
     if (!pos) return;
 
     try {
+      const livePrice = monitoredPrices[id] || pos.entry;
+      const finalPnl = (livePrice - pos.entry) * pos.qty;
+      
       const docRef = doc(db, 'trades', id);
       await updateDoc(docRef, {
         status: 'CLOSED',
-        exit: pos.entry + (pos.pnl / pos.qty), // Simulated exit
+        exit: livePrice,
+        pnl: finalPnl,
         closedAt: Timestamp.now()
       });
 
@@ -945,15 +944,15 @@ export default function App() {
       const userId = user?.uid || 'guest_institutional_trader';
       const pRef = doc(db, 'portfolios', userId);
       await updateDoc(pRef, {
-        balance: ((portfolio?.balance) || 0) + pos.pnl,
+        balance: ((portfolio?.balance) || 1000000) + finalPnl,
         totalTrades: ((portfolio?.totalTrades) || 0) + 1,
-        netPnl: ((portfolio?.netPnl) || 0) + pos.pnl
+        netPnl: ((portfolio?.netPnl) || 0) + finalPnl
       });
 
-      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] POSITION CLOSED: ${pos.symbol} PNL: ${pos.pnl.toFixed(2)}`, ...prev]);
+      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] POSITION CLOSED: ${pos.symbol} PNL: ${finalPnl.toFixed(2)}`, ...prev]);
       
       // Notify Telegram
-      sendTelegramNotification(formatTradeExit(pos, pos.entry + (pos.pnl / pos.qty), pos.pnl));
+      sendTelegramNotification(formatTradeExit(pos, livePrice, finalPnl));
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, 'trades');
     }
@@ -1951,6 +1950,7 @@ export default function App() {
                           <th className="px-4 py-3 tracking-widest">Symbol</th>
                           <th className="px-4 py-3 tracking-widest">Type</th>
                           <th className="px-4 py-3 tracking-widest text-right">Entry</th>
+                          <th className="px-4 py-3 tracking-widest text-right">Live</th>
                           <th className="px-4 py-3 tracking-widest text-right">SL</th>
                           <th className="px-4 py-3 tracking-widest text-right">Targets</th>
                           <th className="px-4 py-3 tracking-widest text-right">Margin</th>
@@ -1961,7 +1961,7 @@ export default function App() {
                       <tbody className="text-[11px] divide-y divide-tech-border">
                         {positions.length === 0 ? (
                           <tr>
-                            <td colSpan={8} className="px-4 py-24 text-center text-neutral-600 uppercase tracking-widest italic font-mono">
+                            <td colSpan={9} className="px-4 py-24 text-center text-neutral-600 uppercase tracking-widest italic font-mono">
                                <div className="flex flex-col items-center gap-4">
                                   <RefreshCw className="animate-spin opacity-20" size={32} />
                                   Scanning Universe for Alpha Entry...
@@ -1970,7 +1970,7 @@ export default function App() {
                           </tr>
                         ) : (
                           positions.map(pos => {
-                            const livePrice = monitoredPrices[pos.id] || pos.entry;
+                            const livePrice = monitoredPrices[pos.id] || pos.currentPrice || pos.entry;
                             const currentPnl = (livePrice - pos.entry) * pos.qty;
                             
                             return (
@@ -1983,11 +1983,16 @@ export default function App() {
                                 </td>
                                 <td className={cn("px-4 py-3 font-black", pos.type.includes('CE') ? "text-neon-green" : "text-neon-red")}>{pos.type}</td>
                                 <td className="px-4 py-3 text-neutral-400 text-right">{pos.entry.toFixed(2)}</td>
-                                <td className="px-4 py-3 text-neon-green font-bold text-right">
+                                <td className={cn("px-4 py-3 font-bold text-right", livePrice >= pos.entry ? "text-neon-green" : "text-neon-red")}>
                                   {livePrice.toFixed(2)}
                                 </td>
                                 <td className="px-4 py-3 text-neon-red/70 text-right">{pos.sl.toFixed(2)}</td>
-                                <td className="px-4 py-3 text-neon-green/70 text-right">[{pos.targets?.join(', ')}]</td>
+                                <td className="px-4 py-3 text-neon-green/70 text-right">
+                                  <div className="flex flex-col items-end">
+                                    <span className="text-[9px] font-bold">{pos.targets?.[0]}</span>
+                                    <span className="text-[7px] opacity-40">[{pos.targets?.slice(1).join(', ')}]</span>
+                                  </div>
+                                </td>
                                 <td className="px-4 py-3 text-white font-bold bg-white/5 text-right">{formatCurrency(pos.entry * pos.qty)}</td>
                                 <td className={cn("px-4 py-3 font-black text-right", currentPnl >= 0 ? "text-neon-green glow-green" : "text-neon-red glow-red")}>
                                   {formatCurrency(currentPnl)}
@@ -2304,24 +2309,35 @@ export default function App() {
                       <h3 className="text-[10px] font-mono font-bold uppercase text-neutral-500 tracking-widest mb-6">Historical Trade Breakdown</h3>
                       <div className="border border-tech-border overflow-hidden">
                         <table className="w-full text-left font-mono">
-                           <thead className="bg-[#1a1d23] text-[9px] font-bold text-neutral-500">
+                           <thead className="bg-[#1a1d23] text-[9px] font-bold text-neutral-500 uppercase tracking-widest">
                              <tr>
                                <th className="p-3">Symbol</th>
-                               <th className="p-3">Date</th>
-                               <th className="p-3">PnL</th>
-                               <th className="p-3">Efficiency</th>
+                               <th className="p-3">Type</th>
+                               <th className="p-3 text-right">Entry</th>
+                               <th className="p-3 text-right">Exit</th>
+                               <th className="p-3 text-right">Qty</th>
+                               <th className="p-3 text-right">PnL</th>
+                               <th className="p-3">Time</th>
                              </tr>
                            </thead>
                            <tbody className="text-[10px] divide-y divide-tech-border">
-                             {tradeHistory.slice(0, 5).map((t, i) => (
+                             {tradeHistory.slice(0, 15).map((t, i) => (
                                <tr key={i} className="hover:bg-white/5 transition-all">
-                                 <td className="p-3 text-white font-bold">{t.symbol}</td>
-                                 <td className="p-3 text-neutral-500">{(t.closedAt?.toDate?.() || new Date()).toLocaleDateString()}</td>
-                                 <td className={cn("p-3 font-bold", t.pnl >= 0 ? "text-neon-green" : "text-neon-red")}>{formatCurrency(t.pnl)}</td>
-                                 <td className="p-3"><div className="h-1 w-12 bg-neon-green/20 overflow-hidden"><div className="h-full bg-neon-green" style={{ width: '85%' }}></div></div></td>
+                                 <td className="p-3">
+                                   <div className="flex flex-col">
+                                     <span className="text-white font-bold">{t.symbol}</span>
+                                     <span className="text-[8px] text-neutral-600">{t.strike}</span>
+                                   </div>
+                                 </td>
+                                 <td className={cn("p-3 font-bold", (t.type || '').includes('CE') ? "text-neon-green" : "text-neon-red")}>{t.type}</td>
+                                 <td className="p-3 text-right text-neutral-400">{t.entry?.toFixed(2)}</td>
+                                 <td className="p-3 text-right text-white font-bold">{t.exit?.toFixed(2)}</td>
+                                 <td className="p-3 text-right text-neutral-500">{t.qty}</td>
+                                 <td className={cn("p-3 font-bold text-right", t.pnl >= 0 ? "text-neon-green" : "text-neon-red")}>{formatCurrency(t.pnl)}</td>
+                                 <td className="p-3 text-neutral-500">{(t.closedAt?.toDate?.() || new Date()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
                                </tr>
                              ))}
-                             {tradeHistory.length === 0 && <tr><td colSpan={4} className="p-8 text-center text-neutral-600 uppercase italic">No closed trades recorded yet.</td></tr>}
+                             {tradeHistory.length === 0 && <tr><td colSpan={7} className="p-8 text-center text-neutral-600 uppercase italic">No closed trades recorded yet.</td></tr>}
                            </tbody>
                         </table>
                       </div>

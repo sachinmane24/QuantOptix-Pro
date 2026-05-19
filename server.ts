@@ -552,23 +552,26 @@ async function startServer() {
       
       console.log(`[Order] Placing ${side} order for ${fullSymbol} Qty: ${qty}`);
       
+      const orderType = Number(type) || 2; // Default to Market
       const orderData = {
         symbol: fullSymbol,
-        qty: qty,
-        type: type || 2, // 2 = Market Order
+        qty: Number(qty),
+        type: orderType, 
         side: side === "BUY" ? 1 : -1,
         productType: "MARGIN",
-        limitPrice: price || 0,
+        limitPrice: orderType === 2 ? 0 : Number(price || 0),
         stopPrice: 0,
         validity: "DAY",
         disclosedQty: 0,
-        offlineOrder: "False",
+        offlineOrder: false,
         stopLoss: 0,
         takeProfit: 0
       };
 
       const authHeader = token.includes(":") ? token : `${clientId}:${token}`;
       
+      console.log("[Order] Payload:", JSON.stringify(orderData));
+
       const response = await axios.post("https://api-t1.fyers.in/api/v3/orders/sync", orderData, {
         headers: { 'Authorization': authHeader }
       });
@@ -576,11 +579,13 @@ async function startServer() {
       if (response.data.s === "ok") {
         res.json({ success: true, orderId: response.data.id, message: "Order placed successfully on FYERS" });
       } else {
+        console.error("[Order Error] Fyers rejection:", JSON.stringify(response.data));
         res.status(400).json({ success: false, message: response.data.message || "Fyers rejected order", details: response.data });
       }
     } catch (error: any) {
-      const err = error.response?.data?.message || error.message;
-      console.error("[Order Error] Failed to place order:", err);
+      const errResp = error.response?.data;
+      const err = errResp?.message || error.message;
+      console.error("[Order Error] Failed to place order:", JSON.stringify(errResp || error.message));
       res.status(500).json({ success: false, message: "Execution error", details: err });
     }
   });
