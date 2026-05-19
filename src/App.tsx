@@ -550,7 +550,7 @@ export default function App() {
       const analysis = preComputedAnalysis || await analyzeTradeProbability(stock, chain);
       const rec = generateRecommendation(stock, analysis, chain);
 
-      if (analysis.winProbability >= 70) { // Entry threshold
+      if (analysis.winProbability >= 75) { // Consistent Institutional Threshold
         addLog(stock.symbol, 'QUALIFIED', 'SUCCESS', `Institutional breakout score: ${analysis.winProbability}%. Executing...`);
         executeTrade(stock, rec, analysis);
       } else {
@@ -611,7 +611,7 @@ export default function App() {
     if (!isAutoTrading || !selectedStock || !aiAnalysis || !recommendation) return;
     
     // Check if the current probability (shown in UI) meets the auto-trade threshold
-    if (aiAnalysis.winProbability >= 80 && !positions.find(p => p.symbol === selectedStock.symbol)) {
+    if (aiAnalysis.winProbability >= 75 && !positions.find(p => p.symbol === selectedStock.symbol)) {
       const lastCheckKey = `last_trade_check_${selectedStock.symbol}`;
       const lastCheck = (window as any)[lastCheckKey] || 0;
       
@@ -1017,6 +1017,22 @@ export default function App() {
     }
     if (isBearishTrade && sectorData && sectorData.val > 0.3) {
       addLog(stock.symbol, 'SECTOR_BLOCK', 'ERROR', `Trade REJECTED: Sector ${stock.sector} is too strong for shorts (${sectorData.val.toFixed(2)}%).`);
+      return;
+    }
+
+    // 3. RSI Exhaustion Protocol (Mean Reversion Check)
+    if (isBullishTrade && stock.rsi > 75) {
+      addLog(stock.symbol, 'CORE_REJECT', 'WARNING', `ALPHA_GUARD: Long entry blocked on ${stock.symbol}. RSI (${stock.rsi.toFixed(1)}) at exhaustion.`);
+      return;
+    }
+    if (isBearishTrade && stock.rsi < 25) {
+      addLog(stock.symbol, 'CORE_REJECT', 'WARNING', `ALPHA_GUARD: Short entry blocked on ${stock.symbol}. RSI (${stock.rsi.toFixed(1)}) at capitulation.`);
+      return;
+    }
+
+    // 4. Volume Spread Validation (Institutional Footprint)
+    if (stock.relVolume < 1.4) {
+      addLog(stock.symbol, 'CORE_REJECT', 'INFO', `VOL_GUARD: Low volume breakout on ${stock.symbol} (RV: ${stock.relVolume.toFixed(2)}x). Skipping retail noise.`);
       return;
     }
     // ----------------------------------------

@@ -44,21 +44,39 @@ export async function analyzeTradeProbability(
     const momentum = Math.min(10, Math.floor(Math.abs(stock.pChange) * 2));
     const volScore = Math.min(10, Math.floor(stock.relVolume * 2.5));
     
-    // Calculate a dynamic probability so trades can actually hit the 70%+ trigger threshold
-    let prob = 50;
-    if (stock.trend === Trend.BULLISH && stock.pChange > 0) prob += 15;
-    if (stock.trend === Trend.BEARISH && stock.pChange < 0) prob += 15;
-    if (stock.relVolume > 1.8) prob += 10;
-    if (stock.marketRegime === MarketRegime.BREAKOUT) prob += 10;
+    // Improved heuristic analysis with multi-timeframe alignment and institutional filtering
+    let winProb = 55; // Lower base for more conservative entries
+    
+    // 1. Multi-Timeframe Alignment (+15%)
+    const isHtfAligned = (stock.trend === Trend.BULLISH && stock.higherTimeframeBias === 'BULLISH') || 
+                         (stock.trend === Trend.BEARISH && stock.higherTimeframeBias === 'BEARISH');
+    if (isHtfAligned) winProb += 15;
+
+    // 2. Volume Spread Health (+10%)
+    const hasInstitutionalVolume = stock.relVolume > 1.8;
+    if (hasInstitutionalVolume) winProb += 10;
+    
+    // 3. Momentum & Price Action Quality (+10%)
+    const isStrongBreakout = stock.marketRegime === MarketRegime.BREAKOUT && Math.abs(stock.pChange) > 0.6;
+    if (isStrongBreakout) winProb += 10;
+
+    // 4. Premium/Discount Filtering (-15% if overextended)
+    // Buy when RSI < 65 (not overextended), Sell when RSI > 35 (not overextended)
+    const isOverextended = (stock.trend === Trend.BULLISH && stock.rsi > 70) || 
+                           (stock.trend === Trend.BEARISH && stock.rsi < 30);
+    if (isOverextended) winProb -= 15;
+    
+    // Final capping and confidence adjustment
+    const confidence = winProb >= 75 ? 'High' : winProb >= 60 ? 'Medium' : 'Low';
 
     return {
-      winProbability: Math.min(94, prob),
-      confidence: 'High',
-      momentumScore: momentum,
-      institutionalActivityScore: volScore,
-      breakoutQualityScore: stock.marketRegime === MarketRegime.BREAKOUT ? 9 : 5,
-      riskScore: 4,
-      summary: `Quant-Model v2: ${stock.symbol} showing ${stock.trend} momentum with ${stock.relVolume.toFixed(2)}x institutional volume.`
+      winProbability: Math.min(94, Math.max(25, winProb)),
+      confidence,
+      momentumScore: Math.min(10, Math.floor(Math.abs(stock.pChange) * 2.5)),
+      institutionalActivityScore: Math.min(10, Math.floor(stock.relVolume * 3)),
+      breakoutQualityScore: isStrongBreakout ? 9 : 5,
+      riskScore: isOverextended ? 8 : 3,
+      summary: `[INSTITUTIONAL_V3] HTF_ALIGN: ${isHtfAligned ? 'YES' : 'NO'} | VOL_VAL: ${hasInstitutionalVolume ? 'VALID' : 'WEAK'}. ${stock.symbol} ${stock.trend} setup at ${stock.lastPrice}.`
     };
   }
 
@@ -122,21 +140,28 @@ export async function analyzeTradeProbability(
     const momentum = Math.min(10, Math.floor(Math.abs(stock.pChange) * 2));
     const instIdx = Math.min(10, Math.floor(stock.relVolume * 3));
     
-    // Increased base and bonuses to allow crossing 80% threshold in strongly trending markets
-    let winProb = 65; 
-    if (stock.trend === Trend.BULLISH && stock.pChange > 0.8) winProb += 12;
-    if (stock.trend === Trend.BEARISH && stock.pChange < -0.8) winProb += 12;
-    if (stock.relVolume > 2.0) winProb += 8;
-    if (stock.marketRegime === MarketRegime.BREAKOUT) winProb += 5;
+    // Enhanced heuristic analysis with institutional filtering
+    let winProb = 50; 
+    
+    const isHtfAligned = (stock.trend === Trend.BULLISH && stock.higherTimeframeBias === 'BULLISH') || 
+                         (stock.trend === Trend.BEARISH && stock.higherTimeframeBias === 'BEARISH');
+    
+    if (isHtfAligned) winProb += 15;
+    if (stock.relVolume > 2.0) winProb += 10;
+    if (stock.marketRegime === MarketRegime.BREAKOUT) winProb += 10;
+    
+    // RSI Overextended protection
+    if (stock.trend === Trend.BULLISH && stock.rsi > 72) winProb -= 20;
+    if (stock.trend === Trend.BEARISH && stock.rsi < 28) winProb -= 20;
 
     return {
-      winProbability: Math.min(92, Math.max(30, winProb)),
+      winProbability: Math.min(92, Math.max(20, winProb)),
       confidence: 'High',
       momentumScore: momentum,
       institutionalActivityScore: instIdx,
       breakoutQualityScore: stock.marketRegime === MarketRegime.BREAKOUT ? 9 : 5,
       riskScore: stock.rsi > 75 || stock.rsi < 25 ? 8 : 3,
-      summary: `[HEURISTIC_QUANT] ${stock.symbol} momentum detected at ${stock.lastPrice}. Institutional volume: ${stock.relVolume.toFixed(2)}x. Gemini AI bypass active.`
+      summary: `[Q-ENGINE_PRO] HTF_BIAS: ${stock.higherTimeframeBias}. Alignment: ${isHtfAligned ? 'READY' : 'WAIT'}. Volume Presence: ${stock.relVolume > 2 ? 'INSTITUTIONAL' : 'RETAIL'}.`
     };
   }
 }
