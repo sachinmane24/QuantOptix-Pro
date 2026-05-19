@@ -2076,32 +2076,34 @@ export default function App() {
                           </tr>
                         ) : (
                           positions.map(pos => {
-                            const livePrice = monitoredPrices[pos.id] || pos.currentPrice || pos.entry;
-                            const currentPnl = (livePrice - pos.entry) * pos.qty;
+                            if (!pos) return null;
+                            const livePrice = (monitoredPrices && monitoredPrices[pos.id]) || pos.currentPrice || pos.entry || 0;
+                            const currentPnl = (livePrice - (pos.entry || 0)) * (pos.qty || 0);
                             
                             return (
                               <tr key={pos.id} className="hover:bg-white/5 transition-all">
                                 <td className="px-4 py-3">
                                   <div className="flex flex-col">
-                                    <span className="font-bold text-white tracking-widest">{pos.symbol}</span>
-                                    <span className="text-[9px] text-neutral-500 uppercase tracking-widest">Strike: {pos.strike}</span>
+                                    <span className="font-bold text-white tracking-widest">{pos.symbol || 'UNKNOWN'}</span>
+                                    <span className="text-[9px] text-neutral-500 uppercase tracking-widest">Strike: {pos.strike || 'N/A'}</span>
                                   </div>
                                 </td>
                                 <td className={cn("px-4 py-3 font-black", (pos.type || '').includes('CE') ? "text-neon-green" : "text-neon-red")}>{pos.type || 'N/A'}</td>
                                 <td className="px-4 py-3 text-neutral-400 text-right">{(pos.entry || 0).toFixed(2)}</td>
-                                <td className={cn("px-4 py-3 font-bold text-right", livePrice >= (pos.entry || 0) ? "text-neon-green" : "text-neon-red")}>
-                                  {livePrice.toFixed(2)}
+                                <td className={cn("px-4 py-3 font-bold text-right", (livePrice || 0) >= (pos.entry || 0) ? "text-neon-green" : "text-neon-red")}>
+                                  {(livePrice || 0).toFixed(2)}
                                 </td>
                                 <td className="px-4 py-3 text-neon-red/70 text-right">{(pos.sl || 0).toFixed(2)}</td>
                                 <td className="px-4 py-3 text-neon-green/70 text-right">
                                   <div className="flex flex-col items-end">
                                     {(() => {
+                                      const targets = Array.isArray(pos.targets) ? pos.targets : [];
                                       // Ensure targets are sorted ascending (for CE/PE buying, we want them in increasing order)
-                                      const sortedTgt = [...(pos.targets || [])].sort((a, b) => a - b);
+                                      const sortedTgt = [...targets].sort((a, b) => a - b);
                                       return (
                                         <>
-                                          <span className="text-[9px] font-bold text-neon-green">{sortedTgt[0]}</span>
-                                          <span className="text-[7px] opacity-40">[{sortedTgt.slice(1).join(', ')}]</span>
+                                          <span className="text-[9px] font-bold text-neon-green">{sortedTgt[0] || 'N/A'}</span>
+                                          {sortedTgt.length > 1 && <span className="text-[7px] opacity-40">[{sortedTgt.slice(1).join(', ')}]</span>}
                                         </>
                                       );
                                     })()}
@@ -2129,11 +2131,12 @@ export default function App() {
 
                   <h2 className="text-[10px] font-mono font-bold uppercase tracking-[.3em] text-neutral-500 mt-10">Institutional Execution Logs</h2>
                   <div className="bg-[#0b0e14] border border-tech-border p-5 h-[300px] overflow-y-auto font-mono text-[9px] space-y-3 custom-scrollbar">
-                    {tradeLogs.length === 0 && <div className="text-neutral-700 italic uppercase">System ready. Waiting for order triggers...</div>}
-                    {tradeLogs.map((log, i) => {
-                      const isRejected = log.includes('REJECTED');
-                      const isExecuted = log.includes('EXECUTED');
-                      const isClosed = log.includes('CLOSED');
+                    {(!tradeLogs || tradeLogs.length === 0) && <div className="text-neutral-700 italic uppercase">System ready. Waiting for order triggers...</div>}
+                    {tradeLogs && tradeLogs.map((log, i) => {
+                      const logStr = String(log || '');
+                      const isRejected = logStr.includes('REJECTED');
+                      const isExecuted = logStr.includes('EXECUTED');
+                      const isClosed = logStr.includes('CLOSED');
                       
                       return (
                         <div key={i} className="text-neutral-400 flex gap-4 items-start border-b border-white/5 pb-2">
@@ -2143,7 +2146,7 @@ export default function App() {
                           )}>
                             [{isRejected ? 'REJECT' : isExecuted ? 'EXEC_OK' : isClosed ? 'EXIT_OK' : 'SYSTEM'}]
                           </span>
-                          <span className={cn(isRejected && "text-neutral-500 italic")}>{log}</span>
+                          <span className={cn(isRejected && "text-neutral-500 italic")}>{logStr}</span>
                         </div>
                       );
                     })}
@@ -2238,10 +2241,11 @@ export default function App() {
                              <div className="text-[8px] text-neutral-500 uppercase mb-2">Alpha Decay Rate (Theta)</div>
                              <div className="flex items-center justify-between">
                                 <span className="text-xs font-bold text-white tracking-widest">
-                                   Avg Hold: {tradeHistory.length > 0 
+                                   Avg Hold: {tradeHistory && tradeHistory.length > 0 
                                      ? (tradeHistory.reduce((acc, t) => {
-                                         const start = t.timestamp?.toDate?.() || new Date();
-                                         const end = t.closedAt?.toDate?.() || new Date();
+                                         if (!t) return acc;
+                                         const start = t.timestamp?.toDate?.() || (t.timestamp instanceof Date ? t.timestamp : new Date());
+                                         const end = t.closedAt?.toDate?.() || (t.closedAt instanceof Date ? t.closedAt : new Date());
                                          return acc + (end.getTime() - start.getTime());
                                        }, 0) / tradeHistory.length / 60000).toFixed(1)
                                      : '0'}m
