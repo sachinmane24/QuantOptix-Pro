@@ -2,5 +2,5 @@
   "name": "QuantOptix",
   "description": "High-probability NSE F&O options buying platform with AI probability modeling, multi-timeframe analysis, and institutional flow tracking.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["AI Analysis", "High-frequency data visualization", "Quant derivatives engine"]
+  "majorCapabilities": ["AI Analysis", "High-frequency data visualization", "Quant derivatives engine", "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

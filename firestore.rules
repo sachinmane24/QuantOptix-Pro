@@ -1,8 +1,51 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // 0. Default Deny
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      // Support authenticated users and the specific guest ID used in App.tsx
+      return (isSignedIn() && request.auth.uid == userId) || 
+             (userId == 'guest_institutional_trader');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // --- Collections ---
+
+    match /trades/{tradeId} {
+      // Allow list/get if the user is the owner of the trade
+      allow list: if isOwner(resource.data.userId);
+      allow get: if isOwner(resource.data.userId);
+      
+      // Allow create if the user claims their own ID (or the guest ID)
+      allow create: if isOwner(incoming().userId);
+      
+      // Allow update if the user is the owner
+      allow update: if isOwner(resource.data.userId);
+      
+      // Audit trail: Never delete trades
+      allow delete: if false;
+    }
+
+    match /portfolios/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if isOwner(userId);
+    }
+
+    match /settings/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if isOwner(userId);
     }
   }
 }
