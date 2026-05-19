@@ -43,10 +43,11 @@ export function isMarketOpen(date: Date = new Date()): { open: boolean, reason: 
   const hours = parseInt(getPart('hour'));
   const minutes = parseInt(getPart('minute'));
   const datePart = `${year}-${month}-${day}`;
+  const dayName = istFormatter.formatToParts(date).find(p => p.type === 'weekday')?.value || '';
 
   // Check Weekends
-  const dayOfWeek = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getDay();
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
+  const dayOfWeek = date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
+  if (dayOfWeek === 'Sat' || dayOfWeek === 'Sun') {
     return { open: false, reason: 'Weekend' };
   }
 

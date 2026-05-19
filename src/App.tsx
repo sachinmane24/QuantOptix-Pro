@@ -26,6 +26,7 @@ import { analyzeTradeProbability, generateRecommendation, getFyersOptionSymbol }
 import { 
   sendTelegramNotification, formatTradeEntry, formatTradeExit, formatTestMessage
 } from './services/telegramService';
+import { isMarketOpen } from './services/marketHoursService';
 import { ScannerAlerts } from './components/ScannerAlerts';
 import { 
   StockData, OptionAction, Trend, MarketRegime, 
@@ -443,6 +444,12 @@ export default function App() {
   const [showManualCodeInput, setShowManualCodeInput] = useState(false);
 
   const loadMarketData = async () => {
+    const marketStatus = isMarketOpen();
+    if (!marketStatus.open) {
+      addLog('SYSTEM', 'SUSPENDED', 'INFO', `Institutional Engine suspended: ${marketStatus.reason}`);
+      return;
+    }
+
     // Refresh Active Institutional Universe
     addLog('STOCKS', 'RESCAN', 'INFO', 'Updating top movers universe from NSE Data...');
     const trackedSymbols = positionsRef.current.map(p => p.symbol);
