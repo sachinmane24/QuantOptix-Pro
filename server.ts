@@ -6,8 +6,7 @@ import dotenv from "dotenv";
 import { Server } from "socket.io";
 import http from "http";
 import crypto from "crypto";
-import * as otplib from "otplib";
-const { authenticator } = otplib;
+import { authenticator } from "otplib";
 // @ts-ignore
 import fyers from "fyers-api-v3";
 import { ScannerService, TradeSignal } from "./src/services/scannerService";
@@ -502,7 +501,8 @@ async function startServer() {
 
     if (!token && process.env.FYERS_TOTP_SECRET) {
       console.log("[Proxy] Token missing but credentials found. Attempting auto-login...");
-      token = await performAutoLogin() || undefined;
+      const result = await performAutoLogin();
+      token = result?.success ? result.token : undefined;
     }
 
     console.log(`[Proxy] Fetching quotes for symbols size: ${String(symbols).length}`);
@@ -711,8 +711,8 @@ async function startServer() {
     // 1. Check for Auto-Login at 08:55 AM IST
     if (isLoginTime(now)) {
       console.log("[Scheduler] 08:55 AM IST detected. Triggering automated Fyers login...");
-      const token = await performAutoLogin();
-      if (token) {
+      const result = await performAutoLogin();
+      if (result && result.success) {
         console.log("[Scheduler] Automated login successful. Renewing sockets...");
         setupFyersSocket();
       }
@@ -757,8 +757,8 @@ async function startServer() {
     if (!process.env.FYERS_ACCESS_TOKEN && process.env.FYERS_TOTP_SECRET) {
       console.log("[Server Startup] Triggering automated login...");
       performAutoLogin()
-        .then((token) => {
-          if (token) {
+        .then((result) => {
+          if (result && result.success) {
             console.log("[Server Startup] Automated login successful. Initializing sockets.");
             try {
               setupFyersSocket();
@@ -766,7 +766,7 @@ async function startServer() {
               console.error("[Server Startup] Deferred socket setup failed:", e);
             }
           } else {
-            console.log("[Server Startup] Automated login failed or credentials missing.");
+            console.log("[Server Startup] Automated login failed or credentials missing:", result?.error || "Unknown");
           }
         })
         .catch(err => {
