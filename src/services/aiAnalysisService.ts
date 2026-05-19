@@ -166,25 +166,32 @@ export function generateRecommendation(
   const delta = Math.abs(bestContract.delta);
   
   // Institutional Logic: 
-  // 1. Spot Stop Loss based on ATR (Institutional Standard: 1.5 * ATR)
-  const atr = stock.atr || (stock.lastPrice * 0.015);
-  const spotStopLossDistance = atr * 1.5;
+  // 1. Spot Stop Loss based on ATR (Scalping Standard: 0.7 * ATR)
+  const atr = stock.atr || (stock.lastPrice * 0.012);
+  const spotStopLossDistance = atr * 0.7;
   
   // 2. Map Spot SL to Option SL using Delta
   // Change in Option Price ≈ Change in Spot Price * Delta
   const optionStopLossDistance = spotStopLossDistance * delta;
   
-  // Factor in time decay and IV buffer (5% of premium)
-  const slBuffer = entryPrice * 0.05;
-  const stopLoss = Math.max(entryPrice * 0.1, entryPrice - optionStopLossDistance - slBuffer);
+  // Factor in time decay and IV buffer (3% of premium)
+  const slBuffer = entryPrice * 0.03;
+  
+  // Tighten SL: Cap max risk at 25% of premium for high-freq quant, floor at 10%
+  let calculatedSL = entryPrice - optionStopLossDistance - slBuffer;
+  const maxAllowedEntryRisk = entryPrice * 0.25;
+  if (entryPrice - calculatedSL > maxAllowedEntryRisk) {
+    calculatedSL = entryPrice - maxAllowedEntryRisk;
+  }
+  const stopLoss = Math.max(entryPrice * 0.1, calculatedSL);
 
   // 3. Targets based on R-Multiples (Risk-Reward)
-  // Standard Institutional Targets: 1.5R, 3R, 5R
+  // Scalping Targets: 1.2R, 2R, 3R (Reduced from 1.5R, 3R, 5R for faster rotation)
   const riskValue = entryPrice - stopLoss;
   
-  const target1 = entryPrice + (riskValue * 1.5); // 1.5R
-  const target2 = entryPrice + (riskValue * 3.0); // 3R
-  const target3 = entryPrice + (riskValue * 5.0); // 5R
+  const target1 = entryPrice + (riskValue * 1.2); // 1.2R
+  const target2 = entryPrice + (riskValue * 2.0); // 2R
+  const target3 = entryPrice + (riskValue * 3.0); // 3R
 
   return {
     symbol: stock.symbol,

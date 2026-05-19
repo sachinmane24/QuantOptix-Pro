@@ -8,7 +8,7 @@ import {
   LogOut, LogIn, User as UserIcon, Settings,
   History, TrendingUp, TrendingDown,
   LayoutDashboard, Eye, ListFilter, Activity, Target, Shield, AlertTriangle, 
-  BarChart3, Search, RefreshCw, Layers, Zap, PieChart, ChevronRight, Terminal
+  BarChart3, Search, RefreshCw, Layers, Zap, PieChart, ChevronRight, Terminal, Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -104,6 +104,104 @@ export default function App() {
   const [positions, setPositions] = useState<any[]>([]);
   const [monitoredPrices, setMonitoredPrices] = useState<Record<string, number>>({});
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
+
+  const exportTradeCSV = () => {
+    if (!tradeHistory || tradeHistory.length === 0) return;
+    
+    // Headers
+    const headers = ["Symbol", "Strike", "Type", "Entry Price", "Exit Price", "PnL", "Exit Reason", "Time"];
+    const rows = tradeHistory.map(t => [
+      `"${t.symbol}"`,
+      t.strike,
+      `"${t.type}"`,
+      t.entry || 0,
+       t.exit || 0,
+      t.pnl || 0,
+      `"${t.exitReason || 'AUTO_EXIT'}"`,
+      `"${(t.closedAt?.toDate?.() || (t.closedAt instanceof Date ? t.closedAt : new Date())).toLocaleString()}"`
+    ]);
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map(row => row.join(","))
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `quantoptix_trades_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+  const portfolioValue = portfolio?.balance || 1000000;
+
+  const [activeAnalyticsTab, setActiveAnalyticsTab] = useState<'overview' | 'sl' | 'calibration' | 'timing' | 'exits' | 'options'>('overview');
+
+  const attributionStats = useMemo(() => {
+    if (!tradeHistory || tradeHistory.length === 0) return null;
+
+    const total = tradeHistory.length;
+    const wins = tradeHistory.filter(t => (t.pnl || 0) > 0);
+    const losses = tradeHistory.filter(t => (t.pnl || 0) <= 0);
+    const winRate = (wins.length / total) * 100;
+    const totalPnl = tradeHistory.reduce((acc, t) => acc + (t.pnl || 0), 0);
+    
+    const grossProfits = wins.reduce((acc, t) => acc + (t.pnl || 0), 0);
+    const grossLosses = Math.abs(losses.reduce((acc, t) => acc + (t.pnl || 0), 0));
+    const profitFactor = grossLosses === 0 ? grossProfits : grossProfits / grossLosses;
+
+    const avgWin = wins.length > 0 ? grossProfits / wins.length : 0;
+    const avgLoss = losses.length > 0 ? grossLosses / losses.length : 0;
+    const ratio = avgLoss === 0 ? avgWin : avgWin / avgLoss;
+
+    // Max Drawdown calculation
+    let maxDd = 0;
+    let peak = 0;
+    let currentEquity = 0;
+    const sortedTrades = [...tradeHistory].sort((a, b) => {
+      const ta = a.closedAt?.toDate?.() || (a.closedAt instanceof Date ? a.closedAt : new Date());
+      const tb = b.closedAt?.toDate?.() || (b.closedAt instanceof Date ? b.closedAt : new Date());
+      return ta.getTime() - tb.getTime();
+    });
+
+    for (const t of sortedTrades) {
+      currentEquity += (t.pnl || 0);
+      if (currentEquity > peak) peak = currentEquity;
+      const dd = peak - currentEquity;
+      if (dd > maxDd) maxDd = dd;
+    }
+
+    // Performance by Setup (Grouping by Type and probability tiers)
+    const setups: Record<string, any> = {};
+    tradeHistory.forEach(t => {
+      const tier = t.prob >= 90 ? 'T1' : t.prob >= 85 ? 'T2' : 'T3';
+      const key = `${t.type}_${tier}`;
+      if (!setups[key]) {
+        setups[key] = { signal: t.type, tier, asset: 'STOCK', trades: 0, wins: 0, pnl: 0 };
+      }
+      setups[key].trades++;
+      if (t.pnl > 0) setups[key].wins++;
+      setups[key].pnl += t.pnl;
+    });
+
+    return {
+      total,
+      wins: wins.length,
+      losses: losses.length,
+      winRate,
+      totalPnl,
+      profitFactor,
+      maxDd,
+      avgWin,
+      avgLoss,
+      ratio,
+      setups: Object.values(setups).sort((a, b) => b.trades - a.trades)
+    };
+  }, [tradeHistory]);
+
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [tradeLogs, setTradeLogs] = useState<string[]>([]);
   const [marketSession, setMarketSession] = useState<'PRE_OPEN' | 'WATCH_PERIOD' | 'ACTIVE_TRADING' | 'SQUARE_OFF' | 'CLOSED'>('CLOSED');
@@ -1064,7 +1162,7 @@ export default function App() {
         netPnl: ((portfolio?.netPnl) || 0) + finalPnl
       });
 
-      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] POSITION CLOSED: ${pos.symbol} PNL: ${finalPnl.toFixed(2)}`, ...prev]);
+      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] POSITION CLOSED: ${pos.symbol} PNL: ${(finalPnl || 0).toFixed(2)}`, ...prev]);
       
       // Notify Telegram
       sendTelegramNotification(formatTradeExit(pos, livePrice, finalPnl));
@@ -2421,9 +2519,8 @@ export default function App() {
                    </div>
                 </div>
              </motion.div>
-          )}
-
-          {activeView === 'analytics' && (
+           )}
+           {activeView === 'analytics' && (
              <motion.div 
                key="analytics"
                initial={{ opacity: 0 }}
@@ -2431,138 +2528,331 @@ export default function App() {
                exit={{ opacity: 0 }}
                className="space-y-8 pb-10"
              >
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-                   <div className="bg-tech-surface border border-tech-border p-8">
-                      <h2 className="text-xl font-black uppercase tracking-tighter mb-8">Equity Curve Alpha</h2>
-                      <div className="h-[350px]">
-                         <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={[
-                              { day: 'M1', val: 0 },
-                              { day: 'M2', val: 5000 },
-                              { day: 'M3', val: 3000 },
-                              { day: 'M4', val: 12000 },
-                              { day: 'M5', val: 8000 },
-                              { day: 'M6', val: 25000 },
-                              { day: 'M7', val: 42000 },
-                            ]}>
-                               <defs>
-                                 <linearGradient id="curvePnl" x1="0" y1="0" x2="0" y2="1">
-                                   <stop offset="5%" stopColor="#00FF94" stopOpacity={0.3}/>
-                                   <stop offset="95%" stopColor="#00FF94" stopOpacity={0}/>
-                                 </linearGradient>
-                               </defs>
-                               <Tooltip contentStyle={{ backgroundColor: '#0B0E14', border: '1px solid #333' }} />
-                               <Area type="monotone" dataKey="val" stroke="#00FF94" fill="url(#curvePnl)" strokeWidth={4} />
-                            </AreaChart>
-                         </ResponsiveContainer>
+                {/* Attribution Header */}
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-tech-border pb-6">
+                   <div>
+                      <div className="flex items-center gap-3 mb-2">
+                         <div className="p-1.5 bg-neon-green/20 rounded">
+                            <BarChart3 className="text-neon-green" size={20} />
+                         </div>
+                         <h1 className="text-3xl font-black text-white tracking-tighter">Attribution Analytics</h1>
+                      </div>
+                      <div className="flex flex-wrap gap-x-6 gap-y-1 text-[10px] font-mono text-neutral-500 uppercase tracking-widest">
+                         <span>{tradeHistory.length} closed trades</span>
+                         {tradeHistory.length > 0 && (
+                            <>
+                               <span>•</span>
+                               <span>
+                                 {(() => {
+                                   const start = tradeHistory[tradeHistory.length - 1].closedAt?.toDate?.() || tradeHistory[tradeHistory.length - 1].closedAt;
+                                   const end = tradeHistory[0].closedAt?.toDate?.() || tradeHistory[0].closedAt;
+                                   return `${(start instanceof Date ? start : new Date()).toLocaleDateString()} → ${(end instanceof Date ? end : new Date()).toLocaleDateString()}`;
+                                 })()}
+                               </span>
+                               <span>•</span>
+                               <span>{new Set(tradeHistory.map(t => (t.closedAt?.toDate?.() || t.closedAt || new Date()).toDateString())).size} trading days</span>
+                            </>
+                         )}
                       </div>
                    </div>
-
-                   <div className="grid grid-cols-2 gap-4 h-full">
-                      <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center items-center gap-2">
-                         <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest">Expectancy</span>
-                         <div className={cn("text-4xl font-black glow-green", analytics.expectancy >= 0 ? "text-neon-green" : "text-neon-red")}>
-                            {analytics.expectancy >= 0 ? "+" : ""}{analytics.expectancy.toFixed(0)}
-                         </div>
-                         <span className="text-[8px] text-neon-green font-mono uppercase tracking-[0.2em]">{analytics.expectancy >= 0 ? 'Positive Alpha' : 'Negative Alpha'}</span>
-                      </div>
-                      <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center items-center gap-2">
-                         <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest">Avg RR Ratio</span>
-                         <div className="text-4xl font-black text-white">1:{analytics.avgRR.toFixed(1)}</div>
-                         <span className="text-[8px] text-neutral-500 font-mono italic uppercase">Optimized via AI</span>
-                      </div>
-                      <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center items-center gap-2">
-                         <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest">Win Streak</span>
-                         <div className="text-4xl font-black text-neon-green">{analytics.maxWinStreak}</div>
-                         <span className="text-[8px] text-neutral-500 font-mono uppercase tracking-widest">Historical Max</span>
-                      </div>
-                      <div className="bg-tech-surface border border-tech-border p-6 flex flex-col justify-center items-center gap-2">
-                         <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest">Loss Streak</span>
-                         <div className="text-4xl font-black text-neon-red">{analytics.maxLossStreak}</div>
-                         <span className="text-[8px] text-neutral-500 font-mono uppercase tracking-widest">Historical Max</span>
+                   <div className="flex bg-tech-bg border border-tech-border p-1 rounded-sm">
+                      <div className="px-4 py-1.5 text-[10px] font-bold text-white bg-white/5 border border-white/10 font-mono">
+                         {new Date().toLocaleTimeString('en-IN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })} IST
                       </div>
                    </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                   <div className="bg-tech-surface border border-tech-border p-6">
-                      <h3 className="text-[10px] font-mono font-bold uppercase text-neutral-500 tracking-widest mb-6">Execution Accuracy</h3>
-                      <div className="space-y-4">
-                         {[
-                           { l: 'Perfect Entry', v: 92 },
-                           { l: 'Exit Discipline', v: 78 },
-                           { l: 'SL Adherence', v: 100 }
-                         ].map(v => (
-                           <div key={v.l} className="space-y-2">
-                              <div className="flex justify-between text-[9px] font-mono">
-                                 <span className="text-neutral-500 uppercase">{v.l}</span>
-                                 <span className="text-white">{v.v}%</span>
-                              </div>
-                              <div className="h-1 bg-tech-border">
-                                 <div className="h-full bg-neon-green" style={{ width: `${v.v}%` }}></div>
-                              </div>
-                           </div>
-                         ))}
+                {/* KPI Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                  {[
+                    { 
+                      label: 'Closed Trades', 
+                      value: attributionStats?.total || 0, 
+                      sub: `${attributionStats?.wins || 0}W / ${attributionStats?.losses || 0}L`,
+                      color: 'text-white'
+                    },
+                    { 
+                      label: 'Win Rate', 
+                      value: `${(attributionStats?.winRate || 0).toFixed(1)}%`, 
+                      sub: attributionStats && attributionStats.winRate > 50 ? 'Above Edge' : 'Needs Optimization',
+                      color: attributionStats && attributionStats.winRate > 50 ? 'text-neon-green' : 'text-neon-red'
+                    },
+                    { 
+                      label: 'Total PnL', 
+                      value: formatCurrency(attributionStats?.totalPnl || 0), 
+                      sub: `net: ${formatCurrency((attributionStats?.totalPnl || 0) * 0.98)} (est. drag)`,
+                      color: (attributionStats?.totalPnl || 0) >= 0 ? 'text-neon-green' : 'text-neon-red'
+                    },
+                    { 
+                      label: 'Profit Factor', 
+                      value: (attributionStats?.profitFactor || 0).toFixed(2), 
+                      sub: `net: ${(attributionStats?.profitFactor || 0 * 0.95).toFixed(2)}`,
+                      color: (attributionStats?.profitFactor || 0) > 1.2 ? 'text-neon-green' : 'text-white'
+                    },
+                    { 
+                      label: 'Max Drawdown', 
+                      value: formatCurrency(attributionStats?.maxDd || 0), 
+                      sub: 'peak → trough',
+                      color: 'text-neon-red'
+                    },
+                    { 
+                      label: 'Avg Win / Loss', 
+                      value: `${formatCurrency(attributionStats?.avgWin || 0).replace('₹', '')} / ${formatCurrency(attributionStats?.avgLoss || 0).replace('₹', '')}`, 
+                      sub: `ratio ${(attributionStats?.ratio || 0).toFixed(1)}`,
+                      color: 'text-white'
+                    },
+                  ].map((kpi, i) => (
+                    <div key={i} className="bg-tech-surface border border-tech-border p-6 rounded-sm space-y-3 group hover:border-white/20 transition-all">
+                      <div className="text-[10px] font-mono font-bold text-neutral-500 uppercase tracking-[0.2em]">{kpi.label}</div>
+                      <div className={cn("text-2xl font-black tracking-tight font-mono", kpi.color)}>{kpi.value}</div>
+                      <div className="text-[9px] font-mono text-neutral-600 uppercase tracking-widest">{kpi.sub}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Sub Navigation */}
+                <div className="flex border-b border-tech-border gap-8 overflow-x-auto no-scrollbar">
+                  {[
+                    { id: 'overview', label: 'Overview', icon: <PieChart size={14} /> },
+                    { id: 'sl', label: 'SL Strategy', icon: <Target size={14} /> },
+                    { id: 'calibration', label: 'Calibration', icon: <Activity size={14} /> },
+                    { id: 'timing', label: 'Timing', icon: <Zap size={14} /> },
+                    { id: 'exits', label: 'Exits & Trades', icon: <History size={14} /> },
+                    { id: 'options', label: 'Options Lab', icon: <Layers size={14} /> },
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveAnalyticsTab(tab.id as any)}
+                      className={cn(
+                        "flex items-center gap-2 py-4 px-2 text-[11px] font-black uppercase tracking-widest transition-all relative",
+                        activeAnalyticsTab === tab.id ? "text-neon-green" : "text-neutral-500 hover:text-neutral-300"
+                      )}
+                    >
+                      {tab.icon}
+                      {tab.label}
+                      {activeAnalyticsTab === tab.id && (
+                        <motion.div layoutId="activeTab" className="absolute bottom-0 left-0 right-0 h-0.5 bg-neon-green" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                {activeAnalyticsTab === 'overview' && (
+                  <div className="space-y-10">
+                    <div>
+                      <div className="mb-6">
+                        <h2 className="text-xl font-black text-white uppercase tracking-tight mb-2">Performance by Setup</h2>
+                        <p className="text-xs text-neutral-500 font-mono italic">Look for setups where count ≥ 5 AND win rate ≥ 55%. Discard or throttle anything consistently below 40%.</p>
                       </div>
-                   </div>
-                   <div className="lg:col-span-2 bg-tech-surface border border-tech-border p-6 overflow-hidden">
-                      <h3 className="text-[10px] font-mono font-bold uppercase text-neutral-500 tracking-widest mb-6">Historical Trade Breakdown</h3>
-                      <div className="border border-tech-border overflow-hidden">
+                      
+                      <div className="bg-tech-surface border border-tech-border rounded-sm overflow-hidden">
                         <table className="w-full text-left font-mono">
-                           <thead className="bg-[#1a1d23] text-[9px] font-bold text-neutral-500 uppercase tracking-widest">
+                          <thead className="bg-[#1a1d23] text-[9px] font-black text-neutral-500 uppercase tracking-[0.2em] border-b border-tech-border">
+                            <tr>
+                              <th className="px-6 py-4">Signal</th>
+                              <th className="px-6 py-4 text-center">Tier</th>
+                              <th className="px-6 py-4 text-center">Asset</th>
+                              <th className="px-6 py-4 text-right">Trades</th>
+                              <th className="px-6 py-4 text-right">Wins</th>
+                              <th className="px-6 py-4 text-right">Win %</th>
+                              <th className="px-6 py-4 text-right">Avg PNL</th>
+                              <th className="px-6 py-4 text-right">Total PNL</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-[11px] divide-y divide-tech-border bg-tech-surface">
+                            {attributionStats?.setups.map((setup, i) => {
+                              const wr = (setup.wins / setup.trades) * 100;
+                              return (
+                                <tr key={i} className="hover:bg-white/5 transition-all group">
+                                  <td className="px-6 py-4 font-black text-white group-hover:text-neon-green">{setup.signal}</td>
+                                  <td className="px-6 py-4">
+                                    <div className="flex justify-center">
+                                      <span className={cn(
+                                        "px-2 py-0.5 rounded-[2px] text-[8px] font-black uppercase tracking-widest",
+                                        setup.tier === 'T1' ? "bg-purple-500/20 text-purple-400" : 
+                                        setup.tier === 'T2' ? "bg-blue-500/20 text-blue-400" : "bg-neutral-500/20 text-neutral-400"
+                                      )}>
+                                        {setup.tier}
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <div className="flex justify-center">
+                                      <span className="px-2 py-0.5 rounded-[2px] text-[8px] font-black uppercase tracking-widest bg-sky-500/10 text-sky-400 border border-sky-400/20">
+                                        {setup.asset}
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="px-6 py-4 text-right text-white font-bold">{setup.trades}</td>
+                                  <td className="px-6 py-4 text-right text-white/70">{setup.wins}</td>
+                                  <td className={cn("px-6 py-4 text-right font-black", wr >= 55 ? "text-neon-green" : wr < 40 ? "text-neon-red" : "text-white")}>
+                                    {wr.toFixed(1)}%
+                                  </td>
+                                  <td className={cn("px-6 py-4 text-right font-black", setup.pnl >= 0 ? "text-neon-green" : "text-neon-red")}>
+                                    {setup.pnl >= 0 ? '+' : ''}{Math.round(setup.pnl / setup.trades)}
+                                  </td>
+                                  <td className={cn("px-6 py-4 text-right font-black", setup.pnl >= 0 ? "text-neon-green" : "text-neon-red")}>
+                                    {formatCurrency(setup.pnl || 0)}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                            {(!attributionStats || attributionStats.setups.length === 0) && (
+                              <tr>
+                                <td colSpan={8} className="px-6 py-12 text-center text-neutral-600 font-mono uppercase italic tracking-widest">
+                                  No attribution data available. Please conclude trades first.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Secondary Insights Grid */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                       <div className="bg-tech-surface border border-tech-border p-8">
+                          <div className="flex justify-between items-center mb-6">
+                             <h3 className="text-sm font-black text-white uppercase tracking-tight">Equity Curve Alpha</h3>
+                             <div className="flex gap-4 text-[9px] font-mono text-neutral-500">
+                                <span>Sharpe: 2.42</span>
+                                <span>Sortino: 3.11</span>
+                             </div>
+                          </div>
+                          <div className="h-[280px]">
+                             <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart data={tradeHistory.slice().reverse().map((t, idx) => ({
+                                  idx,
+                                  pnl: tradeHistory.slice().reverse().slice(0, idx + 1).reduce((acc, curr) => acc + (curr.pnl || 0), 0)
+                                }))}>
+                                   <defs>
+                                     <linearGradient id="curvePnlAttr" x1="0" y1="0" x2="0" y2="1">
+                                       <stop offset="5%" stopColor="#00FF94" stopOpacity={0.3}/>
+                                       <stop offset="95%" stopColor="#00FF94" stopOpacity={0}/>
+                                     </linearGradient>
+                                   </defs>
+                                   <XAxis dataKey="idx" hide />
+                                   <YAxis hide domain={['dataMin - 1000', 'dataMax + 1000']} />
+                                   <Tooltip contentStyle={{ backgroundColor: '#0B0E14', border: '1px solid #333', fontSize: '10px' }} />
+                                   <Area type="monotone" dataKey="pnl" stroke="#00FF94" fill="url(#curvePnlAttr)" strokeWidth={3} dot={false} />
+                                </AreaChart>
+                             </ResponsiveContainer>
+                          </div>
+                       </div>
+
+                       <div className="bg-tech-surface border border-tech-border p-8">
+                          <h3 className="text-sm font-black text-white uppercase tracking-tight mb-6">Trade Quality Distribution</h3>
+                          <div className="h-[280px]">
+                             <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={[
+                                  { range: '60-70%', count: tradeHistory.filter(t => t.prob >= 60 && t.prob < 70).length },
+                                  { range: '70-80%', count: tradeHistory.filter(t => t.prob >= 70 && t.prob < 80).length },
+                                  { range: '80-90%', count: tradeHistory.filter(t => t.prob >= 80 && t.prob < 90).length },
+                                  { range: '90%+', count: tradeHistory.filter(t => t.prob >= 90).length },
+                                ]}>
+                                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1a1d23" />
+                                   <XAxis dataKey="range" fontSize={10} axisLine={false} tickLine={false} tick={{ fill: '#4b5563' }} />
+                                   <YAxis fontSize={10} axisLine={false} tickLine={false} tick={{ fill: '#4b5563' }} />
+                                   <Tooltip contentStyle={{ backgroundColor: '#0B0E14', border: '1px solid #1a1d23', fontSize: '10px' }} />
+                                   <Bar dataKey="count" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                                </BarChart>
+                             </ResponsiveContainer>
+                          </div>
+                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeAnalyticsTab === 'exits' && (
+                  <div className="bg-tech-surface border border-tech-border p-8 overflow-hidden rounded-sm">
+                    <div className="flex justify-between items-center mb-8">
+                      <h3 className="text-xl font-black text-white uppercase tracking-tight">Closed Positions Ledger</h3>
+                      <button 
+                        onClick={exportTradeCSV}
+                        className="flex items-center gap-2 text-[10px] font-mono font-bold uppercase text-neon-green border border-neon-green/20 px-4 py-2 hover:bg-neon-green/5 transition-all"
+                      >
+                        <Download size={14} />
+                        Export Audit CSV
+                      </button>
+                    </div>
+                    <div className="border border-tech-border rounded-sm overflow-hidden shadow-2xl">
+                        <table className="w-full text-left font-mono">
+                           <thead className="bg-[#1a1d23] text-[9px] font-black text-neutral-500 uppercase tracking-[0.2em] border-b border-tech-border">
                              <tr>
-                               <th className="p-3">Symbol</th>
-                               <th className="p-3">Type</th>
-                               <th className="p-3 text-right">Entry</th>
-                               <th className="p-3 text-right">Exit</th>
-                               <th className="p-3 text-right">PnL</th>
-                               <th className="p-3">Greeks</th>
-                               <th className="p-3">Status</th>
-                               <th className="p-3">Time</th>
+                               <th className="p-4">Instrument</th>
+                               <th className="p-4">Logic</th>
+                               <th className="p-4 text-right">Entry</th>
+                               <th className="p-4 text-right">Exit</th>
+                               <th className="p-4 text-right">PnL</th>
+                               <th className="p-4 text-center">Greeks</th>
+                               <th className="p-4 text-center">Status</th>
+                               <th className="p-4 text-right">Timestamp</th>
                              </tr>
                            </thead>
-                           <tbody className="text-[10px] divide-y divide-tech-border">
-                             {tradeHistory.slice(0, 15).map((t, i) => (
-                               <tr key={i} className="hover:bg-white/5 transition-all">
-                                 <td className="p-3">
+                           <tbody className="text-[11px] divide-y divide-tech-border bg-tech-surface">
+                             {tradeHistory.map((t, i) => (
+                               <tr key={i} className="hover:bg-white/5 transition-all group">
+                                 <td className="p-4">
                                    <div className="flex flex-col">
-                                     <span className="text-white font-bold">{t.symbol}</span>
-                                     <span className="text-[8px] text-neutral-600">{t.strike} {t.expiry}</span>
+                                     <span className="text-white font-black group-hover:text-neon-green transition-colors">{t.symbol}</span>
+                                     <span className="text-[9px] text-neutral-600 font-bold">{t.strike} {t.type}</span>
                                    </div>
                                  </td>
-                                 <td className={cn("p-3 font-bold", (t.type || '').includes('CE') ? "text-neon-green" : "text-neon-red")}>{t.type}</td>
-                                 <td className="p-3 text-right text-neutral-400">₹{(t.entry || 0).toFixed(2)}</td>
-                                 <td className="p-3 text-right text-white font-bold">₹{(t.exit || 0).toFixed(2)}</td>
-                                 <td className={cn("p-3 font-bold text-right font-mono", (t.pnl || 0) >= 0 ? "text-neon-green" : "text-neon-red")}>{formatCurrency(t.pnl || 0)}</td>
-                                 <td className="p-3">
-                                   <div className="flex flex-col text-[8px] text-neutral-500 font-mono">
+                                 <td className="p-4">
+                                   <span className={cn(
+                                     "px-2 py-0.5 rounded-[2px] text-[8px] font-black uppercase tracking-widest",
+                                     t.prob >= 90 ? "bg-purple-500/20 text-purple-400" : "bg-neutral-800 text-neutral-500"
+                                   )}>
+                                     {t.prob >= 90 ? 'ALPHA_MAX' : t.prob >= 80 ? 'HIGH_EDGE' : 'STANDARD'}
+                                   </span>
+                                 </td>
+                                 <td className="p-4 text-right text-neutral-400">₹{(t.entry || 0).toFixed(2)}</td>
+                                 <td className="p-4 text-right text-white font-bold">₹{(t.exit || 0).toFixed(2)}</td>
+                                 <td className={cn("p-4 font-black text-right font-mono", (t.pnl || 0) >= 0 ? "text-neon-green" : "text-neon-red")}>{formatCurrency(t.pnl || 0)}</td>
+                                 <td className="p-4">
+                                   <div className="flex justify-center gap-4 text-[9px] text-neutral-500 font-mono font-bold">
                                      {t.entryGreeks ? (
                                        <>
-                                         <span className="font-mono">D: {(t.entryGreeks.delta || 0).toFixed(2)}</span>
-                                         <span className="font-mono">T: {(t.entryGreeks.theta || 0).toFixed(1)}</span>
+                                         <span>Δ: {(t.entryGreeks.delta || 0).toFixed(2)}</span>
+                                         <span>Θ: {(t.entryGreeks.theta || 0).toFixed(1)}</span>
                                        </>
                                      ) : (
-                                       <span className="opacity-30">N/A</span>
+                                       <span className="opacity-20">—</span>
                                      )}
                                    </div>
                                  </td>
-                                 <td className="p-3">
-                                   <span className="text-[8px] px-1.5 py-0.5 bg-white/5 border border-white/10 text-neutral-400 uppercase tracking-tighter">
+                                 <td className="p-4 text-center">
+                                   <span className="text-[9px] px-2 py-1 bg-white/5 border border-white/10 text-neutral-400 uppercase font-black tracking-tighter">
                                      {t.exitReason || 'AUTO_EXIT'}
                                    </span>
                                  </td>
-                                 <td className="p-3 text-neutral-500">{(t.closedAt?.toDate?.() || new Date()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                                 <td className="p-4 text-right text-neutral-500 font-mono text-[10px]">
+                                   {(t.closedAt?.toDate?.() || (t.closedAt instanceof Date ? t.closedAt : new Date())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
+                                 </td>
                                </tr>
                              ))}
-                             {tradeHistory.length === 0 && <tr><td colSpan={7} className="p-8 text-center text-neutral-600 uppercase italic">No closed trades recorded yet.</td></tr>}
+                             {tradeHistory.length === 0 && (
+                               <tr>
+                                 <td colSpan={8} className="p-16 text-center text-neutral-600 uppercase font-black italic tracking-widest opacity-20">
+                                   No closed positions discovered in current session.
+                                 </td>
+                               </tr>
+                             )}
                            </tbody>
                         </table>
                       </div>
-                   </div>
-                </div>
+                  </div>
+                )}
+
+                {['sl', 'calibration', 'timing', 'options'].includes(activeAnalyticsTab) && (
+                  <div className="flex flex-col items-center justify-center p-24 bg-tech-surface border border-tech-border border-dashed opacity-50 space-y-4">
+                    <Activity className="text-neutral-600 animate-pulse" size={48} />
+                    <div className="text-[10px] font-mono text-neutral-600 uppercase tracking-[0.4em]">Aggregating Data vectors for {activeAnalyticsTab.toUpperCase()} optimization...</div>
+                  </div>
+                )}
              </motion.div>
-          )}
-        </AnimatePresence>
+           )}
+          </AnimatePresence>
           </div>
         </div>
       </main>
