@@ -399,7 +399,7 @@ export default function App() {
       
       for (const symbol of uni) {
         const stock = currentStocks.find(s => s.symbol === symbol);
-        if (stock && (Math.abs(stock.pChange) > 1.2 || stock.relVolume > 1.5)) {
+        if (stock && (Math.abs(stock.pChange) > 1.0 || stock.relVolume > 1.2)) {
           const chain = getOptionChain(stock.symbol, stock.lastPrice);
           const analysis = await analyzeTradeProbability(stock, chain);
           
@@ -416,10 +416,12 @@ export default function App() {
         return b.stock.relVolume - a.stock.relVolume;
       });
 
-      // Execute top 2 qualified trades if they have at least 80% prob
-      for (const candidate of candidates.slice(0, 2)) {
-        if (candidate.analysis.winProbability >= 80) {
+      // Execute top 3 qualified trades if they have at least 75% prob (reduced from 80 for more activity)
+      for (const candidate of candidates.slice(0, 3)) {
+        if (candidate.analysis.winProbability >= 75) {
           analyzeAndMaybeTrade(candidate.stock, candidate.analysis);
+        } else {
+          addLog(candidate.stock.symbol, 'SKIP', 'INFO', `Probability ${candidate.analysis.winProbability}% below auto-entry threshold (75%).`);
         }
       }
     }
@@ -575,6 +577,13 @@ export default function App() {
           // Keep only last 10 signals
           return [newSignal, ...prev].slice(0, 10);
         });
+      },
+      (portfolioUpdate) => {
+        // Optional: Update local portfolio from server if desired
+        console.log("Paper Portfolio Update:", portfolioUpdate);
+      },
+      (enabled) => {
+        setIsAutoTrading(enabled);
       },
       (log) => {
         setTradeLogs(prev => [log, ...prev].slice(0, 100));
