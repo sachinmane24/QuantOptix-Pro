@@ -43,7 +43,7 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  // DO NOT THROW HERE - it crashes React async loops. 
-  // Just logging is safer for the UI stability.
+  const jsonError = JSON.stringify(errInfo);
+  console.error('Firestore Error: ', jsonError);
+  throw new Error(jsonError);
 }

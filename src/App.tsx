@@ -776,19 +776,12 @@ export default function App() {
     }
 
     // --- Market Timing Protocol (Institutional Rules) ---
-    const now = new Date();
-    // Convert to IST (UTC+5.5)
-    const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istTime = new Date(Date.now() + istOffset);
     const hours = istTime.getUTCHours();
     const minutes = istTime.getUTCMinutes();
     const timeValue = hours * 100 + minutes;
 
-    // Rules:
-    // 9:00 - 9:15: Pre-open
-    // 9:15 - 9:30: Watch only
-    // 9:30 - 15:00: Active Trading
-    // 15:00 onwards: No new trades, auto-exit
-    
     if (timeValue < 930) {
       addLog(stock.symbol, 'TIMING_BLOCK', 'WARNING', 'Market Watch Period (9:15-9:30). No trades allowed until 9:30 AM.');
       setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] REJECTED: Wait for 9:30 AM institutional confirmation`, ...prev]);
@@ -804,12 +797,25 @@ export default function App() {
     // --- Institutional Confluence Filter ---
     const bias = stock.higherTimeframeBias;
     const isBullishTrade = rec.action.includes('CE') || rec.action.includes('BUY');
+    
+    // 1. Timeframe Alignment
     if (isBullishTrade && bias === 'BEARISH') {
       addLog(stock.symbol, 'CONFLUENCE_ERR', 'ERROR', 'Trade REJECTED: Higher Timeframe Bias is BEARISH while attempting BUY/CE.');
       return;
     }
     if (!isBullishTrade && bias === 'BULLISH') {
       addLog(stock.symbol, 'CONFLUENCE_ERR', 'ERROR', 'Trade REJECTED: Higher Timeframe Bias is BULLISH while attempting SELL/PE.');
+      return;
+    }
+
+    // 2. Sector Strength Alignment
+    const sectorData = sectorStrengths.find(s => s.name === stock.sector);
+    if (isBullishTrade && sectorData && sectorData.val < -0.3) {
+      addLog(stock.symbol, 'SECTOR_BLOCK', 'ERROR', `Trade REJECTED: Sector ${stock.sector} is under pressure (${sectorData.val.toFixed(2)}%).`);
+      return;
+    }
+    if (!isBullishTrade && sectorData && sectorData.val > 0.3) {
+      addLog(stock.symbol, 'SECTOR_BLOCK', 'ERROR', `Trade REJECTED: Sector ${stock.sector} is too strong for shorts (${sectorData.val.toFixed(2)}%).`);
       return;
     }
     // ----------------------------------------
@@ -866,7 +872,7 @@ export default function App() {
       targets: rec.targets,
       pnl: 0,
       currentPrice: entry,
-      status: 'ACTIVE',
+      status: 'OPEN',
       timestamp: Timestamp.now(),
       prob: analysis.winProbability
     };
