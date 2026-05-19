@@ -20,7 +20,19 @@ const mockHistoricalData: Record<string, any[]> = {};
 export function getLiveStockData(): StockData[] {
   return FNO_STOCKS.slice(0, 100).map(symbol => {
     const info = FNO_DATA[symbol];
-    const lastPrice = 500 + Math.random() * 5000;
+    
+    // Improved Mock Spot Pricing: Deterministic base + volatility
+    const symHash = symbol.split('').reduce((a, b) => a + b.charCodeAt(0), 0);
+    let basePrice = 500 + (symHash % 3000);
+    
+    // Manual adjustments for specific user-mentioned stocks to ensure realism
+    if (symbol === 'ASTRAL') basePrice = 2150;
+    if (symbol === 'JUBLFOOD') basePrice = 465;
+    if (symbol === 'PERSISTENT') basePrice = 3600;
+    if (symbol === 'COFORGE') basePrice = 5200;
+    if (symbol === 'INFY') basePrice = 1450;
+    
+    const lastPrice = basePrice * (1 + (Math.random() * 0.04 - 0.02));
     const pChange = (Math.random() * 6) - 3;
     const oiChange = (Math.random() * 20) - 10;
     const relVolume = 0.5 + Math.random() * 3;
@@ -54,17 +66,20 @@ export function getLiveStockData(): StockData[] {
       higherTimeframeBias: Math.random() > 0.5 ? 'BULLISH' : 'BEARISH',
       lotSize: info?.lotSize || 1,
       atr: lastPrice * (0.012 + Math.random() * 0.008), // 1.2% - 2% ATR
-      adr: lastPrice * (0.025 + Math.random() * 0.015)  // 2.5% - 4% ADR
-    };
+      side: 'NSE',
+      adr: lastPrice * (0.025 + Math.random() * 0.015) 
+    } as any;
   });
 }
 
 export function getStrikeInterval(price: number): number {
+  if (price > 10000) return 200;
   if (price > 5000) return 100;
-  if (price > 1000) return 50;
-  if (price > 500) return 20;
-  if (price > 100) return 10;
-  if (price > 50) return 5;
+  if (price > 2000) return 50; 
+  if (price > 1000) return 20; // 1000-2000 range usually has 20 point strikes (like ASTRAL)
+  if (price > 500) return 10;
+  if (price > 100) return 5;
+  if (price > 50) return 2.5;
   return 1;
 }
 
@@ -81,37 +96,40 @@ export function getOptionChain(symbol: string, currentPrice: number): OptionChai
     
     // Improved Option Pricing Model (Simple BSM Approximation)
     // Time Value = Spot * volatility * sqrt(days/365)
-    // For mock, we use a decay factor based on how OTM it is
+    // We use a fixed deterministic "noise" based on the sym+strike to keep it stable but realistic
+    const seed = (symbol.split('').reduce((a, b) => a + b.charCodeAt(0), 0) + strike) % 100;
+    const stableNoise = (seed / 20); // 0 to 5 range, same for same strike
+
     const distance = Math.abs(currentPrice - strike);
-    const decayFactor = Math.exp(-distance / (currentPrice * 0.1));
-    const timeValue = (currentPrice * 0.02) * decayFactor;
+    const decayFactor = Math.exp(-distance / (currentPrice * 0.12));
+    const timeValue = (currentPrice * 0.025) * decayFactor;
 
     chain.push({
       strike,
       type: 'CE',
-      lastPrice: Math.max(2, Number((ceIntrinsic + timeValue + Math.random() * 5).toFixed(2))),
-      change: (Math.random() * 40) - 20,
-      oi: Math.floor(Math.random() * 100000),
-      oiChange: (Math.random() * 50) - 10,
-      iv: 15 + Math.random() * 30,
-      delta: Math.max(0.1, Math.min(0.9, 0.5 + (currentPrice - strike) / 500)),
-      theta: -(Math.random() * 5),
-      gamma: Math.random() * 0.01,
-      vega: Math.random() * 2,
+      lastPrice: Math.max(1.5, Number((ceIntrinsic + timeValue + stableNoise).toFixed(2))),
+      change: (stableNoise * 2) - 5,
+      oi: 50000 + (seed * 1000),
+      oiChange: (seed % 10) - 5,
+      iv: 18 + (seed % 15),
+      delta: Math.max(0.05, Math.min(0.95, 0.5 + (currentPrice - strike) / (interval * 20))),
+      theta: -(0.5 + (seed % 3)),
+      gamma: 0.01 + (seed % 5) / 1000,
+      vega: 1 + (seed % 10) / 5,
     });
     // Put
     chain.push({
       strike,
       type: 'PUT',
-      lastPrice: Math.max(2, Number((peIntrinsic + timeValue + Math.random() * 5).toFixed(2))),
-      change: (Math.random() * 40) - 20,
-      oi: Math.floor(Math.random() * 100000),
-      oiChange: (Math.random() * 50) - 10,
-      iv: 15 + Math.random() * 30,
-      delta: Math.max(-0.9, Math.min(-0.1, -0.5 + (currentPrice - strike) / 500)),
-      theta: -(Math.random() * 5),
-      gamma: Math.random() * 0.01,
-      vega: Math.random() * 2,
+      lastPrice: Math.max(1.5, Number((peIntrinsic + timeValue + stableNoise).toFixed(2))),
+      change: (stableNoise * 2) - 5,
+      oi: 50000 + (seed * 1000),
+      oiChange: (seed % 10) - 5,
+      iv: 18 + (seed % 15),
+      delta: Math.max(-0.95, Math.min(-0.05, -0.5 + (currentPrice - strike) / (interval * 20))),
+      theta: -(0.5 + (seed % 3)),
+      gamma: 0.01 + (seed % 5) / 1000,
+      vega: 1 + (seed % 10) / 5,
     });
   });
   return chain;
