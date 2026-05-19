@@ -38,6 +38,7 @@ export interface StockData {
   marketRegime: MarketRegime;
   trend: Trend;
   rsi: number;
+  pulse: number;
   lotSize?: number;
   atr?: number;
   adr?: number;

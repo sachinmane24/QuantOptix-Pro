@@ -50,6 +50,7 @@ export function getLiveStockData(): StockData[] {
       marketRegime: regime,
       trend,
       rsi: 30 + Math.random() * 40,
+      pulse: (pChange * 0.8) + (Math.random() * 0.4),
       lotSize: info?.lotSize || 1,
       atr: lastPrice * (0.012 + Math.random() * 0.008), // 1.2% - 2% ATR
       adr: lastPrice * (0.025 + Math.random() * 0.015)  // 2.5% - 4% ADR
@@ -262,6 +263,7 @@ export async function fetchLiveMarketData(): Promise<StockData[] | null> {
             marketRegime: Math.abs(pChange) > 2 ? MarketRegime.BREAKOUT : MarketRegime.SIDEWAYS,
             trend: pChange > 0 ? Trend.BULLISH : Trend.BEARISH,
             rsi: 40 + (pChange * 2),
+            pulse: pChange * 0.7, // Simplified pulse
             lotSize: FNO_DATA[symbol]?.lotSize || 1,
             atr: lastPrice * (0.015), // Standard approx
             adr: lastPrice * (0.03) // Standard approx
@@ -376,6 +378,7 @@ export function initializeMarketWebSocket(
           marketRegime: Math.abs(v.chp) > 2 ? MarketRegime.BREAKOUT : MarketRegime.SIDEWAYS,
           trend: v.chp > 0 ? Trend.BULLISH : Trend.BEARISH,
           rsi: 50,
+          pulse: (v.chp * 0.5),
           atr: v.lp * 0.015,
           adr: v.lp * 0.03
         });

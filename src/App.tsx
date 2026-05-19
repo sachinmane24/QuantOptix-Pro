@@ -105,6 +105,27 @@ export default function App() {
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
   const [isAutoTrading, setIsAutoTrading] = useState(false);
   const [tradeLogs, setTradeLogs] = useState<string[]>([]);
+  const [marketSession, setMarketSession] = useState<'PRE_OPEN' | 'WATCH_PERIOD' | 'ACTIVE_TRADING' | 'SQUARE_OFF' | 'CLOSED'>('CLOSED');
+
+  useEffect(() => {
+    const updateSession = () => {
+      const now = new Date();
+      const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+      const hours = istTime.getUTCHours();
+      const minutes = istTime.getUTCMinutes();
+      const timeValue = hours * 100 + minutes;
+
+      if (timeValue < 900) setMarketSession('CLOSED');
+      else if (timeValue < 915) setMarketSession('PRE_OPEN');
+      else if (timeValue < 930) setMarketSession('WATCH_PERIOD');
+      else if (timeValue < 1500) setMarketSession('ACTIVE_TRADING');
+      else if (timeValue < 1530) setMarketSession('SQUARE_OFF');
+      else setMarketSession('CLOSED');
+    };
+    updateSession();
+    const interval = setInterval(updateSession, 60000);
+    return () => clearInterval(interval);
+  }, []);
   
   // Institutional Trade Monitor (Options Price Monitoring)
   const tradingLock = React.useRef<Record<string, boolean>>({});
@@ -113,49 +134,60 @@ export default function App() {
     if (positions.length === 0) return;
 
     const monitorInterval = setInterval(async () => {
-      for (const pos of positions) {
-        if (pos.status !== 'OPEN') continue;
+      // Use a local copy to avoid closure issues with positions stale state
+      // (though positions is in dependency array, so it restarts)
+      positions.forEach(async (pos) => {
+        if (pos.status !== 'OPEN') return;
 
-        // Get latest option chain for the symbol
         const stock = stocks.find(s => s.symbol === pos.symbol);
-        if (!stock) continue;
+        if (!stock) return;
 
-        const chain = getOptionChain(pos.symbol, stock.lastPrice);
-        const contract = chain.find(c => c.strike === pos.strike && c.type === pos.optionType);
+        try {
+          const chain = getOptionChain(pos.symbol, stock.lastPrice);
+          const contract = chain.find(c => c.strike === pos.strike && (c.type === pos.optionType || (c.type === 'PUT' && pos.optionType === 'PE')));
 
-        if (contract) {
-          const currentPrice = contract.lastPrice;
-          setMonitoredPrices(prev => ({ ...prev, [pos.id]: currentPrice }));
-          
-          // Institutional Exit Protocol
-          let exitReason = null;
-          if (currentPrice <= pos.sl) {
-            exitReason = 'STOP_LOSS';
-          } else {
-            // Check targets
-            const targets = pos.targets || [];
-            if (targets.length > 0) {
-              // Check from final target downwards
-              const sortedTargets = [...targets].sort((a, b) => b - a);
-              for (const target of sortedTargets) {
-                if (currentPrice >= target) {
-                  exitReason = 'TARGET_MET';
-                  break;
+          if (contract) {
+            const currentPrice = contract.lastPrice;
+            setMonitoredPrices(prev => ({ ...prev, [pos.id]: currentPrice }));
+            
+            let exitReason = null;
+
+            // --- Auto-Exit Rule (3:00 PM IST) ---
+            const now = new Date();
+            const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+            const hours = istTime.getUTCHours();
+            const timeValue = hours * 100 + istTime.getUTCMinutes();
+            
+            if (timeValue >= 1500) {
+              exitReason = 'INTRADAY_SQUARE_OFF';
+            } else if (currentPrice <= pos.sl) {
+              exitReason = 'STOP_LOSS';
+            } else {
+              const targets = pos.targets || [];
+              if (targets.length > 0) {
+                const sortedTargets = [...targets].sort((a, b) => b - a);
+                for (const target of sortedTargets) {
+                  if (currentPrice >= target) {
+                    exitReason = 'TARGET_MET';
+                    break;
+                  }
                 }
               }
             }
-          }
 
-          if (exitReason) {
-            addLog(pos.symbol, 'CORE_EXIT', 'WARNING', `Market condition met: ${exitReason} @ ${formatCurrency(currentPrice)}`);
-            closePosition(pos.id);
+            if (exitReason) {
+              addLog(pos.symbol, 'CORE_EXIT', 'WARNING', `Market condition met: ${exitReason} @ ${formatCurrency(currentPrice)}`);
+              closePosition(pos.id);
+            }
           }
+        } catch (err) {
+          console.error("Monitor error:", err);
         }
-      }
+      });
     }, 5000);
 
     return () => clearInterval(monitorInterval);
-  }, [positions, stocks]);
+  }, [positions.length, stocks]); // Depend on length and stocks update to keep fresh
   const DEFAULT_SETTINGS: RiskSettings = {
     userId: GUEST_USER.uid,
     maxCapital: 1000000,
@@ -726,6 +758,33 @@ export default function App() {
        return;
     }
 
+    // --- Market Timing Protocol (Institutional Rules) ---
+    const now = new Date();
+    // Convert to IST (UTC+5.5)
+    const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+    const hours = istTime.getUTCHours();
+    const minutes = istTime.getUTCMinutes();
+    const timeValue = hours * 100 + minutes;
+
+    // Rules:
+    // 9:00 - 9:15: Pre-open
+    // 9:15 - 9:30: Watch only
+    // 9:30 - 15:00: Active Trading
+    // 15:00 onwards: No new trades, auto-exit
+    
+    if (timeValue < 930) {
+      addLog(stock.symbol, 'TIMING_BLOCK', 'WARNING', 'Market Watch Period (9:15-9:30). No trades allowed until 9:30 AM.');
+      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] REJECTED: Wait for 9:30 AM institutional confirmation`, ...prev]);
+      return;
+    }
+
+    if (timeValue >= 1500) {
+      addLog(stock.symbol, 'TIMING_BLOCK', 'WARNING', 'Intraday Square-off Protocol Active (After 3:00 PM). No new trades.');
+      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] REJECTED: Post 3:00 PM trade restriction`, ...prev]);
+      return;
+    }
+    // ----------------------------------------------------
+
     tradingLock.current[lockKey] = true;
     
     const userId = user?.uid || 'guest_institutional_trader';
@@ -906,6 +965,26 @@ export default function App() {
                   </span>
                 </div>
                 <div>F&O UNIVERSE <span className="text-white font-bold ml-1">{stocks.length} ACTIVE</span></div>
+                
+                <div className="flex items-center gap-2 border-l border-tech-border pl-8 ml-4">
+                  <div className={cn(
+                    "w-2 h-2 rounded-full",
+                    marketSession === 'ACTIVE_TRADING' ? "bg-neon-green animate-pulse" : 
+                    marketSession === 'WATCH_PERIOD' ? "bg-amber-500" : 
+                    "bg-neon-red"
+                  )}></div>
+                  <div className="flex flex-col">
+                    <span className="text-[7px] text-neutral-600 tracking-[0.2em]">MARKET_STATE</span>
+                    <span className={cn(
+                      "font-bold",
+                      marketSession === 'ACTIVE_TRADING' ? "text-neon-green" : 
+                      marketSession === 'WATCH_PERIOD' ? "text-amber-500" : 
+                      "text-neutral-400"
+                    )}>
+                      {marketSession.replace('_', ' ')}
+                    </span>
+                  </div>
+                </div>
               </>
             )}
           </div>
@@ -1159,9 +1238,9 @@ export default function App() {
                         const isPE = dashAlphaTab === 'PE' || s.pChange < 0;
                         
                         const reversalFactors = [
-                          { label: 'RSI_EXH', value: s.rsi.toFixed(1), threshold: '>68', met: s.rsi > 68 },
-                          { label: 'MOM_FADE', value: s.pulse.toFixed(2), threshold: '<0.2', met: s.pulse < 0.2 },
-                          { label: 'PRICE_EXT', value: s.pChange.toFixed(1) + '%', threshold: '>0.8%', met: s.pChange > 0.8 }
+                          { label: 'RSI_EXH', value: (s.rsi || 0).toFixed(1), threshold: '>68', met: (s.rsi || 0) > 68 },
+                          { label: 'MOM_FADE', value: (s.pulse || 0).toFixed(2), threshold: '<0.2', met: (s.pulse || 0) < 0.2 },
+                          { label: 'PRICE_EXT', value: (s.pChange || 0).toFixed(1) + '%', threshold: '>0.8%', met: (s.pChange || 0) > 0.8 }
                         ];
 
                         return (
@@ -1210,10 +1289,10 @@ export default function App() {
                           
                           <div className="grid grid-cols-4 gap-2 mb-4">
                             {[
-                              { label: 'Strength', val: `${(80 + Math.abs(s.pChange) * 2).toFixed(1)}%`, highlight: true },
-                              { label: 'Vol Flow', val: s.relVolume.toFixed(2) + 'x' },
+                              { label: 'Strength', val: `${(80 + Math.abs(s.pChange || 0) * 2).toFixed(1)}%`, highlight: true },
+                              { label: 'Vol Flow', val: (s.relVolume || 0).toFixed(2) + 'x' },
                               { label: 'Trend', val: s.trend },
-                              { label: 'RSI(14)', val: s.rsi.toFixed(0) },
+                              { label: 'RSI(14)', val: (s.rsi || 0).toFixed(0) },
                             ].map((stat, i) => (
                               <div key={i} className="bg-tech-bg p-2 border border-tech-border">
                                 <div className="text-[8px] text-neutral-500 uppercase font-mono tracking-widest mb-1">{stat.label}</div>
@@ -1227,7 +1306,7 @@ export default function App() {
                             s.pChange > 0 ? "bg-neon-green/5 border-neon-green/20" : "bg-neon-red/5 border-neon-red/20"
                           )}>
                             <span className={cn("text-[9px] font-bold font-mono uppercase tracking-widest", s.pChange > 0 ? "text-neon-green" : "text-neon-red")}>
-                              Pulse: {s.pChange.toFixed(2)}% | OI: {s.oiChange.toFixed(1)}%
+                              Pulse: {(s.pChange || 0).toFixed(2)}% | OI: {(s.oiChange || 0).toFixed(1)}%
                             </span>
                             <span className={cn(
                               "text-[9px] font-bold px-2 py-0.5 border uppercase tracking-tighter",
@@ -1266,10 +1345,10 @@ export default function App() {
                             <tr key={stock.symbol} className="hover:bg-white/5 transition-colors cursor-pointer" onClick={() => handleStockSelect(stock)}>
                               <td className="px-4 py-3 font-bold text-white">{stock.symbol}</td>
                               <td className="px-4 py-3">{formatCurrency(stock.lastPrice)}</td>
-                              <td className={cn("px-4 py-3 font-bold", stock.pChange >= 0 ? "text-neon-green" : "text-neon-red")}>
-                                {stock.pChange >= 0 ? "+" : ""}{stock.pChange.toFixed(2)}%
+                              <td className={cn("px-4 py-3 font-bold", (stock.pChange || 0) >= 0 ? "text-neon-green" : "text-neon-red")}>
+                                {(stock.pChange || 0) >= 0 ? "+" : ""}{(stock.pChange || 0).toFixed(2)}%
                               </td>
-                              <td className="px-4 py-3 text-neutral-400">+{Math.abs(stock.oiChange).toFixed(1)}%</td>
+                              <td className="px-4 py-3 text-neutral-400">+{Math.abs(stock.oiChange || 0).toFixed(1)}%</td>
                               <td className={cn("px-4 py-3 font-bold", stock.trend === Trend.BULLISH ? "text-neon-green" : "text-neon-red")}>
                                 {stock.trend === Trend.BULLISH ? "LONG BUILDUP" : stock.trend === Trend.BEARISH ? "SHORT BUILDUP" : "NEUTRAL"}
                               </td>
@@ -1403,7 +1482,7 @@ export default function App() {
                         </td>
                         <td className="px-6 py-4">
                           <span className={cn("font-bold text-sm tracking-tighter", stock.pChange >= 0 ? "text-neon-green" : "text-neon-red")}>
-                            {stock.pChange >= 0 ? "+" : ""}{stock.pChange.toFixed(2)}%
+                            {stock.pChange >= 0 ? "+" : ""}{(stock.pChange || 0).toFixed(2)}%
                           </span>
                         </td>
                         <td className="px-6 py-4">
@@ -1415,7 +1494,7 @@ export default function App() {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-neutral-400 font-bold">
-                          {stock.relVolume.toFixed(2)}X
+                          {(stock.relVolume || 0).toFixed(2)}X
                         </td>
                         <td className="px-6 py-4">
                           <span className={cn("font-bold", stock.oiChange > 0 ? "text-neon-green" : "text-neon-red")}>
@@ -1739,9 +1818,9 @@ export default function App() {
                     {/* Indicators Grid */}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                        {[
-                         { label: 'RSI(14)_INDEX', value: selectedStock.rsi.toFixed(2), status: selectedStock.rsi > 70 ? 'OVERBOUGHT' : selectedStock.rsi < 30 ? 'OVERSOLD' : 'STABLE' },
-                         { label: 'VWAP_VECTOR', value: formatCurrency(selectedStock.vwap), status: selectedStock.lastPrice > selectedStock.vwap ? 'BULLISH' : 'BEARISH' },
-                         { label: 'EMA_20_SIG', value: formatCurrency(selectedStock.ema20), status: selectedStock.lastPrice > selectedStock.ema20 ? 'SUPP_ENABLED' : 'RES_ACTIVE' },
+                         { label: 'RSI(14)_INDEX', value: (selectedStock.rsi || 0).toFixed(2), status: selectedStock.rsi > 70 ? 'OVERBOUGHT' : selectedStock.rsi < 30 ? 'OVERSOLD' : 'STABLE' },
+                         { label: 'VWAP_VECTOR', value: formatCurrency(selectedStock.vwap || selectedStock.lastPrice), status: selectedStock.lastPrice > (selectedStock.vwap || 0) ? 'BULLISH' : 'BEARISH' },
+                         { label: 'EMA_20_SIG', value: formatCurrency(selectedStock.ema20 || selectedStock.lastPrice), status: selectedStock.lastPrice > (selectedStock.ema20 || 0) ? 'SUPP_ENABLED' : 'RES_ACTIVE' },
                          { 
                            label: 'PCR_L_VOL', 
                            value: (() => {
