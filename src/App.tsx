@@ -446,7 +446,6 @@ export default function App() {
   const loadMarketData = async () => {
     const marketStatus = isMarketOpen();
     if (!marketStatus.open) {
-      addLog('SYSTEM', 'SUSPENDED', 'INFO', `Institutional Engine suspended: ${marketStatus.reason}`);
       return;
     }
 

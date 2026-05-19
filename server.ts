@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 import { Server } from "socket.io";
 import http from "http";
 import crypto from "crypto";
-import { authenticator } from "otplib";
+import * as otplib from "otplib";
 // @ts-ignore
 import fyers from "fyers-api-v3";
 import { ScannerService, TradeSignal } from "./src/services/scannerService";
@@ -15,7 +15,26 @@ import { isMarketOpen, isLoginTime } from "./src/services/marketHoursService";
 
 dotenv.config();
 
-let loginPromise: Promise<string | null> | null = null;
+// Helper to get TOTP code accurately
+const getTOTPToken = (secret: string) => {
+  try {
+    // Try different ways to access authenticator due to ESM/CJS interop issues in different environments
+    const op = otplib as any;
+    const auth = op.authenticator || op.default?.authenticator || (typeof op.generate === 'function' ? op : null);
+    
+    if (!auth) {
+      console.error("[TOTP] Could not find authenticator in otplib. Keys:", Object.keys(op));
+      return null;
+    }
+    
+    return auth.generate(secret);
+  } catch (err) {
+    console.error("[TOTP] Generation Error:", err);
+    return null;
+  }
+};
+
+let loginPromise: Promise<any> | null = null;
 let scannerService: ScannerService | null = null;
 let tradingService: PaperTradingService | null = null;
 
@@ -52,45 +71,56 @@ async function performAutoLogin() {
   loginPromise = (async () => {
     try {
       const mask = (s: string | undefined) => s ? `${s.substring(0, 2)}...${s.substring(s.length - 2)} (len: ${s.length})` : "MISSING";
-      console.log(`[AutoLogin Debug] Starting: USER=${userId}, CLIENT=${clientId}, PIN=${mask(pin)}, TOTP=${mask(totpSecret)}`);
+      console.log(`[AutoLogin] Starting flow for USER: ${userId}, CLIENT: ${clientId}`);
+
+      // Step 0: Handle TOTP boundary (match Python script logic)
+      const now = Math.floor(Date.now() / 1000);
+      const secsRemaining = 30 - (now % 30);
+      if (secsRemaining < 5) {
+        console.log(`[AutoLogin] TOTP near boundary (${secsRemaining}s left). Waiting ${secsRemaining + 1}s...`);
+        await new Promise(r => setTimeout(r, (secsRemaining + 1) * 1000));
+      }
 
       // Helper for base64
       const b64 = (s: string) => Buffer.from(s).toString('base64');
 
       const headers = {
         "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
       };
 
-      // Step 1: send_login_otp (Vagator api-t2)
+      // Step 1: send_login_otp
       console.log("[AutoLogin] Step 1: send_login_otp");
       const r1 = await axios.post("https://api-t2.fyers.in/vagator/v2/send_login_otp", {
         fy_id: userId,
         app_id: "2"
-      }, { headers });
+      }, { headers, timeout: 15000 });
 
       if (r1.data.s !== "ok") {
-        throw new Error(`Step 1 Failed: ${JSON.stringify(r1.data)}`);
+        throw new Error(`Step 1 (send_login_otp) failed: ${JSON.stringify(r1.data)}`);
       }
       let requestKey = r1.data.request_key;
+      console.log("[AutoLogin] Step 1 OK");
 
       // Step 2: verify_otp (TOTP)
-      console.log("[AutoLogin] Step 2: verify_otp using secret...");
-      if (!authenticator) {
-        throw new Error("authenticator is undefined. Check otplib import.");
+      const totpCode = getTOTPToken(totpSecret);
+      if (!totpCode) {
+        throw new Error("Failed to generate TOTP code. authenticator is undefined or error occurred.");
       }
-      const totpCode = authenticator.generate(totpSecret);
-      console.log(`[AutoLogin] TOTP Generated: ${totpCode}`);
+      
+      console.log(`[AutoLogin] Step 2: verify_otp (TOTP: ${totpCode})`);
       const r2 = await axios.post("https://api-t2.fyers.in/vagator/v2/verify_otp", {
         request_key: requestKey,
         otp: totpCode
-      }, { headers });
+      }, { headers, timeout: 15000 });
 
       if (r2.data.s !== "ok") {
-        throw new Error(`Step 2 Failed: ${JSON.stringify(r2.data)}`);
+        throw new Error(`Step 2 (verify_otp) failed: ${JSON.stringify(r2.data)}`);
       }
       requestKey = r2.data.request_key;
+      console.log("[AutoLogin] Step 2 OK");
 
       // Step 3: verify_pin_v2 (PIN base64 encoded)
       console.log("[AutoLogin] Step 3: verify_pin_v2");
@@ -98,12 +128,13 @@ async function performAutoLogin() {
         request_key: requestKey,
         identity_type: "pin",
         identifier: b64(pin)
-      }, { headers });
+      }, { headers, timeout: 15000 });
 
       if (r3.data.s !== "ok") {
-        throw new Error(`Step 3 Failed: ${JSON.stringify(r3.data)}`);
+        throw new Error(`Step 3 (verify_pin_v2) failed: ${JSON.stringify(r3.data)}`);
       }
       const fyersInternalToken = r3.data.data.access_token;
+      console.log("[AutoLogin] Step 3 OK");
 
       // Step 4: get auth_code from /api/v3/token
       console.log("[AutoLogin] Step 4: get_auth_code");
@@ -123,11 +154,12 @@ async function performAutoLogin() {
         headers: {
           ...headers,
           "Authorization": `Bearer ${fyersInternalToken}`
-        }
+        },
+        timeout: 15000
       });
 
       if (r4.data.s !== "ok") {
-        throw new Error(`Step 4 Failed: ${JSON.stringify(r4.data)}`);
+        throw new Error(`Step 4 (get_auth_code) failed: ${JSON.stringify(r4.data)}`);
       }
 
       const redirectUrl = r4.data.Url;
@@ -137,24 +169,37 @@ async function performAutoLogin() {
       if (!authCode) {
         throw new Error(`Step 4 Failed: Auth code not found in redirect URL: ${redirectUrl}`);
       }
+      console.log("[AutoLogin] Step 4 OK");
 
-      // Step 5: exchange auth_code for Access Token (Validation)
-      console.log("[AutoLogin] Step 5: validate_authcode");
+      // Step 5: exchange auth_code for Access Token
+      console.log("[AutoLogin] Step 5: generate_access_token");
       const appIdHash = crypto.createHash('sha256').update(`${clientId}:${secretKey}`).digest('hex');
       const r5 = await axios.post('https://api-t1.fyers.in/api/v3/validate-authcode', {
         grant_type: 'authorization_code',
         appIdHash: appIdHash,
         code: authCode
-      });
+      }, { timeout: 15000 });
 
       if (r5.data.s !== "ok") {
-        throw new Error(`Step 5 Failed: ${JSON.stringify(r5.data)}`);
+        throw new Error(`Step 5 (validate_authcode) failed: ${JSON.stringify(r5.data)}`);
       }
 
       const finalAccessToken = r5.data.access_token;
-      console.log("[AutoLogin] Success! Access token generated.");
+      console.log("[AutoLogin] Success! Fyers session refreshed.");
       
       process.env.FYERS_ACCESS_TOKEN = finalAccessToken;
+      
+      // Notify Telegram if possible
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+      const chatId = process.env.TELEGRAM_CHAT_ID;
+      if (botToken && chatId) {
+        axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+          chat_id: chatId,
+          text: `✅ <b>Fyers Auto-Login Successful</b>\nSession refreshed at ${new Date().toLocaleTimeString('en-IN', {timeZone: 'Asia/Kolkata'})} IST.`,
+          parse_mode: 'HTML'
+        }).catch(() => {});
+      }
+
       return { success: true, token: finalAccessToken };
 
     } catch (error: any) {
@@ -280,7 +325,7 @@ async function startServer() {
       
       // Start scanner if token exists
       if (scannerService) {
-        scannerService.start();
+        scannerService.start().catch(e => console.error("[Scanner Start Error]", e));
       }
     } catch (error) {
       console.error("[Fyers WS] Setup error:", error);
@@ -361,7 +406,7 @@ async function startServer() {
       });
     }
 
-    const result = await performAutoLogin();
+    const result = await performAutoLogin().catch(err => ({ success: false, error: err.message }));
     if (result && result.success) {
       try { setupFyersSocket(); } catch (e) {}
       res.json({ success: true, message: "Auto-login successful", token: result.token.substring(0, 10) + "..." });
@@ -501,7 +546,7 @@ async function startServer() {
 
     if (!token && process.env.FYERS_TOTP_SECRET) {
       console.log("[Proxy] Token missing but credentials found. Attempting auto-login...");
-      const result = await performAutoLogin();
+      const result = await performAutoLogin().catch(() => null);
       token = result?.success ? result.token : undefined;
     }
 
@@ -706,33 +751,37 @@ async function startServer() {
 
   // BACKGROUND SCHEDULER (Every 60 seconds)
   setInterval(async () => {
-    const now = new Date();
-    
-    // 1. Check for Auto-Login at 08:55 AM IST
-    if (isLoginTime(now)) {
-      console.log("[Scheduler] 08:55 AM IST detected. Triggering automated Fyers login...");
-      const result = await performAutoLogin();
-      if (result && result.success) {
-        console.log("[Scheduler] Automated login successful. Renewing sockets...");
-        setupFyersSocket();
+    try {
+      const now = new Date();
+      
+      // 1. Check for Auto-Login at 08:55 AM IST
+      if (isLoginTime(now)) {
+        console.log("[Scheduler] 08:55 AM IST detected. Triggering automated Fyers login...");
+        const result = await performAutoLogin().catch(err => ({ success: false, error: err.message }));
+        if (result && result.success) {
+          console.log("[Scheduler] Automated login successful. Renewing sockets...");
+          setupFyersSocket();
+        }
       }
-    }
-
-    // 2. Check Market Status & Optimize Services
-    const market = isMarketOpen(now);
-    if (!market.open) {
-      if (scannerService && scannerService.isRunning) {
-        console.log(`[Scheduler] Market is CLOSED (${market.reason}). Suspending scanner...`);
-        scannerService.stop();
-        // Notify via socket to update UI status
-        io.emit("bot-log", `SYSTEM: Scanner suspended (Reason: ${market.reason})`);
+  
+      // 2. Check Market Status & Optimize Services
+      const market = isMarketOpen(now);
+      if (!market.open) {
+        if (scannerService && scannerService.isRunning) {
+          console.log(`[Scheduler] Market is CLOSED (${market.reason}). Suspending scanner...`);
+          scannerService.stop();
+          // Notify via socket to update UI status
+          io.emit("bot-log", `SYSTEM: Scanner suspended (Reason: ${market.reason})`);
+        }
+      } else {
+        if (scannerService && !scannerService.isRunning && process.env.FYERS_ACCESS_TOKEN) {
+          console.log(`[Scheduler] Market is OPEN. Starting scanner...`);
+          scannerService.start();
+          io.emit("bot-log", `SYSTEM: Scanner resumed (Reason: Market open)`);
+        }
       }
-    } else {
-      if (scannerService && !scannerService.isRunning && process.env.FYERS_ACCESS_TOKEN) {
-        console.log(`[Scheduler] Market is OPEN. Starting scanner...`);
-        scannerService.start();
-        io.emit("bot-log", `SYSTEM: Scanner resumed (Reason: Market open)`);
-      }
+    } catch (e: any) {
+      console.error("[Scheduler] Interval execution failed:", e.message);
     }
   }, 60000);
 
@@ -776,4 +825,6 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch(err => {
+  console.error("❌ [CRITICAL] Server failed to start:", err);
+});

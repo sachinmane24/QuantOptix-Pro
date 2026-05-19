@@ -1,6 +1,7 @@
 import axios from "axios";
 import { RSI } from "technicalindicators";
 import { Server } from "socket.io";
+import { isMarketOpen } from "./marketHoursService";
 
 export interface Candle {
   time: number;
@@ -45,6 +46,14 @@ export class ScannerService {
 
   public async start() {
     if (this.isRunning) return;
+    
+    const market = isMarketOpen();
+    if (!market.open) {
+      console.log(`[Scanner] Cannot start: ${market.reason}`);
+      this.io.emit("bot-log", `SYSTEM: Scanner launch aborted (${market.reason})`);
+      return;
+    }
+
     console.log("[Scanner] Starting Real-time Scanner...");
     this.isRunning = true;
     
