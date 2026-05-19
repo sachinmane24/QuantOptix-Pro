@@ -216,7 +216,9 @@ async function performAutoLogin() {
           chat_id: chatId,
           text: `✅ <b>Fyers Auto-Login Successful</b>\nSession refreshed at ${new Date().toLocaleTimeString('en-IN', {timeZone: 'Asia/Kolkata'})} IST.`,
           parse_mode: 'HTML'
-        }).catch(() => {});
+        }).catch(err => {
+          console.error("[AutoLogin] Telegram notification failed:", err.message);
+        });
       }
 
       return { success: true, token: finalAccessToken };

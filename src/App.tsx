@@ -445,104 +445,109 @@ export default function App() {
   const [showManualCodeInput, setShowManualCodeInput] = useState(false);
 
   const loadMarketData = async () => {
-    const marketStatus = isMarketOpen();
-    if (!marketStatus.open) {
-      return;
-    }
+    try {
+      const marketStatus = isMarketOpen();
+      if (!marketStatus.open) {
+        return;
+      }
 
-    // Refresh Active Institutional Universe
-    addLog('STOCKS', 'RESCAN', 'INFO', 'Updating top movers universe from NSE Data...');
-    const trackedSymbols = positionsRef.current.map(p => p.symbol);
-    const uni = await getActiveInstitutionalUniverse();
-    setActiveUniverse(uni);
-    addLog('STOCKS', 'UNIVERSE_READY', 'SUCCESS', `Tracking active symbols: ${uni.join(', ')}`);
+      // Refresh Active Institutional Universe
+      addLog('STOCKS', 'RESCAN', 'INFO', 'Updating top movers universe from NSE Data...');
+      const trackedSymbols = positionsRef.current.map(p => p.symbol);
+      const uni = await getActiveInstitutionalUniverse();
+      setActiveUniverse(uni);
+      addLog('STOCKS', 'UNIVERSE_READY', 'SUCCESS', `Tracking active symbols: ${uni.join(', ')}`);
 
-    const realData = await fetchLiveMarketData(trackedSymbols);
-    let currentStocks: StockData[] = [];
-    
-    if (realData) {
-      currentStocks = realData;
-      setIsFyersConnected(true);
-    } else {
-      currentStocks = getLiveStockData();
-      setIsFyersConnected(false);
-      addLog('SYSTEM', 'LIVE_FEED_ERR', 'WARNING', 'Failed to connect to Fyers API. Using simulated data cluster.');
-    }
-    
-    setStocks(currentStocks);
-    setMarketInfo(getMarketOverview());
-
-    // Unified Momentum Detection & Alpha Scanner Feedback
-    const hotStocks = currentStocks.filter(s => uni.includes(s.symbol) && Math.abs(s.pChange) > 1.5);
-    
-    if (hotStocks.length > 0) {
-      setScannerSignals(prev => {
-        const newSignals = hotStocks.map(s => ({
-          id: Math.random().toString(36).substr(2, 9),
-          symbol: s.symbol,
-          type: s.pChange > 0 ? 'BULLISH' : 'BEARISH',
-          price: s.lastPrice,
-          time: new Date().toLocaleTimeString(),
-          strength: Math.min(Math.floor(Math.abs(s.pChange) / 2) + 1, 5)
-        }));
-        const merged = [...newSignals, ...prev];
-        const unique = Array.from(new Map(merged.map(s => [s.symbol, s])).values());
-        return unique.slice(0, 10);
-      });
-
-      // Log detected momentum to Engine Console
-      hotStocks.filter(h => Math.abs(h.pChange) > 2.5).forEach(s => {
-        addLog(s.symbol, 'MOMENTUM_DETECTOR', 'SUCCESS', `Institutional pressure noted: ${s.pChange.toFixed(2)}% move detected.`);
-      });
-    }
-
-    // Auto-analysis and trading background scan
-    if (isAutoTrading) {
-      addLog('SCANNER', 'AUTO_SCAN', 'INFO', `Scanning ${uni.length} institutional assets for trade quality...`);
+      const realData = await fetchLiveMarketData(trackedSymbols);
+      let currentStocks: StockData[] = [];
       
-      const candidates: { stock: StockData, analysis: AIProbabilityModel }[] = [];
+      if (realData) {
+        currentStocks = realData;
+        setIsFyersConnected(true);
+      } else {
+        currentStocks = getLiveStockData();
+        setIsFyersConnected(false);
+        addLog('SYSTEM', 'LIVE_FEED_ERR', 'WARNING', 'Failed to connect to Fyers API. Using simulated data cluster.');
+      }
       
-      for (const symbol of uni) {
-        const stock = currentStocks.find(s => s.symbol === symbol);
-        if (stock && (Math.abs(stock.pChange) > 1.0 || stock.relVolume > 1.2)) {
-          const chain = getOptionChain(stock.symbol, stock.lastPrice);
-          const analysis = await analyzeTradeProbability(stock, chain);
-          
-          if (analysis.winProbability >= 70) {
-            candidates.push({ stock, analysis });
+      setStocks(currentStocks);
+      setMarketInfo(getMarketOverview());
+
+      // Unified Momentum Detection & Alpha Scanner Feedback
+      const hotStocks = currentStocks.filter(s => uni.includes(s.symbol) && Math.abs(s.pChange) > 1.5);
+      
+      if (hotStocks.length > 0) {
+        setScannerSignals(prev => {
+          const newSignals = hotStocks.map(s => ({
+            id: Math.random().toString(36).substr(2, 9),
+            symbol: s.symbol,
+            type: s.pChange > 0 ? 'BULLISH' : 'BEARISH',
+            price: s.lastPrice,
+            time: new Date().toLocaleTimeString(),
+            strength: Math.min(Math.floor(Math.abs(s.pChange) / 2) + 1, 5)
+          }));
+          const merged = [...newSignals, ...prev];
+          const unique = Array.from(new Map(merged.map(s => [s.symbol, s])).values());
+          return unique.slice(0, 10);
+        });
+
+        // Log detected momentum to Engine Console
+        hotStocks.filter(h => Math.abs(h.pChange) > 2.5).forEach(s => {
+          addLog(s.symbol, 'MOMENTUM_DETECTOR', 'SUCCESS', `Institutional pressure noted: ${s.pChange.toFixed(2)}% move detected.`);
+        });
+      }
+
+      // Auto-analysis and trading background scan
+      if (isAutoTrading) {
+        addLog('SCANNER', 'AUTO_SCAN', 'INFO', `Scanning ${uni.length} institutional assets for trade quality...`);
+        
+        const candidates: { stock: StockData, analysis: AIProbabilityModel }[] = [];
+        
+        for (const symbol of uni) {
+          const stock = currentStocks.find(s => s.symbol === symbol);
+          if (stock && (Math.abs(stock.pChange) > 1.0 || stock.relVolume > 1.2)) {
+            const chain = getOptionChain(stock.symbol, stock.lastPrice);
+            const analysis = await analyzeTradeProbability(stock, chain);
+            
+            if (analysis.winProbability >= 70) {
+              candidates.push({ stock, analysis });
+            }
+          }
+        }
+
+        // Tie-breaking Logic: Sort by Probability DESC, then Relative Volume DESC
+        candidates.sort((a, b) => {
+          if (b.analysis.winProbability !== a.analysis.winProbability) 
+            return b.analysis.winProbability - a.analysis.winProbability;
+          return b.stock.relVolume - a.stock.relVolume;
+        });
+
+        // Execute top 3 qualified trades if they have at least 75% prob (reduced from 80 for more activity)
+        for (const candidate of candidates.slice(0, 3)) {
+          if (candidate.analysis.winProbability >= 75) {
+            analyzeAndMaybeTrade(candidate.stock, candidate.analysis).catch(e => console.error("[Scanner] Auto-trade routing error:", e));
+          } else {
+            addLog(candidate.stock.symbol, 'SKIP', 'INFO', `Probability ${candidate.analysis.winProbability}% below auto-entry threshold (75%).`);
           }
         }
       }
 
-      // Tie-breaking Logic: Sort by Probability DESC, then Relative Volume DESC
-      candidates.sort((a, b) => {
-        if (b.analysis.winProbability !== a.analysis.winProbability) 
-          return b.analysis.winProbability - a.analysis.winProbability;
-        return b.stock.relVolume - a.stock.relVolume;
-      });
-
-      // Execute top 3 qualified trades if they have at least 75% prob (reduced from 80 for more activity)
-      for (const candidate of candidates.slice(0, 3)) {
-        if (candidate.analysis.winProbability >= 75) {
-          analyzeAndMaybeTrade(candidate.stock, candidate.analysis);
-        } else {
-          addLog(candidate.stock.symbol, 'SKIP', 'INFO', `Probability ${candidate.analysis.winProbability}% below auto-entry threshold (75%).`);
-        }
-      }
+      // Calculate Sector Strengths
+      const sectors = Array.from(new Set(currentStocks.map(s => s.sector)));
+      const strengths = sectors.map(sector => {
+        const sectorStocks = currentStocks.filter(s => s.sector === sector);
+        const avgPerf = sectorStocks.reduce((acc, s) => acc + s.pChange, 0) / sectorStocks.length;
+        return {
+          name: sector,
+          val: avgPerf,
+          color: avgPerf > 0.5 ? 'bg-neon-green' : avgPerf < -0.5 ? 'bg-neon-red' : 'bg-neutral-600'
+        };
+      }).sort((a, b) => b.val - a.val);
+      setSectorStrengths(strengths.slice(0, 6));
+    } catch (error) {
+      console.error("loadMarketData major failure:", error);
+      addLog('SYSTEM', 'CRITICAL_ERR', 'ERROR', `Background scan failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-
-    // Calculate Sector Strengths
-    const sectors = Array.from(new Set(currentStocks.map(s => s.sector)));
-    const strengths = sectors.map(sector => {
-      const sectorStocks = currentStocks.filter(s => s.sector === sector);
-      const avgPerf = sectorStocks.reduce((acc, s) => acc + s.pChange, 0) / sectorStocks.length;
-      return {
-        name: sector,
-        val: avgPerf,
-        color: avgPerf > 0.5 ? 'bg-neon-green' : avgPerf < -0.5 ? 'bg-neon-red' : 'bg-neutral-600'
-      };
-    }).sort((a, b) => b.val - a.val);
-    setSectorStrengths(strengths.slice(0, 6));
   };
 
   const analyzeAndMaybeTrade = async (stock: StockData, preComputedAnalysis?: AIProbabilityModel) => {
@@ -559,7 +564,7 @@ export default function App() {
 
       if (analysis.winProbability >= 75) { // Consistent Institutional Threshold
         addLog(stock.symbol, 'QUALIFIED', 'SUCCESS', `Institutional breakout score: ${analysis.winProbability}%. Executing...`);
-        executeTrade(stock, rec, analysis);
+        executeTrade(stock, rec, analysis).catch(e => console.error("[Scanner] Trade execution call failed:", e));
       } else {
         addLog(stock.symbol, 'SKIPPED', 'INFO', `Scored ${analysis.winProbability}%. Confidence too low for automated entry.`);
       }
@@ -635,7 +640,7 @@ export default function App() {
       if (Date.now() - lastCheck > 10000) {
         (window as any)[lastCheckKey] = Date.now();
         addLog(selectedStock.symbol, 'UI_WATCH_MATCH', 'SUCCESS', `Focused asset probability hit ${aiAnalysis.winProbability}%. Auto-triggering...`);
-        executeTrade(selectedStock, recommendation, aiAnalysis);
+        executeTrade(selectedStock, recommendation, aiAnalysis).catch(e => console.error("[UI] Auto-trade trigger error:", e));
       }
     }
   }, [stocks, aiAnalysis, isAutoTrading, selectedStock]);
@@ -896,7 +901,7 @@ export default function App() {
     };
     
     addLog('DEBUG', 'FORCING', 'INFO', `Executing debug trade for ${fyersSymbol}...`);
-    executeTrade(targetStock, mockRec, mockAnalysis);
+    executeTrade(targetStock, mockRec, mockAnalysis).catch(e => console.error("[Debug] Force trade call failed:", e));
   };
   
   const updateRiskSettings = async (updates: Partial<RiskSettings>) => {
