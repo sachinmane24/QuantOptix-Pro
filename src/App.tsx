@@ -2627,7 +2627,7 @@ export default function App() {
                          <div className="p-1.5 bg-neon-green/20 rounded">
                             <BarChart3 className="text-neon-green" size={20} />
                          </div>
-                         <h1 className="text-3xl font-black text-white tracking-tighter">Attribution Analytics</h1>
+                         <h1 className="text-xl font-sans font-extrabold tracking-tighter text-white uppercase">Attribution Analytics</h1>
                       </div>
                       <div className="flex flex-wrap gap-x-6 gap-y-1 text-[10px] font-mono text-neutral-500 uppercase tracking-widest">
                          <span>{tradeHistory.length} closed trades</span>
@@ -2696,7 +2696,7 @@ export default function App() {
                   ].map((kpi, i) => (
                     <div key={i} className="bg-tech-surface border border-tech-border p-6 rounded-sm space-y-3 group hover:border-white/20 transition-all">
                       <div className="text-[10px] font-mono font-bold text-neutral-500 uppercase tracking-[0.2em]">{kpi.label}</div>
-                      <div className={cn("text-2xl font-black tracking-tight font-mono", kpi.color)}>{kpi.value}</div>
+                      <div className={cn("text-lg font-black font-mono", kpi.color)}>{kpi.value}</div>
                       <div className="text-[9px] font-mono text-neutral-600 uppercase tracking-widest">{kpi.sub}</div>
                     </div>
                   ))}
@@ -2733,8 +2733,8 @@ export default function App() {
                   <div className="space-y-10">
                     <div>
                       <div className="mb-6">
-                        <h2 className="text-xl font-black text-white uppercase tracking-tight mb-2">Performance by Setup</h2>
-                        <p className="text-xs text-neutral-500 font-mono italic">Look for setups where count ≥ 5 AND win rate ≥ 55%. Discard or throttle anything consistently below 40%.</p>
+                        <h2 className="text-[10px] font-mono font-bold uppercase tracking-[.3em] text-neutral-500 mb-2">Performance by Setup</h2>
+                        <p className="text-[9px] text-neutral-600 font-mono italic uppercase tracking-widest leading-relaxed">Look for setups where count ≥ 5 AND win rate ≥ 55%. Discard or throttle anything consistently below 40%.</p>
                       </div>
                       
                       <div className="bg-tech-surface border border-tech-border rounded-sm overflow-hidden">
