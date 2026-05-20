@@ -31,6 +31,7 @@ export function getLiveStockData(): StockData[] {
     if (symbol === 'PERSISTENT') basePrice = 3600;
     if (symbol === 'COFORGE') basePrice = 5200;
     if (symbol === 'INFY') basePrice = 1450;
+    if (symbol === 'UNOMINDA') basePrice = 1040;
     
     const lastPrice = basePrice * (1 + (Math.random() * 0.04 - 0.02));
     const pChange = (Math.random() * 6) - 3;

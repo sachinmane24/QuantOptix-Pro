@@ -258,7 +258,7 @@ export default function App() {
           if (pos.status !== 'OPEN') return;
 
           let currentPrice = 0;
-          const fyersQuote = optionQuotes[pos.fyersSymbol];
+          const fyersQuote = optionQuotes[pos.fyersSymbol] || optionQuotes[pos.fyersSymbol && pos.fyersSymbol.startsWith('NSE:') ? pos.fyersSymbol : `NSE:${pos.fyersSymbol}`];
           
           if (fyersQuote && fyersQuote.lp !== undefined) {
              currentPrice = fyersQuote.lp;
@@ -1096,6 +1096,7 @@ export default function App() {
     if (riskSettings.maxCapitalPerTrade && currentMargin > riskSettings.maxCapitalPerTrade) {
       const maxPossibleQty = Math.floor(riskSettings.maxCapitalPerTrade / entry);
       const adjustedLots = Math.floor(maxPossibleQty / lotSize);
+      numLots = adjustedLots;
       qty = adjustedLots * lotSize;
       
       if (qty <= 0) {
@@ -1602,15 +1603,21 @@ export default function App() {
                             )}>{isPE ? 'PE BUY' : 'CE BUY'}</div>
                           <div className="flex justify-between items-start mb-4">
                             <div>
-                              <h1 className="text-2xl font-black leading-none tracking-tighter text-white">{s.symbol}</h1>
+                              <div className="flex items-center gap-2">
+                                <h1 className="text-2xl font-black leading-none tracking-tighter text-white">{s.symbol}</h1>
+                                <span className="text-[10px] font-mono font-bold text-neutral-400 bg-neutral-800/80 px-1.5 py-0.5 border border-tech-border rounded-[2px]" title="Current Spot Price">
+                                  ₹{s.lastPrice.toFixed(2)}
+                                </span>
+                              </div>
                               <span className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest">{s.sector} | LOT: {s.lotSize}</span>
                             </div>
                             <div className="text-right">
                               <div className={cn("text-xl font-mono font-black", isPE ? "text-neon-red glow-red" : "text-neon-green glow-green")}>
                                 {isPE ? "BUY PE" : "BUY CE"}
                               </div>
-                              <div className="text-[9px] font-mono text-neutral-400 mt-1 uppercase tracking-widest">
-                                Strike: {getRecommendedStrike(s.lastPrice, isPE ? 'PUT' : 'CE')}
+                              <div className="text-[9px] font-mono text-neutral-400 mt-1 uppercase tracking-widest flex flex-col items-end">
+                                <span>Strike: {getRecommendedStrike(s.lastPrice, isPE ? 'PUT' : 'CE')}</span>
+                                <span className="text-[8px] text-neutral-500 font-bold lowercase">spot: ₹{s.lastPrice.toFixed(1)}</span>
                               </div>
                             </div>
                           </div>
@@ -1958,7 +1965,12 @@ export default function App() {
                               <span className={cn("text-4xl font-black uppercase tracking-tighter leading-none", 
                                 recommendation?.action === OptionAction.BUY_CE ? "text-neon-green glow-green" : "text-neon-red glow-red"
                               )}>{recommendation?.action}</span>
-                              <span className="text-sm font-bold text-white font-mono tracking-tight mt-2">{selectedStock.symbol} {recommendation?.strike} {recommendation?.expiry}</span>
+                              <span className="text-sm font-bold text-white font-mono tracking-tight mt-2 flex items-baseline gap-2 flex-wrap">
+                                <span>{selectedStock.symbol} {recommendation?.strike} {recommendation?.expiry}</span>
+                                <span className="text-[10px] text-neutral-400 font-normal">
+                                  (Spot: {formatCurrency(selectedStock.lastPrice)})
+                                </span>
+                              </span>
                            </div>
 
                            <div className="grid grid-cols-2 gap-2 mb-8 uppercase font-mono">
@@ -2269,13 +2281,20 @@ export default function App() {
                             if (!pos) return null;
                             const livePrice = (monitoredPrices && monitoredPrices[pos.fyersSymbol]) || pos.currentPrice || pos.entry || 0;
                             const currentPnl = (livePrice - (pos.entry || 0)) * (pos.qty || 0);
+                            const parentStock = stocks.find(s => s.symbol === pos.symbol);
+                            const spotPrice = parentStock ? parentStock.lastPrice : null;
                             
                             return (
                               <tr key={pos.id} className="hover:bg-white/5 transition-all">
                                 <td className="px-4 py-3">
                                   <div className="flex flex-col">
                                     <span className="font-bold text-white tracking-widest">{pos.symbol || 'UNKNOWN'}</span>
-                                    <span className="text-[9px] text-neutral-500 uppercase tracking-widest">Strike: {pos.strike || 'N/A'}</span>
+                                    <span className="text-[9px] text-neutral-500 uppercase tracking-widest flex items-baseline gap-1.5 flex-wrap">
+                                      <span>Strike: {pos.strike || 'N/A'}</span>
+                                      {spotPrice !== null && (
+                                        <span className="text-[8px] text-neutral-400 font-normal lowercase">(spot: ₹{spotPrice.toFixed(1)})</span>
+                                      )}
+                                    </span>
                                   </div>
                                 </td>
                                 <td className={cn("px-4 py-3 font-black", (pos.type || '').includes('CE') ? "text-neon-green" : "text-neon-red")}>{pos.type || 'N/A'}</td>

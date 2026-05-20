@@ -261,8 +261,8 @@ export function generateRecommendation(
 }
 
 export function getFyersOptionSymbol(symbol: string, strike: number, type: 'CE' | 'PE' | 'PUT'): string {
-  // Format: SYMBOL{YY}{MMM}{STRIKE}{TYPE}
-  // Example: COFORGE26MAY1320CE
+  // Format: NSE:SYMBOL{YY}{MMM}{STRIKE}{TYPE}
+  // Example: NSE:COFORGE26MAY1320CE
   const now = new Date();
   const year = now.getFullYear().toString().slice(-2);
   const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -270,5 +270,5 @@ export function getFyersOptionSymbol(symbol: string, strike: number, type: 'CE' 
   
   const optionType = type === 'PUT' ? 'PE' : type;
   
-  return `${symbol}${year}${month}${strike}${optionType}`;
+  return `NSE:${symbol}${year}${month}${strike}${optionType}`;
 }
