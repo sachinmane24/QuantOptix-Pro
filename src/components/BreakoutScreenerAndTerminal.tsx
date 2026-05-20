@@ -81,6 +81,8 @@ export const BreakoutScreenerAndTerminal: React.FC<BreakoutScreenerAndTerminalPr
     setScanning(true);
     try {
       await onTriggerScan();
+    } catch (err) {
+      console.error("Scan error inside component:", err);
     } finally {
       setScanning(false);
     }

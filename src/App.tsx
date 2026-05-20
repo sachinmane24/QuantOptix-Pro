@@ -149,7 +149,7 @@ export default function App() {
   };
   const portfolioValue = portfolio?.balance || 1000000;
 
-  const [activeAnalyticsTab, setActiveAnalyticsTab] = useState<'overview' | 'sl' | 'calibration' | 'timing' | 'exits' | 'options' | 'ai-strategy'>('overview');
+  const [activeAnalyticsTab, setActiveAnalyticsTab] = useState<'overview' | 'sl' | 'calibration' | 'timing' | 'exits' | 'options'>('overview');
 
   const attributionStats = useMemo(() => {
     if (!tradeHistory || tradeHistory.length === 0) return null;
@@ -2327,12 +2327,29 @@ export default function App() {
                                   {formatCurrency(currentPnl)}
                                 </td>
                                 <td className="px-4 py-3 text-right">
-                                  <button 
-                                    onClick={() => closePosition(pos.id).catch(e => console.error("[UI] Manual close failed:", e))}
-                                    className="text-neutral-500 hover:text-white uppercase text-[8px] font-black tracking-[.2em] border border-tech-border px-3 py-1 hover:border-white transition-all focus:outline-none"
-                                  >
-                                    LIQUIDATE
-                                  </button>
+                                  <div className="flex justify-end gap-2">
+                                    <button 
+                                      onClick={() => {
+                                        if (parentStock) {
+                                          handleStockSelect(parentStock);
+                                        }
+                                      }}
+                                      className={cn(
+                                        "px-2 py-1 text-[8px] font-black uppercase tracking-wider border transition-all focus:outline-none",
+                                        selectedStock?.symbol === pos.symbol 
+                                          ? "bg-neon-green text-black border-neon-green shadow-[0_0_8px_rgba(0,255,148,0.3)]" 
+                                          : "text-neon-green border-neon-green/30 hover:border-neon-green hover:bg-neon-green/5"
+                                      )}
+                                    >
+                                      🤖 AI COCKPIT
+                                    </button>
+                                    <button 
+                                      onClick={() => closePosition(pos.id).catch(e => console.error("[UI] Manual close failed:", e))}
+                                      className="text-neutral-500 hover:text-white uppercase text-[8px] font-black tracking-[.2em] border border-tech-border px-3 py-1 hover:border-white transition-all focus:outline-none"
+                                    >
+                                      LIQUIDATE
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             );
@@ -2340,6 +2357,237 @@ export default function App() {
                         )}
                       </tbody>
                     </table>
+                  </div>
+
+                  {/* Gemini Live Strategy Sentinel (Cockpit) */}
+                  <div className="border border-tech-border p-6 bg-tech-surface mt-10 space-y-6 relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-48 h-24 bg-neon-green/5 blur-[80px] pointer-events-none" />
+                    
+                    {/* Header */}
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-tech-border pb-4">
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-mono text-neon-green uppercase tracking-[0.3em] font-extrabold flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-ping" />
+                          GEMINI REAL-TIME STRATEGY WATCH
+                        </div>
+                        <h3 className="text-sm font-black text-white uppercase tracking-wider">Live Position Sentinel & Options Cockpit</h3>
+                        <p className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest leading-none">
+                          Real-time derivatives structure, delta skew, and IVR evaluation.
+                        </p>
+                      </div>
+                      
+                      <div className="flex gap-3">
+                        {selectedStock ? (
+                          <button
+                            onClick={() => handleStockSelect(selectedStock)}
+                            disabled={loadingStrategy}
+                            className={cn(
+                              "px-3 py-1.5 text-[9px] font-extrabold uppercase tracking-widest border border-tech-border transition-all duration-300",
+                              loadingStrategy ? "text-neutral-500 bg-neutral-900" : "bg-neon-green text-black font-black hover:bg-opacity-95 shadow-[0_0_10px_rgba(0,255,148,0.2)]"
+                            )}
+                          >
+                            {loadingStrategy ? "EVALUATING..." : "REFRESH LIVE STRATEGY"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {/* Main Content */}
+                    {!selectedStock ? (
+                      <div className="border border-dashed border-tech-border p-8 text-center bg-[#0B0E14]/30">
+                        <Cpu className="mx-auto text-neutral-700 mb-3 animate-pulse" size={28} />
+                        <h4 className="text-[10px] font-black uppercase tracking-[0.15em] text-neutral-400 mb-1">Sentinel Standby</h4>
+                        <p className="text-[10px] text-neutral-500 font-mono max-w-xl mx-auto uppercase tracking-wider leading-relaxed">
+                          Click "🤖 AI COCKPIT" on any active position row above to evaluate that live trade's options chain metrics, greeks, and volatility rank.
+                        </p>
+                      </div>
+                    ) : loadingStrategy ? (
+                      <div className="border border-tech-border p-12 text-center bg-[#0B0E14] flex flex-col items-center justify-center space-y-3">
+                        <RefreshCw className="text-neon-green animate-spin" size={24} />
+                        <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Synthesizing Option Space</h4>
+                        <p className="text-[9px] text-neutral-500 font-mono tracking-wider uppercase">Evaluating delta skew, volume footprint and higher timeframe confluence...</p>
+                      </div>
+                    ) : strategyReport ? (
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                        {/* Left column: Scorecard (Big Win Prob, Verdict & Scores) */}
+                        <div className="lg:col-span-4 space-y-4">
+                          <div className="bg-[#0B0E14] border border-tech-border p-5 flex flex-col items-center text-center relative overflow-hidden">
+                            <div className="text-[8px] font-mono text-neutral-500 uppercase tracking-widest mb-3">Live Signal Verdict</div>
+                            
+                            <div className={cn(
+                              "text-2xl font-extrabold uppercase px-4 py-1.5 tracking-widest border border-dashed rounded-sm font-mono mb-4",
+                              strategyReport.verdict === 'ENTER' ? "text-neon-green bg-neon-green/10 border-neon-green/30" :
+                              strategyReport.verdict === 'WATCH' ? "text-amber-400 bg-amber-400/10 border-amber-400/30" :
+                              "text-neon-red bg-neon-red/10 border-neon-red/30"
+                            )}>
+                              {strategyReport.verdict === 'ENTER' ? 'HOLD / BUY' : strategyReport.verdict === 'WATCH' ? 'HOLD / WATCH' : 'ALERT / EXIT'}
+                            </div>
+
+                            <div className="relative flex items-center justify-center mb-3">
+                              <svg className="w-28 h-28 transform -rotate-90">
+                                <circle cx="56" cy="56" r="46" stroke="#161b22" strokeWidth="6" fill="transparent" />
+                                <circle 
+                                  cx="56" 
+                                  cy="56" 
+                                  r="46" 
+                                  stroke={strategyReport.verdict === 'ENTER' ? "#00FF94" : strategyReport.verdict === 'WATCH' ? "#FBBF24" : "#FF5252"} 
+                                  strokeWidth="8" 
+                                  fill="transparent" 
+                                  strokeDasharray={289}
+                                  strokeDashoffset={289 - (289 * strategyReport.winProbability) / 100}
+                                  strokeLinecap="round"
+                                  className="transition-all duration-1000"
+                                />
+                              </svg>
+                              <div className="absolute flex flex-col items-center justify-center font-mono">
+                                <span className="text-2xl font-black text-white">{strategyReport.winProbability}%</span>
+                                <span className="text-[7px] text-neutral-500 uppercase font-black tracking-widest">EXPECTANCY</span>
+                              </div>
+                            </div>
+
+                            <div className="text-[9px] font-mono text-neutral-500 uppercase mb-3">
+                              Confidence Threshold: <span className={cn("font-bold text-white", strategyReport.confidence === 'High' ? 'text-neon-green' : 'text-amber-400')}>{strategyReport.confidence}</span>
+                            </div>
+
+                            <div className="w-full border-t border-tech-border/30 pt-3 space-y-1">
+                              <div className="text-[8px] font-mono text-neutral-500 uppercase tracking-widest text-center">Active Archetype:</div>
+                              <div className="text-[10px] font-black text-white uppercase font-mono text-center leading-tight">{strategyReport.strategyName}</div>
+                            </div>
+                          </div>
+
+                          {/* Institutional Feature Scores */}
+                          <div className="bg-[#0B0E14] border border-tech-border p-5 space-y-3">
+                            <div className="text-[9px] font-mono font-bold text-neutral-450 uppercase tracking-widest">Core Quantitative Fingerprint</div>
+                            <div className="space-y-2.5 font-mono">
+                              {[
+                                { name: 'Momentum Vector', score: strategyReport.momentumScore },
+                                { name: 'Institutional Block Buildup', score: strategyReport.institutionalActivityScore },
+                                { name: 'Breakout Pattern Quality', score: strategyReport.breakoutQualityScore },
+                                { name: 'Risk Protection Score', score: strategyReport.riskScore },
+                              ].map((m, idx) => (
+                                <div key={idx} className="space-y-1">
+                                  <div className="flex justify-between text-[8px] text-neutral-500 font-bold uppercase">
+                                    <span>{m.name}</span>
+                                    <span className="text-white font-black">{m.score}/10</span>
+                                  </div>
+                                  <div className="h-1 bg-neutral-900 overflow-hidden relative">
+                                    <div 
+                                      className="h-full bg-neon-green transition-all duration-500" 
+                                      style={{ width: `${m.score * 10}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Right column: Confluences & suggested boundaries */}
+                        <div className="lg:col-span-8 space-y-4">
+                          {/* 1. Confluence Matrix */}
+                          <div className="bg-[#0B0E14] border border-tech-border p-5">
+                            <h4 className="text-[10px] font-black text-white uppercase tracking-wider mb-3 pb-1.5 border-b border-tech-border/30">Technical & Derivatives Confluence Matrix</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {/* Tech Metrics */}
+                              <div className="space-y-3 font-mono text-[9px]">
+                                <div className="flex justify-between items-center py-1.5 border-b border-tech-border/30">
+                                  <span className="text-neutral-500 uppercase font-bold">Regime Alignment Indicator</span>
+                                  <span className="text-neon-green font-black uppercase">{strategyReport.technicalConflux.regimeAlignment}</span>
+                                </div>
+                                <div className="flex justify-between items-center py-1.5 border-b border-tech-border/30">
+                                  <span className="text-neutral-500 uppercase font-bold">Higher Timeframe Bias (H1)</span>
+                                  <span className="text-white font-black uppercase text-center">{strategyReport.technicalConflux.higherTimeframeBias}</span>
+                                </div>
+                                <div className="flex justify-between items-center py-1.5 border-b border-tech-border/30">
+                                  <span className="text-neutral-500 uppercase font-bold">RSI Exhaustion Check</span>
+                                  <span className={cn(
+                                    "font-black uppercase",
+                                    strategyReport.technicalConflux.rsiOverextensionCheck === 'SAFE' ? "text-neon-green" :
+                                    strategyReport.technicalConflux.rsiOverextensionCheck === 'WARNING' ? "text-amber-400" : "text-neon-red"
+                                  )}>{strategyReport.technicalConflux.rsiOverextensionCheck}</span>
+                                </div>
+                                <div className="flex justify-between items-center py-1.5">
+                                  <span className="text-neutral-500 uppercase font-bold">Relative Volume Multiplier</span>
+                                  <span className="text-white font-black">{strategyReport.technicalConflux.relativeVolumeVsAverage}</span>
+                                </div>
+                              </div>
+
+                              {/* Options Metrics */}
+                              <div className="space-y-3 font-mono text-[9px] bg-neutral-900/30 p-3.5 border border-tech-border/30">
+                                <div className="flex justify-between items-center py-1 border-b border-tech-border/30">
+                                  <span className="text-neutral-500 uppercase font-bold">Optimal Strike Choice</span>
+                                  <span className="text-neon-cyan font-black">{strategyReport.optionsMetricsEvaluation.recommendedStrikeSelection}</span>
+                                </div>
+                                <div className="flex justify-between items-center py-1 border-b border-tech-border/30">
+                                  <span className="text-neutral-500 uppercase font-bold">Gamma Squeeze Rank</span>
+                                  <span className={cn(
+                                    "font-black",
+                                    strategyReport.optionsMetricsEvaluation.gammaSqueezePotential === 'High' ? "text-neon-green" : "text-neutral-400"
+                                  )}>{strategyReport.optionsMetricsEvaluation.gammaSqueezePotential}</span>
+                                </div>
+                                <div className="flex justify-between items-center py-1 border-b border-tech-border/30">
+                                  <span className="text-neutral-500 uppercase font-bold">Theta Decay Exposure</span>
+                                  <span className={cn(
+                                    "font-black",
+                                    strategyReport.optionsMetricsEvaluation.thetaDecayRisk === 'Low' ? "text-neon-green" : "text-amber-400"
+                                  )}>{strategyReport.optionsMetricsEvaluation.thetaDecayRisk}</span>
+                                </div>
+                                <div className="flex justify-between items-center py-1">
+                                  <span className="text-neutral-500 uppercase font-bold">Implied Volatility Rank (IVR)</span>
+                                  <span className="text-white font-black">{strategyReport.optionsMetricsEvaluation.impliedVolatilityRank}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* 2. Suggested Trading Boundaries */}
+                          <div className="bg-[#0B0E14] border border-tech-border p-5 font-mono text-[10px] relative">
+                            <h4 className="text-[10px] font-black text-white uppercase tracking-wider mb-3">Gemini Recommended Execution Boundaries (Option Premium Levels)</h4>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+                              <div className="p-3 bg-neutral-900/60 border border-tech-border rounded-sm">
+                                <div className="text-[7px] text-neutral-500 uppercase mb-1">CONTRACT VALUE</div>
+                                <div className="text-xs font-black text-neon-cyan">{strategyReport.optionsMetricsEvaluation.recommendedStrikeSelection}</div>
+                              </div>
+                              <div className="p-3 bg-neutral-900/60 border border-tech-border rounded-sm">
+                                <div className="text-[7px] text-neutral-500 uppercase mb-1">PROPOSED SIZING</div>
+                                <div className="text-xs font-black text-white">{strategyReport.suggestedRiskRules.suggestedMaxCapitalAllocPercent}% CAP</div>
+                              </div>
+                              <div className="p-3 bg-neutral-900/60 border border-tech-border rounded-sm border-neon-red/20">
+                                <div className="text-[7px] text-neutral-500 uppercase mb-1">PREMIUM STOP LOSS</div>
+                                <div className="text-xs font-black text-neon-red">₹{strategyReport.suggestedRiskRules.dynamicStopLoss}</div>
+                              </div>
+                              <div className="p-3 bg-neutral-900/60 border border-tech-border rounded-sm border-neon-green/20">
+                                <div className="text-[7px] text-neutral-500 uppercase mb-1">PREMIUM TARGETS</div>
+                                <div className="text-[9px] font-black text-neon-green leading-snug">
+                                  T1: ₹{strategyReport.suggestedRiskRules.recommendedTarget1}<br/>
+                                  T2: ₹{strategyReport.suggestedRiskRules.recommendedTarget2}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* 3. Narrative Rationale */}
+                          <div className="bg-[#0B0E14] border border-tech-border p-5 space-y-3">
+                            <h4 className="text-[10px] font-black text-white uppercase tracking-wider">Qualitative Liquidity & Mechanics Narrative</h4>
+                            <p className="text-[11px] text-neutral-300 font-sans leading-relaxed">
+                              {strategyReport.rationales}
+                            </p>
+                            <div className="text-[8px] font-mono text-neutral-550 border-t border-tech-border/30 pt-2 flex justify-between uppercase">
+                              <span>INTELLIGENCE SOURCE: GEMINI_3.5_FLASH</span>
+                              <span>DESK ROUTING CONFIDENCE: {strategyReport.confidence === 'High' ? 'SECURE' : 'CAUTION'}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="border border-tech-border p-8 text-center bg-[#0B0E14]">
+                        <Cpu className="mx-auto text-neutral-700 mb-3 animate-bounce" size={24} />
+                        <h4 className="text-[10px] font-black uppercase tracking-wider text-white mb-1">No Report Found</h4>
+                        <p className="text-[9px] text-neutral-550 font-mono uppercase tracking-wider">
+                          Press "REFRESH LIVE STRATEGY" above to invoke the live Gemini AI Strategy report for {selectedStock.symbol}.
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <h2 className="text-[10px] font-mono font-bold uppercase tracking-[.3em] text-neutral-500 mt-10">Institutional Execution Logs</h2>
@@ -2720,7 +2968,6 @@ export default function App() {
                 <div className="flex border-b border-tech-border gap-8 overflow-x-auto no-scrollbar">
                   {[
                     { id: 'overview', label: 'Overview', icon: <PieChart size={14} /> },
-                    { id: 'ai-strategy', label: 'Gemini Strategy Cockpit', icon: <Cpu size={14} className="text-neon-green" /> },
                     { id: 'sl', label: 'SL Strategy', icon: <Target size={14} /> },
                     { id: 'calibration', label: 'Calibration', icon: <Activity size={14} /> },
                     { id: 'timing', label: 'Timing', icon: <Zap size={14} /> },
@@ -3172,239 +3419,6 @@ export default function App() {
                           </div>
                        </div>
                     </div>
-                  </div>
-                )}
-
-                {activeAnalyticsTab === 'ai-strategy' && (
-                  <div className="space-y-8 pb-6">
-                     {/* Dynamic Header */}
-                     <div className="bg-[#0B0E14] border border-tech-border p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 relative overflow-hidden">
-                       <div className="absolute top-0 right-0 w-48 h-24 bg-neon-green/5 blur-[80px] pointer-events-none" />
-                       <div className="space-y-1">
-                          <div className="text-[10px] font-mono text-neon-green uppercase tracking-[0.3em] font-extrabold flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-ping" />
-                            GEMINI MODEL-3.5-FLASH QUANT CORE
-                          </div>
-                          <h3 className="text-xl font-black text-white uppercase tracking-tight">AI Strategy Decision Engine</h3>
-                          <p className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest leading-none">
-                            Real-time derivatives structure and order book evaluation. Synthesizes spot momentum with options depth.
-                          </p>
-                       </div>
-                       
-                       <div className="flex gap-3">
-                         {selectedStock ? (
-                           <button
-                             onClick={() => handleStockSelect(selectedStock)}
-                             disabled={loadingStrategy}
-                             className={cn(
-                               "px-4 py-2 text-[10px] font-extrabold uppercase tracking-widest border border-tech-border transition-all duration-300",
-                               loadingStrategy ? "text-neutral-500 bg-neutral-900" : "bg-neon-green text-black font-black hover:bg-opacity-95 shadow-[0_0_15px_rgba(0,255,148,0.2)]"
-                             )}
-                           >
-                             {loadingStrategy ? "PROCESSING ANALYSIS..." : "FORCE RE-EVALUATE CANDIDATE"}
-                           </button>
-                         ) : (
-                           <div className="text-[10px] font-mono text-neutral-500 uppercase">Select a Target to run Gemini</div>
-                         )}
-                       </div>
-                    </div>
-
-                     {/* Main Split Panels */}
-                     {!selectedStock ? (
-                       <div className="border border-dashed border-tech-border p-12 text-center bg-[#0B0E14] bg-opacity-30">
-                          <Cpu className="mx-auto text-neutral-700 mb-4 animate-pulse" size={36} />
-                          <h4 className="text-xs font-black uppercase tracking-[0.15em] text-neutral-400 mb-2">No Active Target Selected</h4>
-                          <p className="text-[11px] text-neutral-500 font-mono max-w-xl mx-auto">
-                            Please select a stock from the Breakout Radar or Stocks List on the Dashboard, then click this tab to view the live Gemini AI Strategy Decision cockpit.
-                          </p>
-                       </div>
-                     ) : loadingStrategy ? (
-                       <div className="border border-tech-border p-16 text-center bg-[#0B0E14] flex flex-col items-center justify-center space-y-4">
-                          <RefreshCw className="text-neon-green animate-spin" size={32} />
-                          <h4 className="text-xs font-black uppercase tracking-[0.2em] text-white">Synthesizing Option Space</h4>
-                          <p className="text-[10px] text-neutral-500 font-mono tracking-wider uppercase">Evaluating delta skew, volume footprint and higher timeframe confluence...</p>
-                       </div>
-                     ) : strategyReport ? (
-                       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                         {/* Left column: Scorecard (Big Win Prob, Verdict & Scores) */}
-                         <div className="lg:col-span-4 space-y-6">
-                           <div className="bg-[#0B0E14] border border-tech-border p-6 flex flex-col items-center text-center relative overflow-hidden">
-                             <div className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest mb-4">Gemini Evaluation Verdict</div>
-                             
-                             <div className={cn(
-                               "text-4xl font-extrabold uppercase px-6 py-2.5 tracking-widest border border-dashed rounded-sm font-mono mb-6 shadow-md animate-pulse",
-                               strategyReport.verdict === 'ENTER' ? "text-neon-green bg-neon-green/10 border-neon-green/30" :
-                               strategyReport.verdict === 'WATCH' ? "text-amber-400 bg-amber-400/10 border-amber-400/30" :
-                               "text-neon-red bg-neon-red/10 border-neon-red/30"
-                             )}>
-                               {strategyReport.verdict}
-                             </div>
-
-                             <div className="relative flex items-center justify-center mb-4">
-                               <svg className="w-36 h-36 transform -rotate-90">
-                                 <circle cx="72" cy="72" r="60" stroke="#161b22" strokeWidth="8" fill="transparent" />
-                                 <circle 
-                                   cx="72" 
-                                   cy="72" 
-                                   r="60" 
-                                   stroke={strategyReport.verdict === 'ENTER' ? "#00FF94" : strategyReport.verdict === 'WATCH' ? "#FBBF24" : "#FF5252"} 
-                                   strokeWidth="10" 
-                                   fill="transparent" 
-                                   strokeDasharray={376.8}
-                                   strokeDashoffset={376.8 - (376.8 * strategyReport.winProbability) / 100}
-                                   strokeLinecap="round"
-                                   className="transition-all duration-1000"
-                                 />
-                               </svg>
-                               <div className="absolute flex flex-col items-center justify-center font-mono">
-                                 <span className="text-3xl font-black text-white">{strategyReport.winProbability}%</span>
-                                 <span className="text-[8px] text-neutral-500 uppercase font-black tracking-widest">EXPECTANCY</span>
-                               </div>
-                             </div>
-
-                             <div className="text-[10px] font-mono text-neutral-500 uppercase mb-4">
-                               Confidence Threshold: <span className={cn("font-bold text-white", strategyReport.confidence === 'High' ? 'text-neon-green' : 'text-amber-400')}>{strategyReport.confidence}</span>
-                             </div>
-
-                             <div className="w-full border-t border-tech-border/30 pt-4 space-y-1">
-                               <div className="text-[9px] font-mono text-neutral-500 uppercase tracking-widest text-center">Target Active Archetype:</div>
-                               <div className="text-xs font-black text-white uppercase font-mono text-center">{strategyReport.strategyName}</div>
-                             </div>
-                           </div>
-
-                           {/* Institutional Feature Scores */}
-                           <div className="bg-[#0B0E14] border border-tech-border p-6 space-y-4">
-                             <div className="text-[10px] font-mono font-bold text-neutral-400 uppercase tracking-widest">Core Quantitative Fingerprint</div>
-                             <div className="space-y-3 font-mono">
-                               {[
-                                 { name: 'Momentum Vector', score: strategyReport.momentumScore },
-                                 { name: 'Institutional Block Buildup', score: strategyReport.institutionalActivityScore },
-                                 { name: 'Breakout Pattern Quality', score: strategyReport.breakoutQualityScore },
-                                 { name: 'Risk Protection Score', score: strategyReport.riskScore },
-                               ].map((m, idx) => (
-                                 <div key={idx} className="space-y-1.5">
-                                   <div className="flex justify-between text-[9px] text-neutral-500 font-bold uppercase">
-                                     <span>{m.name}</span>
-                                     <span className="text-white font-black">{m.score}/10</span>
-                                   </div>
-                                   <div className="h-1.5 bg-neutral-900 overflow-hidden relative">
-                                     <div 
-                                       className="h-full bg-neon-green transition-all duration-500" 
-                                       style={{ width: `${m.score * 10}%` }}
-                                     />
-                                   </div>
-                                 </div>
-                               ))}
-                             </div>
-                           </div>
-                         </div>
-
-                         {/* Right column: Confluences & suggested boundaries */}
-                         <div className="lg:col-span-8 space-y-6">
-                           {/* 1. Confluence Matrix */}
-                           <div className="bg-[#0B0E14] border border-tech-border p-6">
-                             <h4 className="text-xs font-black text-white uppercase tracking-wider mb-4 pb-2 border-b border-tech-border/30">Technical & Derivatives Confluence Matrix</h4>
-                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                               {/* Tech Metrics */}
-                               <div className="space-y-4 font-mono text-[10px]">
-                                 <div className="flex justify-between items-center py-2 border-b border-tech-border/30">
-                                   <span className="text-neutral-500 uppercase font-bold">Regime Alignment Indicator</span>
-                                   <span className="text-neon-green font-black uppercase">{strategyReport.technicalConflux.regimeAlignment}</span>
-                                 </div>
-                                 <div className="flex justify-between items-center py-2 border-b border-tech-border/30">
-                                   <span className="text-neutral-500 uppercase font-bold">Higher Timeframe Bias (H1)</span>
-                                   <span className="text-white font-black uppercase text-center">{strategyReport.technicalConflux.higherTimeframeBias}</span>
-                                 </div>
-                                 <div className="flex justify-between items-center py-2 border-b border-tech-border/30">
-                                   <span className="text-neutral-500 uppercase font-bold">RSI Exhaustion Check</span>
-                                   <span className={cn(
-                                     "font-black uppercase",
-                                     strategyReport.technicalConflux.rsiOverextensionCheck === 'SAFE' ? "text-neon-green" :
-                                     strategyReport.technicalConflux.rsiOverextensionCheck === 'WARNING' ? "text-amber-400" : "text-neon-red"
-                                   )}>{strategyReport.technicalConflux.rsiOverextensionCheck}</span>
-                                 </div>
-                                 <div className="flex justify-between items-center py-2">
-                                   <span className="text-neutral-500 uppercase font-bold">Relative Volume Multiplier</span>
-                                   <span className="text-white font-black">{strategyReport.technicalConflux.relativeVolumeVsAverage}</span>
-                                 </div>
-                               </div>
-
-                               {/* Options Metrics */}
-                               <div className="space-y-4 font-mono text-[10px] bg-neutral-900/30 p-4 border border-tech-border/30">
-                                 <div className="flex justify-between items-center py-1 border-b border-tech-border/30">
-                                   <span className="text-neutral-500 uppercase font-bold">Optimal Strike Choice</span>
-                                   <span className="text-neon-cyan font-black">{strategyReport.optionsMetricsEvaluation.recommendedStrikeSelection}</span>
-                                 </div>
-                                 <div className="flex justify-between items-center py-1 border-b border-tech-border/30">
-                                   <span className="text-neutral-500 uppercase font-bold">Gamma Squeeze Rank</span>
-                                   <span className={cn(
-                                     "font-black",
-                                     strategyReport.optionsMetricsEvaluation.gammaSqueezePotential === 'High' ? "text-neon-green" : "text-neutral-400"
-                                   )}>{strategyReport.optionsMetricsEvaluation.gammaSqueezePotential}</span>
-                                 </div>
-                                 <div className="flex justify-between items-center py-1 border-b border-tech-border/30">
-                                   <span className="text-neutral-500 uppercase font-bold">Theta Decay Exposure</span>
-                                   <span className={cn(
-                                     "font-black",
-                                     strategyReport.optionsMetricsEvaluation.thetaDecayRisk === 'Low' ? "text-neon-green" : "text-amber-400"
-                                   )}>{strategyReport.optionsMetricsEvaluation.thetaDecayRisk}</span>
-                                 </div>
-                                 <div className="flex justify-between items-center py-1">
-                                   <span className="text-neutral-500 uppercase font-bold">Implied Volatility Rank (IVR)</span>
-                                   <span className="text-white font-black">{strategyReport.optionsMetricsEvaluation.impliedVolatilityRank}</span>
-                                 </div>
-                               </div>
-                             </div>
-                           </div>
-
-                           {/* 2. Suggested Trading Boundaries */}
-                           <div className="bg-[#0B0E14] border border-tech-border p-6 font-mono text-[11px] relative">
-                             <h4 className="text-xs font-black text-white uppercase tracking-wider mb-4">Gemini Recommended Execution Boundaries (Option Premium Levels)</h4>
-                             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
-                               <div className="p-4 bg-neutral-900 border border-tech-border rounded-sm">
-                                  <div className="text-[8px] text-neutral-500 uppercase mb-1">CONTRACT VALUE</div>
-                                  <div className="text-sm font-black text-neon-cyan">{strategyReport.optionsMetricsEvaluation.recommendedStrikeSelection}</div>
-                               </div>
-                               <div className="p-4 bg-neutral-900 border border-tech-border rounded-sm">
-                                  <div className="text-[8px] text-neutral-550 uppercase mb-1">PROPOSED SIZING</div>
-                                  <div className="text-sm font-black text-white">{strategyReport.suggestedRiskRules.suggestedMaxCapitalAllocPercent}% CAP</div>
-                               </div>
-                               <div className="p-4 bg-neutral-900 border border-tech-border rounded-sm border-neon-red/20 shadow-[0_0_10px_rgba(255,100,100,0.05)]">
-                                  <div className="text-[8px] text-neutral-550 uppercase mb-1">PREMIUM STOP LOSS</div>
-                                  <div className="text-sm font-black text-neon-red">₹{strategyReport.suggestedRiskRules.dynamicStopLoss}</div>
-                               </div>
-                               <div className="p-4 bg-neutral-900 border border-tech-border rounded-sm border-neon-green/20 shadow-[0_0_10px_rgba(0,255,148,0.05)]">
-                                  <div className="text-[8px] text-neutral-550 uppercase mb-1">PREMIUM TARGETS</div>
-                                  <div className="text-[10px] font-black text-neon-green leading-snug">
-                                    T1: ₹{strategyReport.suggestedRiskRules.recommendedTarget1}<br/>
-                                    T2: ₹{strategyReport.suggestedRiskRules.recommendedTarget2}
-                                  </div>
-                               </div>
-                             </div>
-                           </div>
-
-                           {/* 3. Narrative Rationale */}
-                           <div className="bg-[#0B0E14] border border-tech-border p-6 space-y-3">
-                             <h4 className="text-xs font-black text-white uppercase tracking-wider">Qualitative Liquidity & Mechanics Narrative</h4>
-                             <p className="text-[12px] text-neutral-300 font-sans leading-relaxed">
-                               {strategyReport.rationales}
-                             </p>
-                             <div className="text-[9px] font-mono text-neutral-550 border-t border-tech-border/30 pt-2.5 mt-2 flex justify-between uppercase">
-                               <span>INTELLIGENCE SOURCE: GEMINI_3.5_FLASH</span>
-                               <span>DESK ROUTING CONFIDENCE: {strategyReport.confidence === 'High' ? 'SECURE' : 'CAUTION'}</span>
-                             </div>
-                           </div>
-                         </div>
-                       </div>
-                     ) : (
-                       <div className="border border-tech-border p-12 text-center bg-[#0B0E14]">
-                          <Cpu className="mx-auto text-neutral-700 mb-4 animate-bounce" size={32} />
-                          <h4 className="text-xs font-black uppercase tracking-wider text-white mb-2">No Report Found</h4>
-                          <p className="text-[11px] text-neutral-550 font-mono">
-                            Press "FORCE RE-EVALUATE CANDIDATE" at the top to invoke the live Gemini AI Strategy Decision report.
-                          </p>
-                       </div>
-                     )}
                   </div>
                 )}
              </motion.div>
