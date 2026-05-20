@@ -11,6 +11,7 @@ import * as otplib from "otplib";
 import fyers from "fyers-api-v3";
 import { ScannerService, TradeSignal } from "./src/services/scannerService";
 import { PaperTradingService } from "./src/services/paperTradingService";
+import { BreakoutStrategyService } from "./src/services/breakoutStrategyService";
 import { isMarketOpen, isLoginTime } from "./src/services/marketHoursService";
 import { MarketRegimeService } from "./src/services/marketRegimeService";
 import { MarketRegime, StockData, Trend } from "./src/types";
@@ -50,6 +51,44 @@ const getTOTPToken = (secret: string) => {
 let loginPromise: Promise<any> | null = null;
 let scannerService: ScannerService | null = null;
 let tradingService: PaperTradingService | null = null;
+let breakoutStrategyService: BreakoutStrategyService | null = null;
+
+// Fyers Rate Limiting and Concurrency controls
+let fyersRateLimitLockedUntil = 0;
+let lastLoginAttemptTime = 0;
+let lastLoginSucceeded = false;
+const LOGIN_COOLDOWN_MS = 60000; // 1 minute cooldown to prevent spamming Fyers when already recently tried
+
+function isCloudflareRateLimit(error: any): boolean {
+  if (error?.response?.status === 429 || error?.response?.status === 1015) {
+    return true;
+  }
+  const data = error?.response?.data || error?.data;
+  if (data) {
+    if (typeof data === "object") {
+      if (
+        data.error_code === 1015 || 
+        data.error_name === 'rate_limited' || 
+        String(data.title || "").includes("rate limited") ||
+        String(data.message || "").toLowerCase().includes("rate limit") ||
+        data.cloudflare_error === true ||
+        String(JSON.stringify(data)).includes("cloudflare")
+      ) {
+        return true;
+      }
+    } else if (typeof data === "string") {
+      const lower = data.toLowerCase();
+      if (lower.includes("rate limit") || lower.includes("1015") || lower.includes("cloudflare")) {
+        return true;
+      }
+    }
+  }
+  const msg = String(error?.message || "").toLowerCase();
+  if (msg.includes("rate limit") || msg.includes("1015") || msg.includes("cloudflare")) {
+    return true;
+  }
+  return false;
+}
 
 // Regional/Global State for Market Context
 let niftyHistory: number[] = [];
@@ -62,10 +101,43 @@ let declines = 0;
  * This skips the manual redirect flow.
  */
 async function performAutoLogin(force = false) {
-  if (force) {
-    loginPromise = null;
+  const nowTime = Date.now();
+  if (nowTime < fyersRateLimitLockedUntil) {
+    const secsLeft = Math.round((fyersRateLimitLockedUntil - nowTime) / 1000);
+    console.warn(`[AutoLogin Blocked] Fyers is under Cloudflare rate-limit lock. Skipping flow to avoid further lockout. Locked for ${secsLeft}s.`);
+    return { success: false, error: `Cloudflare rate limit active. Locked for ${secsLeft}s.` };
   }
-  if (loginPromise) return loginPromise;
+
+  // If a login attempt is already in progress, DO NOT interrupt it or start another one under any circumstances.
+  if (loginPromise) {
+    console.log("[AutoLogin] Re-using active login flow in progress. Deduping concurrent trigger...");
+    return loginPromise;
+  }
+
+  // Prevent login spamming by checking cooldown
+  const elapsed = nowTime - lastLoginAttemptTime;
+  if (elapsed < LOGIN_COOLDOWN_MS) {
+    const secsLeft = Math.round((LOGIN_COOLDOWN_MS - elapsed) / 1000);
+    if (!lastLoginSucceeded) {
+      console.warn(`[AutoLogin Cooldown Locked] Prior login attempt failed. Blocking retry to prevent rate lockout. Re-try in ${secsLeft}s.`);
+      return { success: false, error: `Auto-login cooldown active (prior attempt failed). Retry in ${secsLeft}s.` };
+    }
+    
+    // If it succeeded previously but someone is forcing it, enforce cooldown
+    if (force) {
+      console.warn(`[AutoLogin Cooldown] Login was attempted too recently (${Math.round(elapsed / 1000)}s ago). Enforcing cooldown to prevent Fyers/Cloudflare rate limits.`);
+      return { success: false, error: `Login cooldown active. Retry in ${secsLeft}s.` };
+    }
+    
+    // If not forced and we have a valid token, we can just return it
+    if (process.env.FYERS_ACCESS_TOKEN) {
+      return { success: true, token: process.env.FYERS_ACCESS_TOKEN };
+    }
+  }
+
+  // Record this login attempt timestamp
+  lastLoginAttemptTime = nowTime;
+  lastLoginSucceeded = false; // reset until this attempt succeeds
 
   const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
   const secretKey = process.env.FYERS_SECRET_KEY || process.env.FYERS_SECRET_ID;
@@ -210,6 +282,7 @@ async function performAutoLogin(force = false) {
       console.log("[AutoLogin] Success! Fyers session refreshed.");
       
       process.env.FYERS_ACCESS_TOKEN = finalAccessToken;
+      lastLoginSucceeded = true;
       
       // Notify Telegram if possible
       const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -226,8 +299,14 @@ async function performAutoLogin(force = false) {
 
       return { success: true, token: finalAccessToken };
     } catch (error: any) {
+      lastLoginSucceeded = false;
       const respData = error.response?.data || error.message;
       console.error("[AutoLogin] Failed:", respData);
+      
+      if (isCloudflareRateLimit(error)) {
+        console.error("[AutoLogin Rate-Limit] Cloudflare rate limit (Error 1015) detected! Engaging lock for 5 minutes.");
+        fyersRateLimitLockedUntil = Date.now() + 5 * 60 * 1000;
+      }
       return { success: false, error: respData };
     } finally {
       loginPromise = null;
@@ -256,6 +335,7 @@ async function startServer() {
   console.log("[Server] Core services initializing...");
   scannerService = new ScannerService(io);
   tradingService = new PaperTradingService(io);
+  breakoutStrategyService = new BreakoutStrategyService(io);
 
   // Hook Telegram Notifications
   tradingService.onTradeNotify = async (message: string) => {
@@ -353,6 +433,15 @@ async function startServer() {
           }
           if (tradingService) {
             tradingService.updatePnL(message.symbol, message.ltp);
+          }
+          if (breakoutStrategyService) {
+            const tempMap: Record<string, any> = {};
+            tempMap[message.symbol] = {
+              lp: message.ltp,
+              avg_price: message.avg_price || message.ltp,
+              chp: message.chp || 0
+            };
+            breakoutStrategyService.handleTickUpdates(tempMap);
           }
         }
       });
@@ -621,6 +710,128 @@ async function startServer() {
   const quotesCache = new Map<string, { timestamp: number; data: any }>();
   const CACHE_TTL = 3000; // 3 seconds
 
+  function getStockBasePrice(symbol: string): number {
+    const cleanSym = symbol.toUpperCase().replace("NSE:", "").replace("-EQ", "").trim();
+    
+    // Indices
+    if (cleanSym.includes('NIFTY50') || cleanSym === 'NIFTY') return 24200;
+    if (cleanSym.includes('NIFTYBANK') || cleanSym === 'BANKNIFTY') return 52300;
+    if (cleanSym.includes('INDIAVIX') || cleanSym === 'VIX') return 13.4;
+
+    // Manual mappings for well-known stock tickers to provide extreme realism
+    const prices: Record<string, number> = {
+      'RELIANCE': 2950,
+      'TCS': 3850,
+      'INFY': 1560,
+      'HDFCBANK': 1650,
+      'ICICIBANK': 1150,
+      'SBIN': 820,
+      'AXISBANK': 1120,
+      'KOTAKBANK': 1780,
+      'COFORGE': 5200,
+      'PERSISTENT': 3600,
+      'UNOMINDA': 1040,
+      'ASTRAL': 2150,
+      'JUBLFOOD': 465,
+      'BEL': 270,
+      'HAL': 3800,
+      'KPITTECH': 1400,
+      'ABB': 5400,
+      'APOLLOHOSP': 6100,
+      'CIPLA': 1420,
+      'DIVISLAB': 3800,
+      'GLENMARK': 980,
+      'AUROPHARMA': 1250,
+      'WIPRO': 480,
+      'COALINDIA': 470,
+      'ITC': 430,
+      'BHARTIARTL': 1380,
+      'TATASTEEL': 160,
+      'MARUTI': 12200,
+      'M&M': 2700,
+      'L&T': 3550,
+      'JSWSTEEL': 890,
+      'ADANIENT': 3100,
+      'ADANIPORTS': 1350,
+      'ULTRACEMCO': 9800,
+      'GRASIM': 2400,
+      'SUNPHARMA': 1550,
+      'VEDL': 450,
+      'ONGC': 270,
+      'NTPC': 360,
+      'POWERGRID': 310,
+      'HINDALCO': 630,
+      'HEROMOTOCO': 4800,
+      'TITAN': 3300,
+      'BAJAJ-AUTO': 9200,
+      'ASIANPAINT': 2900,
+      'EICHERMOT': 4600,
+      'APOLLOTYRE': 480,
+      'TATAMOTORS': 950,
+      'IDFCFIRSTB': 80,
+      'GMRAIRPORT': 85,
+      'PNB': 120,
+      'SAIL': 150,
+      'IRFC': 170,
+      'RECLTD': 520,
+      'PFC': 480,
+      'BHEL': 280,
+      'GAIL': 200,
+      'NATIONALUM': 190,
+      'NMDC': 240,
+      'CANBK': 120,
+      'BANKBARODA': 270,
+      'TATACOMM': 1850,
+      'TATACONSUM': 1100,
+      'TATAPOWER': 430,
+      'MUTHOOTFIN': 1700,
+      'HINDUNILVR': 2450,
+      'LTTS': 4800,
+      'MOTHERSUMI': 250,
+      'SAMVARDHANA': 250,
+      'ADANIPOWER': 650,
+      'DLF': 850,
+      'GODREJPROP': 2500,
+      'ASHOKLEY': 220,
+      'BALKRISIND': 3100,
+      'CHOLAFIN': 1400,
+      'CONCOR': 950,
+      'CUMMINSIND': 3300,
+      'DIXON': 9800,
+      'HAVELLS': 1600,
+      'HDFCLIFE': 580,
+      'ICICIGI': 1650,
+      'IND HOTELS': 620,
+      'INDUSINDBK': 1480,
+      'IPCALAB': 1250,
+      'JINDALSTEL': 950,
+      'LICHSGFIN': 680,
+      'LTIM': 4850,
+      'MPHASIS': 2400,
+      'MRF': 125000,
+      'OFSS': 9800,
+      'PIDILITIND': 3100,
+      'POLYCAB': 6500,
+      'SHREECEM': 26000,
+      'SIEMENS': 6500,
+      'SRF': 2300,
+      'TATACHEM': 1050,
+      'TRENT': 4800,
+      'VOLTAS': 1400
+    };
+
+    if (prices[cleanSym] !== undefined) {
+      return prices[cleanSym];
+    }
+
+    // Fallback: Deterministic dynamic base price if not explicitly in the list
+    // Hash characters to assign standard realistic price range between 150 and 4500
+    const hash = cleanSym.split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0);
+    const ranges = [150, 350, 750, 1250, 2200, 3200, 4500];
+    const basePrice = ranges[hash % ranges.length] + (hash % 100);
+    return basePrice;
+  }
+
   function parseOptionSymbol(symbolStr: string) {
     const cleanSym = symbolStr.replace("NSE:", "");
     // Handles formats like "BEL26MAY425PE" or "NIFTY26MAY24200CE"
@@ -642,48 +853,12 @@ async function startServer() {
     let basePrice = 500;
     const isIndex = symbolStr.includes('-INDEX');
     
-    if (symbolStr.includes('NIFTY50')) basePrice = 24200;
-    else if (symbolStr.includes('NIFTYBANK')) basePrice = 52300;
-    else if (symbolStr.includes('INDIAVIX')) basePrice = 13.4;
-    else if (symbolStr.includes('COFORGE')) basePrice = 5200;
-    else if (symbolStr.includes('UNOMINDA')) basePrice = 1040;
-    else if (symbolStr.includes('PERSISTENT')) basePrice = 3600;
-    else if (symbolStr.includes('INFY')) basePrice = 1450;
-    else if (symbolStr.includes('ABB')) basePrice = 5400;
-    else if (symbolStr.includes('APOLLOHOSP')) basePrice = 6100;
-    else if (symbolStr.includes('CIPLA')) basePrice = 1420;
-    else if (symbolStr.includes('DIVISLAB')) basePrice = 3800;
-    else if (symbolStr.includes('GLENMARK')) basePrice = 980;
-    else if (symbolStr.includes('AUROPHARMA')) basePrice = 1250;
-    else if (symbolStr.includes('BEL')) basePrice = 270;
-    else if (symbolStr.includes('HAL')) basePrice = 3800;
-    else if (symbolStr.includes('KPITTECH')) basePrice = 1400;
-    
     const isOption = /CE|PE|PUT/.test(symbolStr) && !isIndex && !symbolStr.endsWith('-EQ');
     if (isOption) {
       const parsedOption = parseOptionSymbol(symbolStr);
       if (parsedOption) {
         const { stock, strike, type } = parsedOption;
-        let stockPrice = 500;
-        if (stock.includes('NIFTYBANK')) stockPrice = 52300;
-        else if (stock.includes('NIFTY')) stockPrice = 24200;
-        else if (stock === 'COFORGE') stockPrice = 5200;
-        else if (stock === 'UNOMINDA') stockPrice = 1040;
-        else if (stock === 'PERSISTENT') stockPrice = 3600;
-        else if (stock === 'INFY') stockPrice = 1450;
-        else if (stock === 'ABB') stockPrice = 5400;
-        else if (stock === 'APOLLOHOSP') stockPrice = 6100;
-        else if (stock === 'CIPLA') stockPrice = 1420;
-        else if (stock === 'DIVISLAB') stockPrice = 3800;
-        else if (stock === 'GLENMARK') stockPrice = 980;
-        else if (stock === 'AUROPHARMA') stockPrice = 1250;
-        else if (stock === 'BEL') stockPrice = 270;
-        else if (stock === 'HAL') stockPrice = 3800;
-        else if (stock === 'KPITTECH') stockPrice = 1400;
-        else {
-          // Fallback based on strike
-          stockPrice = strike;
-        }
+        const stockPrice = getStockBasePrice(stock);
 
         const ceIntrinsic = Math.max(0, stockPrice - strike);
         const peIntrinsic = Math.max(0, strike - stockPrice);
@@ -700,6 +875,7 @@ async function startServer() {
         basePrice = 45 + (Math.random() * 50);
       }
     } else {
+      basePrice = getStockBasePrice(symbolStr);
       basePrice = basePrice * (1 + (Math.random() * 0.02 - 0.01));
     }
     
@@ -746,15 +922,30 @@ async function startServer() {
     const symbolsStr = Array.isArray(symbols) ? symbols.join(",") : String(symbols);
     const requestedSymbols = symbolsStr.split(",").map(s => s.trim()).filter(Boolean);
 
+    const now = Date.now();
+
+    // Check if Fyers API is currently rate-limit locked due to Cloudflare block
+    if (now < fyersRateLimitLockedUntil) {
+      const secsLeft = Math.round((fyersRateLimitLockedUntil - now) / 1000);
+      console.warn(`[Proxy Fyers Rate-Limit Lock] Fyers is under Cloudflare lock. Bypassing request to avoid extending the block. Locked for ${secsLeft}s.`);
+      const allMockOrCached = requestedSymbols.map(sym => {
+        const cached = quotesCache.get(sym);
+        if (cached) return cached.data;
+        const mockItem = generateMockQuoteItem(sym);
+        quotesCache.set(sym, { timestamp: now - CACHE_TTL + 500, data: mockItem });
+        return mockItem;
+      });
+      return res.json({ s: "ok", d: allMockOrCached, mock: true, rateLimited: true });
+    }
+
     if (!token) {
       console.log(`[Proxy Mock Mode] Token missing. Generating randomized mock responses for ${requestedSymbols.length} symbols.`);
-      const now = Date.now();
       const allMockData = requestedSymbols.map(sym => {
         const mockItem = generateMockQuoteItem(sym);
         quotesCache.set(sym, { timestamp: now, data: mockItem });
         return mockItem;
       });
-      return res.json({ s: "ok", d: allMockData });
+      return res.json({ s: "ok", d: allMockData, mock: true });
     }
     
     const clientId = process.env.FYERS_CLIENT_ID;
@@ -762,7 +953,6 @@ async function startServer() {
       return res.status(500).json({ error: "FYERS_CLIENT_ID not configured" });
     }
 
-    const now = Date.now();
     const symbolsToFetch: string[] = [];
     const responseDataList: any[] = [];
 
@@ -805,6 +995,11 @@ async function startServer() {
           throw { response: { data: response.data, status: 200 } };
         }
       } catch (err: any) {
+        if (isCloudflareRateLimit(err)) {
+          console.error("[Proxy Quotes] Cloudflare rate limit (Error 1015) detected on quotes query! Engaging lock for 5 minutes.");
+          fyersRateLimitLockedUntil = Date.now() + 5 * 60 * 1000;
+          throw err;
+        }
         if (isAuthError(err)) {
           console.warn("[Proxy] Fyers authorization error detected in market query. Trying auto-login refresh...");
           const newToken = await handleSessionError();
@@ -870,7 +1065,7 @@ async function startServer() {
           fallbackDataList.push(mockItem);
         }
         console.log(`[Proxy Fallback] Served ${requestedSymbols.length} symbols using cache fallbacks.`);
-        return res.json({ s: "ok", d: fallbackDataList });
+        return res.json({ s: "ok", d: fallbackDataList, mock: true });
       }
 
       // Fallback entirely to mocks if cache is completely empty
@@ -881,13 +1076,24 @@ async function startServer() {
         return mockItem;
       });
 
-      return res.json({ s: "ok", d: allMockData });
+      return res.json({ s: "ok", d: allMockData, mock: true });
     }
   });
 
   // ORDER PLACEMENT ENDPOINT
   app.post("/api/trade/place", async (req, res) => {
     const { symbol, qty, type, side, price } = req.body;
+    
+    const now = Date.now();
+    if (now < fyersRateLimitLockedUntil) {
+      const secsLeft = Math.round((fyersRateLimitLockedUntil - now) / 1000);
+      return res.status(429).json({ 
+        success: false, 
+        message: `Fyers is currently locked due to Cloudflare rate limits. Try again in ${secsLeft}s.`,
+        rateLimited: true 
+      });
+    }
+
     let token = process.env.FYERS_ACCESS_TOKEN;
     const clientId = process.env.FYERS_CLIENT_ID;
 
@@ -932,6 +1138,11 @@ async function startServer() {
           throw { response: { data: response.data, status: 200 } };
         }
       } catch (err: any) {
+        if (isCloudflareRateLimit(err)) {
+          console.error("[Order] Cloudflare rate limit (Error 1015) detected on order placement! Engaging lock for 5 minutes.");
+          fyersRateLimitLockedUntil = Date.now() + 5 * 60 * 1000;
+          throw err;
+        }
         if (isAuthError(err)) {
           console.warn("[Order] Fyers authorization error during order placement. Trying auto-login refresh...");
           const newToken = await handleSessionError();
@@ -993,6 +1204,66 @@ async function startServer() {
     }
   });
 
+  // BREAKOUT STRATEGY API ENDPOINTS
+  app.get("/api/breakout/status", (req, res) => {
+    if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
+    res.json({
+      isEnabled: breakoutStrategyService.isEnabled,
+      autoTrigger: breakoutStrategyService.autoTrigger,
+      targets: breakoutStrategyService.targets,
+      dailyTradesCount: breakoutStrategyService.dailyTradesCount,
+      maxTradesPerDay: breakoutStrategyService.maxTradesPerDay,
+      scanTimestamp: breakoutStrategyService.scanTimestamp
+    });
+  });
+
+  app.post("/api/breakout/toggle", express.json(), (req, res) => {
+    if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
+    const { enabled } = req.body;
+    breakoutStrategyService.setEnabled(Boolean(enabled));
+    res.json({ success: true, isEnabled: breakoutStrategyService.isEnabled });
+  });
+
+  app.post("/api/breakout/toggle-autotrigger", express.json(), (req, res) => {
+    if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
+    const { enabled } = req.body;
+    breakoutStrategyService.setAutoTrigger(Boolean(enabled));
+    res.json({ success: true, autoTrigger: breakoutStrategyService.autoTrigger });
+  });
+
+  app.post("/api/breakout/trigger-scan", express.json(), async (req, res) => {
+    if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
+    try {
+      const { getLiveStockData } = require("./src/services/nseService");
+      const currentStocks = getLiveStockData();
+      await breakoutStrategyService.runBreakoutScan(currentStocks);
+      res.json({ success: true, targets: breakoutStrategyService.targets });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/breakout/manual-trigger", express.json(), (req, res) => {
+    if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
+    const { symbol } = req.body;
+    breakoutStrategyService.forceTriggerSetup(symbol);
+    res.json({ success: true });
+  });
+
+  app.post("/api/breakout/manual-close", express.json(), (req, res) => {
+    if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
+    const { symbol } = req.body;
+    breakoutStrategyService.forceCloseSetup(symbol);
+    res.json({ success: true });
+  });
+
+  // Background drift simulation timer (every 3 seconds) for responsive front-end visualization & offline testing
+  setInterval(() => {
+    if (breakoutStrategyService && breakoutStrategyService.isEnabled) {
+      breakoutStrategyService.injectSimulatedMarketMove();
+    }
+  }, 3000);
+
   // Vite / Static Serving
   if (process.env.NODE_ENV !== "production") {
     console.log("[Server] Running in DEVELOPMENT mode with Vite Middleware");
@@ -1034,6 +1305,9 @@ async function startServer() {
         balance: status.balance,
         totalPnL: status.positions.reduce((sum, p) => sum + p.pnl, 0)
       });
+    }
+    if (breakoutStrategyService) {
+      breakoutStrategyService.emitStatus();
     }
 
     socket.on("toggle-auto-trade", (enabled: boolean) => {

@@ -16,22 +16,135 @@ export const SECTORS = [
 
 const mockHistoricalData: Record<string, any[]> = {};
 
+export function getStockBasePrice(symbol: string): number {
+  const cleanSym = symbol.toUpperCase().replace("NSE:", "").replace("-EQ", "").trim();
+  
+  // Indices
+  if (cleanSym.includes('NIFTY50') || cleanSym === 'NIFTY') return 24200;
+  if (cleanSym.includes('NIFTYBANK') || cleanSym === 'BANKNIFTY') return 52300;
+  if (cleanSym.includes('INDIAVIX') || cleanSym === 'VIX') return 13.4;
+
+  // Manual mappings for well-known stock tickers to provide extreme realism
+  const prices: Record<string, number> = {
+    'RELIANCE': 2950,
+    'TCS': 3850,
+    'INFY': 1560,
+    'HDFCBANK': 1650,
+    'ICICIBANK': 1150,
+    'SBIN': 820,
+    'AXISBANK': 1120,
+    'KOTAKBANK': 1780,
+    'COFORGE': 5200,
+    'PERSISTENT': 3600,
+    'UNOMINDA': 1040,
+    'ASTRAL': 2150,
+    'JUBLFOOD': 465,
+    'BEL': 270,
+    'HAL': 3800,
+    'KPITTECH': 1400,
+    'ABB': 5400,
+    'APOLLOHOSP': 6100,
+    'CIPLA': 1420,
+    'DIVISLAB': 3800,
+    'GLENMARK': 980,
+    'AUROPHARMA': 1250,
+    'WIPRO': 480,
+    'COALINDIA': 470,
+    'ITC': 430,
+    'BHARTIARTL': 1380,
+    'TATASTEEL': 160,
+    'MARUTI': 12200,
+    'M&M': 2700,
+    'L&T': 3550,
+    'JSWSTEEL': 890,
+    'ADANIENT': 3100,
+    'ADANIPORTS': 1350,
+    'ULTRACEMCO': 9800,
+    'GRASIM': 2400,
+    'SUNPHARMA': 1550,
+    'VEDL': 450,
+    'ONGC': 270,
+    'NTPC': 360,
+    'POWERGRID': 310,
+    'HINDALCO': 630,
+    'HEROMOTOCO': 4800,
+    'TITAN': 3300,
+    'BAJAJ-AUTO': 9200,
+    'ASIANPAINT': 2900,
+    'EICHERMOT': 4600,
+    'APOLLOTYRE': 480,
+    'TATAMOTORS': 950,
+    'IDFCFIRSTB': 80,
+    'GMRAIRPORT': 85,
+    'PNB': 120,
+    'SAIL': 150,
+    'IRFC': 170,
+    'RECLTD': 520,
+    'PFC': 480,
+    'BHEL': 280,
+    'GAIL': 200,
+    'NATIONALUM': 190,
+    'NMDC': 240,
+    'CANBK': 120,
+    'BANKBARODA': 270,
+    'TATACOMM': 1850,
+    'TATACONSUM': 1100,
+    'TATAPOWER': 430,
+    'MUTHOOTFIN': 1700,
+    'HINDUNILVR': 2450,
+    'LTTS': 4800,
+    'MOTHERSUMI': 250,
+    'SAMVARDHANA': 250,
+    'ADANIPOWER': 650,
+    'DLF': 850,
+    'GODREJPROP': 2500,
+    'ASHOKLEY': 220,
+    'BALKRISIND': 3100,
+    'CHOLAFIN': 1400,
+    'CONCOR': 950,
+    'CUMMINSIND': 3300,
+    'DIXON': 9800,
+    'HAVELLS': 1600,
+    'HDFCLIFE': 580,
+    'ICICIGI': 1650,
+    'IND HOTELS': 620,
+    'INDUSINDBK': 1480,
+    'IPCALAB': 1250,
+    'JINDALSTEL': 950,
+    'LICHSGFIN': 680,
+    'LTIM': 4850,
+    'MPHASIS': 2400,
+    'MRF': 125000,
+    'OFSS': 9800,
+    'PIDILITIND': 3100,
+    'POLYCAB': 6500,
+    'SHREECEM': 26000,
+    'SIEMENS': 6500,
+    'SRF': 2300,
+    'TATACHEM': 1050,
+    'TRENT': 4800,
+    'VOLTAS': 1400
+  };
+
+  if (prices[cleanSym] !== undefined) {
+    return prices[cleanSym];
+  }
+
+  // Fallback: Deterministic dynamic base price if not explicitly in the list
+  // Hash characters to assign standard realistic price range between 150 and 4500
+  const hash = cleanSym.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const ranges = [150, 350, 750, 1250, 2200, 3200, 4500];
+  const basePrice = ranges[hash % ranges.length] + (hash % 100);
+  return basePrice;
+}
+
 // Simulate live data
 export function getLiveStockData(): StockData[] {
   return FNO_STOCKS.slice(0, 100).map(symbol => {
     const info = FNO_DATA[symbol];
     
-    // Improved Mock Spot Pricing: Deterministic base + volatility
-    const symHash = symbol.split('').reduce((a, b) => a + b.charCodeAt(0), 0);
-    let basePrice = 500 + (symHash % 3000);
-    
-    // Manual adjustments for specific user-mentioned stocks to ensure realism
-    if (symbol === 'ASTRAL') basePrice = 2150;
-    if (symbol === 'JUBLFOOD') basePrice = 465;
-    if (symbol === 'PERSISTENT') basePrice = 3600;
-    if (symbol === 'COFORGE') basePrice = 5200;
-    if (symbol === 'INFY') basePrice = 1450;
-    if (symbol === 'UNOMINDA') basePrice = 1040;
+    // Improved Mock Spot Pricing: Get unified realistic base price
+    const basePrice = getStockBasePrice(symbol);
     
     const lastPrice = basePrice * (1 + (Math.random() * 0.04 - 0.02));
     const pChange = (Math.random() * 6) - 3;
@@ -134,6 +247,126 @@ export function getOptionChain(symbol: string, currentPrice: number): OptionChai
     });
   });
   return chain;
+}
+
+export function getFyersOptionSymbol(symbol: string, strike: number, type: 'CE' | 'PE' | 'PUT'): string {
+  const now = new Date();
+  const year = now.getFullYear().toString().slice(-2);
+  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const month = months[now.getMonth()];
+  const optionType = type === 'PUT' ? 'PE' : type;
+  return `NSE:${symbol}${year}${month}${strike}${optionType}`;
+}
+
+export async function fetchRealOptionChain(symbol: string, currentPrice: number): Promise<OptionChainData[]> {
+  const interval = getStrikeInterval(currentPrice);
+  const roundPrice = Math.round(currentPrice / interval) * interval;
+  
+  // Generate 11 near-the-money strikes around currentPrice (ATM +/- 5 strikes)
+  const strikes = Array.from({ length: 11 }, (_, i) => roundPrice - (5 * interval) + i * interval);
+  
+  const symbolsToFetch: string[] = [];
+  strikes.forEach(strike => {
+    symbolsToFetch.push(getFyersOptionSymbol(symbol, strike, 'CE'));
+    symbolsToFetch.push(getFyersOptionSymbol(symbol, strike, 'PE'));
+  });
+
+  try {
+    const response = await fetch(`/api/market/quotes?symbols=${symbolsToFetch.join(',')}`);
+    const data = await response.json();
+    
+    if (data.d && Array.isArray(data.d)) {
+      const quotesMap: Record<string, any> = {};
+      data.d.forEach((item: any) => {
+        quotesMap[item.n] = item.v;
+      });
+      
+      const chain: OptionChainData[] = [];
+      strikes.forEach(strike => {
+        const ceSymbol = getFyersOptionSymbol(symbol, strike, 'CE');
+        const peSymbol = getFyersOptionSymbol(symbol, strike, 'PE');
+        
+        const ceQuote = quotesMap[ceSymbol];
+        const peQuote = quotesMap[peSymbol];
+        
+        const seed = (symbol.split('').reduce((a, b) => a + b.charCodeAt(0), 0) + strike) % 100;
+        const stableNoise = (seed / 20);
+        const distance = Math.abs(currentPrice - strike);
+        const decayFactor = Math.exp(-distance / (currentPrice * 0.12));
+        const timeValue = (currentPrice * 0.025) * decayFactor;
+
+        // CE
+        if (ceQuote) {
+          chain.push({
+            strike,
+            type: 'CE',
+            lastPrice: ceQuote.lp,
+            change: ceQuote.chp,
+            oi: ceQuote.oi || 10000,
+            oiChange: ceQuote.oic || 0,
+            iv: ceQuote.iv || (18 + (seed % 15)),
+            delta: ceQuote.delta || Math.max(0.05, Math.min(0.95, 0.5 + (currentPrice - strike) / (interval * 20))),
+            theta: ceQuote.theta || -(0.5 + (seed % 3)),
+            gamma: ceQuote.gamma || (0.01 + (seed % 5) / 1000),
+            vega: ceQuote.vega || (1 + (seed % 10) / 5),
+          });
+        } else {
+          const ceIntrinsic = Math.max(0, currentPrice - strike);
+          chain.push({
+            strike,
+            type: 'CE',
+            lastPrice: Math.max(1.5, Number((ceIntrinsic + timeValue + stableNoise).toFixed(2))),
+            change: (stableNoise * 2) - 5,
+            oi: 50000 + (seed * 1000),
+            oiChange: (seed % 10) - 5,
+            iv: 18 + (seed % 15),
+            delta: Math.max(0.05, Math.min(0.95, 0.5 + (currentPrice - strike) / (interval * 20))),
+            theta: -(0.5 + (seed % 3)),
+            gamma: 0.01 + (seed % 5) / 1000,
+            vega: 1 + (seed % 10) / 5,
+          });
+        }
+
+        // PUT
+        if (peQuote) {
+          chain.push({
+            strike,
+            type: 'PUT',
+            lastPrice: peQuote.lp,
+            change: peQuote.chp,
+            oi: peQuote.oi || 10000,
+            oiChange: peQuote.oic || 0,
+            iv: peQuote.iv || (18 + (seed % 15)),
+            delta: peQuote.delta || Math.max(-0.95, Math.min(-0.05, -0.5 + (currentPrice - strike) / (interval * 20))),
+            theta: peQuote.theta || -(0.5 + (seed % 3)),
+            gamma: peQuote.gamma || (0.01 + (seed % 5) / 1000),
+            vega: peQuote.vega || (1 + (seed % 10) / 5),
+          });
+        } else {
+          const peIntrinsic = Math.max(0, strike - currentPrice);
+          chain.push({
+            strike,
+            type: 'PUT',
+            lastPrice: Math.max(1.5, Number((peIntrinsic + timeValue + stableNoise).toFixed(2))),
+            change: (stableNoise * 2) - 5,
+            oi: 50000 + (seed * 1000),
+            oiChange: (seed % 10) - 5,
+            iv: 18 + (seed % 15),
+            delta: Math.max(-0.95, Math.min(-0.05, -0.5 + (currentPrice - strike) / (interval * 20))),
+            theta: -(0.5 + (seed % 3)),
+            gamma: 0.01 + (seed % 5) / 1000,
+            vega: 1 + (seed % 10) / 5,
+          });
+        }
+      });
+      return chain;
+    }
+  } catch (error) {
+    console.error("[fetchRealOptionChain] error:", error);
+  }
+
+  // Fallback
+  return getOptionChain(symbol, currentPrice);
 }
 
 let dynamicMarketOverview: any = null;
@@ -389,11 +622,27 @@ export function initializeMarketWebSocket(
   }
   
   socket.on('market-update', (message: any) => {
-    if (!message || !message.d) return;
+    if (!message) return;
     
-    // Fyers Websocket can send full data or partial.
-    // Map it to our types
-    const data = message.d;
+    // Fyers Websocket can send full data (in message.d) or a single flat tick message
+    let data: Record<string, any> = {};
+    
+    if (message.d) {
+      data = message.d;
+    } else if (message.symbol && message.ltp !== undefined) {
+      // It's a flat raw tick! Wrap it in a dictionary to reuse the existing parsing logic
+      data[message.symbol] = {
+        lp: message.ltp,
+        ch: message.ch || 0,
+        chp: message.chp || 0,
+        v: message.v || message.vol_traded_today || 0,
+        oi: message.oi || 0,
+        oic: message.oic || 0,
+        avg_price: message.avg_price || message.ltp
+      };
+    } else {
+      return;
+    }
     
     // Update active overview if index data present
     const nifty = data['NSE:NIFTY50-INDEX'];

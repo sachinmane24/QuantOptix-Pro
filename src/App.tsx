@@ -20,7 +20,7 @@ import { cn, formatCurrency, formatNumber } from './lib/utils';
 import { 
   getLiveStockData, getMarketOverview, getOptionChain, fetchLiveMarketData,
   initializeMarketWebSocket, socket, getActiveInstitutionalUniverse, getRecommendedStrike,
-  fetchQuotes, getStrikeInterval
+  fetchQuotes, getStrikeInterval, fetchRealOptionChain
 } from './services/nseService';
 import { analyzeTradeProbability, generateRecommendation, getFyersOptionSymbol } from './services/aiAnalysisService';
 import { 
@@ -28,6 +28,7 @@ import {
 } from './services/telegramService';
 import { isMarketOpen } from './services/marketHoursService';
 import { ScannerAlerts } from './components/ScannerAlerts';
+import { BreakoutScreenerAndTerminal } from './components/BreakoutScreenerAndTerminal';
 import { 
   StockData, OptionAction, Trend, MarketRegime, 
   AIProbabilityModel, TradeRecommendation, RiskSettings, ScannerLog
@@ -84,12 +85,16 @@ const GUEST_USER = {
 // --- Main App Component ---
 
 export default function App() {
-  const [activeView, setActiveView] = useState<'dashboard' | 'screener' | 'analysis' | 'trades' | 'risk' | 'analytics'>('dashboard');
+  const [activeView, setActiveView] = useState<'dashboard' | 'screener' | 'analysis' | 'trades' | 'risk' | 'analytics' | 'breakout'>('dashboard');
   const [user, setUser] = useState<User | null>(GUEST_USER);
   const [stocks, setStocks] = useState<StockData[]>([]);
   const [marketInfo, setMarketInfo] = useState<any>(null);
   const [regimeData, setRegimeData] = useState<any>(null);
   const [selectedStock, setSelectedStock] = useState<StockData | null>(null);
+  const liveSelectedStock = useMemo(() => {
+    if (!selectedStock) return null;
+    return stocks.find(s => s.symbol === selectedStock.symbol) || selectedStock;
+  }, [selectedStock, stocks]);
   const [optionChain, setOptionChain] = useState<any[]>([]);
   const [aiAnalysis, setAiAnalysis] = useState<AIProbabilityModel | null>(null);
   const [recommendation, setRecommendation] = useState<TradeRecommendation | null>(null);
@@ -439,6 +444,72 @@ export default function App() {
     setSystemLogs(prev => [newLog, ...prev].slice(0, 30));
   };
 
+  const [breakoutState, setBreakoutState] = useState<any>(null);
+  
+  const handleToggleBreakoutStrategy = async (enabled: boolean) => {
+    try {
+      const res = await fetch('/api/breakout/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      const data = await res.json();
+      setBreakoutState((prev: any) => prev ? { ...prev, isEnabled: data.isEnabled } : null);
+    } catch (e) {
+      console.error("Failed to toggle breakout strategy", e);
+    }
+  };
+
+  const handleToggleBreakoutAutoTrigger = async (enabled: boolean) => {
+    try {
+      const res = await fetch('/api/breakout/toggle-autotrigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      const data = await res.json();
+      setBreakoutState((prev: any) => prev ? { ...prev, autoTrigger: data.autoTrigger } : null);
+    } catch (e) {
+      console.error("Failed to toggle breakout auto trigger", e);
+    }
+  };
+
+  const handleBreakoutTriggerScan = async () => {
+    try {
+      const res = await fetch('/api/breakout/trigger-scan', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setBreakoutState((prev: any) => prev ? { ...prev, targets: data.targets, scanTimestamp: Date.now() } : null);
+      }
+    } catch (e) {
+      console.error("Failed to trigger breakout scan", e);
+    }
+  };
+
+  const handleBreakoutManualTrigger = async (symbol: string) => {
+    try {
+      await fetch('/api/breakout/manual-trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol })
+      });
+    } catch (e) {
+      console.error("Failed manual breakout trigger", e);
+    }
+  };
+
+  const handleBreakoutManualClose = async (symbol: string) => {
+    try {
+      await fetch('/api/breakout/manual-close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol })
+      });
+    } catch (e) {
+      console.error("Failed manual breakout close", e);
+    }
+  };
+
   const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(false);
   const [manualAuthCode, setManualAuthCode] = useState('');
   const [isSubmittingCode, setIsSubmittingCode] = useState(false);
@@ -716,7 +787,15 @@ export default function App() {
       socket.on('market-regime-update', (data) => {
         setRegimeData(data);
       });
+      socket.on('breakout-strategy', (data) => {
+        setBreakoutState(data);
+      });
     }
+
+    fetch('/api/breakout/status')
+      .then(res => res.json())
+      .then(data => setBreakoutState(data))
+      .catch(err => console.error("Error loading breakout state:", err));
 
     const interval = setInterval(loadMarketData, 30000); // Pulse every 30s as fallback
 
@@ -920,13 +999,15 @@ export default function App() {
   };
 
   const handleStockSelect = async (stock: StockData) => {
-    const chain = getOptionChain(stock.symbol, stock.lastPrice);
     setSelectedStock(stock);
-    setOptionChain(chain);
     setActiveView('analysis');
     setLoadingAnalysis(true);
     
-    // Fetch AI Analysis
+    // Fetch real option chain from Fyers (or mock fallback if disconnected)
+    const chain = await fetchRealOptionChain(stock.symbol, stock.lastPrice);
+    setOptionChain(chain);
+    
+    // Fetch AI Analysis using real strikes
     const analysis = await analyzeTradeProbability(stock, chain);
     setAiAnalysis(analysis);
     const rec = generateRecommendation(stock, analysis, chain);
@@ -1297,6 +1378,7 @@ export default function App() {
               { id: 'dashboard', icon: LayoutDashboard, label: 'DASHBOARD' },
               { id: 'screener', icon: ListFilter, label: 'SCREENER' },
               { id: 'analysis', icon: Search, label: 'ANALYSIS' },
+              { id: 'breakout', icon: Zap, label: 'BREAKOUT ALPHA' },
               { id: 'trades', icon: Activity, label: 'TRADES' },
               { id: 'risk', icon: Shield, label: 'RISK' },
               { id: 'analytics', icon: BarChart3, label: 'ANALYTICS' }
@@ -1901,7 +1983,7 @@ export default function App() {
                      <div className="bg-tech-surface border border-tech-border p-6 shadow-2xl">
                         <div className="flex items-center justify-between mb-6">
                            <div className="flex flex-col">
-                              <h2 className="text-3xl font-black tracking-tighter text-white">{selectedStock.symbol}</h2>
+                              <h2 className="text-3xl font-black tracking-tighter text-white">{liveSelectedStock.symbol}</h2>
                               <span className="text-[10px] text-neutral-500 font-mono uppercase tracking-widest">Deep Volatility Scan</span>
                            </div>
                            <button 
@@ -1914,21 +1996,21 @@ export default function App() {
                         <div className="space-y-4 font-mono">
                            <div className="flex justify-between items-baseline">
                              <span className="text-[10px] text-neutral-500 uppercase tracking-widest">SPOT PRICE</span>
-                             <span className="text-xl font-bold text-white">₹{selectedStock.lastPrice.toLocaleString()}</span>
+                             <span className="text-xl font-bold text-white">₹{liveSelectedStock.lastPrice.toLocaleString()}</span>
                            </div>
                            <div className="flex justify-between items-baseline">
                              <span className="text-[10px] text-neutral-500 uppercase tracking-widest">TREND_STATE</span>
-                             <span className={cn("text-xs font-black px-2 py-0.5", selectedStock.trend === Trend.BULLISH ? "bg-neon-green text-black" : "bg-neon-red")}>
-                                {selectedStock.trend}
+                             <span className={cn("text-xs font-black px-2 py-0.5", liveSelectedStock.trend === Trend.BULLISH ? "bg-neon-green text-black" : "bg-neon-red")}>
+                                {liveSelectedStock.trend}
                              </span>
                            </div>
                            <div className="flex justify-between items-baseline">
                              <span className="text-[10px] text-neutral-500 uppercase tracking-widest">REL VOLUME</span>
-                             <span className="text-sm font-bold text-neon-green">{selectedStock.relVolume.toFixed(2)}x</span>
+                             <span className="text-sm font-bold text-neon-green">{liveSelectedStock.relVolume.toFixed(2)}x</span>
                            </div>
                            <div className="flex justify-between items-baseline">
                              <span className="text-[10px] text-neutral-500 uppercase tracking-widest">RS INDEX</span>
-                             <span className="text-sm font-bold text-neutral-200">{selectedStock.relativeStrength.toFixed(2)}</span>
+                             <span className="text-sm font-bold text-neutral-200">{liveSelectedStock.relativeStrength.toFixed(2)}</span>
                            </div>
                         </div>
 
@@ -1967,9 +2049,9 @@ export default function App() {
                                 recommendation?.action === OptionAction.BUY_CE ? "text-neon-green glow-green" : "text-neon-red glow-red"
                               )}>{recommendation?.action}</span>
                               <span className="text-sm font-bold text-white font-mono tracking-tight mt-2 flex items-baseline gap-2 flex-wrap">
-                                <span>{selectedStock.symbol} {recommendation?.strike} {recommendation?.expiry}</span>
+                                <span>{liveSelectedStock.symbol} {recommendation?.strike} {recommendation?.expiry}</span>
                                 <span className="text-[10px] text-neutral-400 font-normal">
-                                  (Spot: {formatCurrency(selectedStock.lastPrice)})
+                                  (Spot: {formatCurrency(liveSelectedStock.lastPrice)})
                                 </span>
                               </span>
                            </div>
@@ -2000,7 +2082,7 @@ export default function App() {
                            </div>
 
                            <button 
-                             onClick={() => executeTrade(selectedStock, recommendation!, aiAnalysis!).catch(e => console.error("[UI] Manual execution failed:", e))}
+                             onClick={() => executeTrade(liveSelectedStock, recommendation!, aiAnalysis!).catch(e => console.error("[UI] Manual execution failed:", e))}
                              disabled={isAutoTrading}
                              className={cn(
                                "w-full py-4 font-black uppercase tracking-[.3em] text-xs transition-all flex items-center justify-center gap-3",
@@ -2065,8 +2147,8 @@ export default function App() {
                                 </thead>
                                 <tbody className="divide-y divide-tech-border">
                                    {Array.from({ length: 11 }).map((_, i) => {
-                                     const interval = getStrikeInterval(selectedStock.lastPrice);
-                                     const baseStrike = Math.round(selectedStock.lastPrice / interval) * interval;
+                                     const interval = getStrikeInterval(liveSelectedStock.lastPrice);
+                                     const baseStrike = Math.round(liveSelectedStock.lastPrice / interval) * interval;
                                      const strike = baseStrike - (5 * interval) + i * interval;
                                      const ce = optionChain.find(o => o.strike === strike && o.type === 'CE');
                                      const pe = optionChain.find(o => o.strike === strike && o.type === 'PUT');
@@ -2172,9 +2254,9 @@ export default function App() {
                     {/* Indicators Grid */}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                        {[
-                         { label: 'RSI(14)_INDEX', value: (selectedStock.rsi || 0).toFixed(2), status: selectedStock.rsi > 70 ? 'OVERBOUGHT' : selectedStock.rsi < 30 ? 'OVERSOLD' : 'STABLE' },
-                         { label: 'VWAP_VECTOR', value: formatCurrency(selectedStock.vwap || selectedStock.lastPrice), status: selectedStock.lastPrice > (selectedStock.vwap || 0) ? 'BULLISH' : 'BEARISH' },
-                         { label: 'EMA_20_SIG', value: formatCurrency(selectedStock.ema20 || selectedStock.lastPrice), status: selectedStock.lastPrice > (selectedStock.ema20 || 0) ? 'SUPP_ENABLED' : 'RES_ACTIVE' },
+                         { label: 'RSI(14)_INDEX', value: (liveSelectedStock.rsi || 0).toFixed(2), status: liveSelectedStock.rsi > 70 ? 'OVERBOUGHT' : liveSelectedStock.rsi < 30 ? 'OVERSOLD' : 'STABLE' },
+                         { label: 'VWAP_VECTOR', value: formatCurrency(liveSelectedStock.vwap || liveSelectedStock.lastPrice), status: liveSelectedStock.lastPrice > (liveSelectedStock.vwap || 0) ? 'BULLISH' : 'BEARISH' },
+                         { label: 'EMA_20_SIG', value: formatCurrency(liveSelectedStock.ema20 || liveSelectedStock.lastPrice), status: liveSelectedStock.lastPrice > (liveSelectedStock.ema20 || 0) ? 'SUPP_ENABLED' : 'RES_ACTIVE' },
                          { 
                            label: 'PCR_L_VOL', 
                            value: (() => {
@@ -3180,6 +3262,24 @@ export default function App() {
                     </div>
                   </div>
                 )}
+             </motion.div>
+           )}
+           {activeView === 'breakout' && (
+             <motion.div 
+               key="breakout"
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               className="space-y-6 pb-10"
+             >
+               <BreakoutScreenerAndTerminal
+                 state={breakoutState}
+                 onToggleStrategy={handleToggleBreakoutStrategy}
+                 onToggleAutoTrigger={handleToggleBreakoutAutoTrigger}
+                 onTriggerScan={handleBreakoutTriggerScan}
+                 onManualTrigger={handleBreakoutManualTrigger}
+                 onManualClose={handleBreakoutManualClose}
+               />
              </motion.div>
            )}
           </AnimatePresence>
