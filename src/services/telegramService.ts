@@ -18,10 +18,11 @@ export async function sendTelegramNotification(message: string) {
 }
 
 export function formatTradeEntry(trade: any) {
+  const spotText = trade.spotPrice ? ` (Spot: ₹${trade.spotPrice.toFixed(2)})` : '';
   return `
 🚀 <b>NEW TRADE EXECUTED</b> 🚀
 
-<b>Symbol:</b> <code>${trade.symbol}</code>
+<b>Symbol:</b> <code>${trade.symbol}</code>${spotText}
 <b>Type:</b> ${trade.type.includes('CE') ? '🟢 CALL' : '🔴 PUT'}
 <b>Strike:</b> ${trade.strike}
 <b>Entry Price:</b> ₹${trade.entry.toFixed(2)}
@@ -40,10 +41,11 @@ export function formatTradeEntry(trade: any) {
 
 export function formatTradeExit(trade: any, exitPrice: number, pnl: number) {
   const isProfit = pnl >= 0;
+  const spotText = trade.spotPrice ? ` (Spot: ₹${trade.spotPrice.toFixed(2)})` : '';
   return `
 🏁 <b>TRADE CLOSED</b> 🏁
 
-<b>Symbol:</b> <code>${trade.symbol}</code>
+<b>Symbol:</b> <code>${trade.symbol}</code>${spotText}
 <b>Status:</b> ${isProfit ? '💰 PROFIT' : '🛑 STOP LOSS / EXIT'}
 <b>Entry:</b> ₹${trade.entry.toFixed(2)}
 <b>Exit Price:</b> ₹${exitPrice.toFixed(2)}

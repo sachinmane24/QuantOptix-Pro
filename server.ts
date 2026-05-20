@@ -621,6 +621,22 @@ async function startServer() {
   const quotesCache = new Map<string, { timestamp: number; data: any }>();
   const CACHE_TTL = 3000; // 3 seconds
 
+  function parseOptionSymbol(symbolStr: string) {
+    const cleanSym = symbolStr.replace("NSE:", "");
+    // Handles formats like "BEL26MAY425PE" or "NIFTY26MAY24200CE"
+    const match = cleanSym.match(/^([A-Z0-9\-]+?)(?:\d{2}[A-Z]{3}|\d{2}[0-9A-Z]{3})?(\d+)(CE|PE|PUT)$/i);
+    if (match) {
+      let type = match[3].toUpperCase();
+      if (type === "PE") type = "PUT";
+      return {
+        stock: match[1].toUpperCase(),
+        strike: parseInt(match[2], 10),
+        type
+      };
+    }
+    return null;
+  }
+
   // Helper to generate mock quotes if API completely fails or is limiting
   function generateMockQuoteItem(symbolStr: string): any {
     let basePrice = 500;
@@ -639,10 +655,50 @@ async function startServer() {
     else if (symbolStr.includes('DIVISLAB')) basePrice = 3800;
     else if (symbolStr.includes('GLENMARK')) basePrice = 980;
     else if (symbolStr.includes('AUROPHARMA')) basePrice = 1250;
+    else if (symbolStr.includes('BEL')) basePrice = 270;
+    else if (symbolStr.includes('HAL')) basePrice = 3800;
+    else if (symbolStr.includes('KPITTECH')) basePrice = 1400;
     
     const isOption = /CE|PE|PUT/.test(symbolStr) && !isIndex && !symbolStr.endsWith('-EQ');
     if (isOption) {
-      basePrice = 45 + (Math.random() * 50);
+      const parsedOption = parseOptionSymbol(symbolStr);
+      if (parsedOption) {
+        const { stock, strike, type } = parsedOption;
+        let stockPrice = 500;
+        if (stock.includes('NIFTYBANK')) stockPrice = 52300;
+        else if (stock.includes('NIFTY')) stockPrice = 24200;
+        else if (stock === 'COFORGE') stockPrice = 5200;
+        else if (stock === 'UNOMINDA') stockPrice = 1040;
+        else if (stock === 'PERSISTENT') stockPrice = 3600;
+        else if (stock === 'INFY') stockPrice = 1450;
+        else if (stock === 'ABB') stockPrice = 5400;
+        else if (stock === 'APOLLOHOSP') stockPrice = 6100;
+        else if (stock === 'CIPLA') stockPrice = 1420;
+        else if (stock === 'DIVISLAB') stockPrice = 3800;
+        else if (stock === 'GLENMARK') stockPrice = 980;
+        else if (stock === 'AUROPHARMA') stockPrice = 1250;
+        else if (stock === 'BEL') stockPrice = 270;
+        else if (stock === 'HAL') stockPrice = 3800;
+        else if (stock === 'KPITTECH') stockPrice = 1400;
+        else {
+          // Fallback based on strike
+          stockPrice = strike;
+        }
+
+        const ceIntrinsic = Math.max(0, stockPrice - strike);
+        const peIntrinsic = Math.max(0, strike - stockPrice);
+        
+        const seed = (stock.split('').reduce((a: number, b: string) => a + b.charCodeAt(0), 0) + strike) % 100;
+        const stableNoise = (seed / 20);
+        const distance = Math.abs(stockPrice - strike);
+        const decayFactor = Math.exp(-distance / (stockPrice * 0.12));
+        const timeValue = (stockPrice * 0.025) * decayFactor;
+        
+        basePrice = type === 'CE' ? (ceIntrinsic + timeValue + stableNoise) : (peIntrinsic + timeValue + stableNoise);
+        if (basePrice < 1.5) basePrice = 1.5;
+      } else {
+        basePrice = 45 + (Math.random() * 50);
+      }
     } else {
       basePrice = basePrice * (1 + (Math.random() * 0.02 - 0.01));
     }
@@ -683,24 +739,28 @@ async function startServer() {
 
     console.log(`[Proxy] Fetching quotes for symbols size: ${String(symbols).length}`);
 
-    if (!token) {
-      return res.json({ 
-        mock: true, 
-        message: "FYERS_ACCESS_TOKEN not set." 
-      });
-    }
-    
     if (!symbols) {
       return res.status(400).json({ error: "Missing symbols parameter" });
+    }
+
+    const symbolsStr = Array.isArray(symbols) ? symbols.join(",") : String(symbols);
+    const requestedSymbols = symbolsStr.split(",").map(s => s.trim()).filter(Boolean);
+
+    if (!token) {
+      console.log(`[Proxy Mock Mode] Token missing. Generating randomized mock responses for ${requestedSymbols.length} symbols.`);
+      const now = Date.now();
+      const allMockData = requestedSymbols.map(sym => {
+        const mockItem = generateMockQuoteItem(sym);
+        quotesCache.set(sym, { timestamp: now, data: mockItem });
+        return mockItem;
+      });
+      return res.json({ s: "ok", d: allMockData });
     }
     
     const clientId = process.env.FYERS_CLIENT_ID;
     if (!clientId) {
       return res.status(500).json({ error: "FYERS_CLIENT_ID not configured" });
     }
-
-    const symbolsStr = Array.isArray(symbols) ? symbols.join(",") : String(symbols);
-    const requestedSymbols = symbolsStr.split(",").map(s => s.trim()).filter(Boolean);
 
     const now = Date.now();
     const symbolsToFetch: string[] = [];

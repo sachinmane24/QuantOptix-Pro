@@ -20,7 +20,7 @@ import { cn, formatCurrency, formatNumber } from './lib/utils';
 import { 
   getLiveStockData, getMarketOverview, getOptionChain, fetchLiveMarketData,
   initializeMarketWebSocket, socket, getActiveInstitutionalUniverse, getRecommendedStrike,
-  fetchQuotes
+  fetchQuotes, getStrikeInterval
 } from './services/nseService';
 import { analyzeTradeProbability, generateRecommendation, getFyersOptionSymbol } from './services/aiAnalysisService';
 import { 
@@ -264,7 +264,7 @@ export default function App() {
              currentPrice = fyersQuote.lp;
           } else {
              const stockQuote = stockQuotes[`NSE:${pos.symbol}-EQ`];
-             const spotPrice = stockQuote?.lp || stocks.find(s => s.symbol === pos.symbol)?.lastPrice || pos.entry;
+             const spotPrice = stockQuote?.lp || stocks.find(s => s.symbol === pos.symbol)?.lastPrice || pos.strike || pos.entry;
              
              const chain = getOptionChain(pos.symbol, spotPrice);
              const contract = chain.find(c => c.strike === pos.strike && (c.type === pos.optionType || (c.type === 'PUT' && pos.optionType === 'PE')));
@@ -332,7 +332,7 @@ export default function App() {
 
             if (exitReason) {
               addLog(pos.symbol, 'CORE_EXIT', 'WARNING', `Market condition met: ${exitReason} @ ₹${currentPrice.toFixed(2)}`);
-              closePosition(pos.id, exitReason).catch(e => console.error("Auto-close error:", e));
+              closePosition(pos.id, exitReason, currentPrice).catch(e => console.error("Auto-close error:", e));
             }
           }
         });
@@ -1131,6 +1131,7 @@ export default function App() {
       targets: rec.targets,
       pnl: 0,
       currentPrice: entry,
+      spotPrice: stock.lastPrice,
       status: 'OPEN',
       timestamp: Timestamp.now(),
       prob: analysis.winProbability,
@@ -1171,12 +1172,12 @@ export default function App() {
     }
   };
 
-  const closePosition = async (id: string, reason: string = 'MANUAL', exitGreeks?: any) => {
+  const closePosition = async (id: string, reason: string = 'MANUAL', exitPriceOverride?: number, exitGreeks?: any) => {
     const pos = positions.find(p => p.id === id);
     if (!pos) return;
 
     try {
-      const livePrice = monitoredPrices[pos.fyersSymbol] || pos.currentPrice || pos.entry;
+      const livePrice = exitPriceOverride || monitoredPrices[pos.fyersSymbol] || pos.currentPrice || pos.entry;
       const finalPnl = (livePrice - pos.entry) * pos.qty;
       
       let actualExitGreeks = exitGreeks;
@@ -2064,8 +2065,9 @@ export default function App() {
                                 </thead>
                                 <tbody className="divide-y divide-tech-border">
                                    {Array.from({ length: 11 }).map((_, i) => {
-                                     const baseStrike = Math.round(selectedStock.lastPrice / 50) * 50;
-                                     const strike = baseStrike - 250 + i * 50;
+                                     const interval = getStrikeInterval(selectedStock.lastPrice);
+                                     const baseStrike = Math.round(selectedStock.lastPrice / interval) * interval;
+                                     const strike = baseStrike - (5 * interval) + i * interval;
                                      const ce = optionChain.find(o => o.strike === strike && o.type === 'CE');
                                      const pe = optionChain.find(o => o.strike === strike && o.type === 'PUT');
                                      const isAtm = strike === baseStrike;
