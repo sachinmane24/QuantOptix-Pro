@@ -557,6 +557,25 @@ async function startServer() {
     }
   });
 
+  // AI Strategy Decision Endpoint
+  app.post("/api/ai/analyze-strategy", async (req, res) => {
+    const { stock, optionChain } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+      return res.status(550).json({ error: "GEMINI_API_KEY not configured on server" });
+    }
+
+    try {
+      const { analyzeStrategyDecision } = await import("./src/services/aiAnalysisService");
+      const result = await analyzeStrategyDecision(stock, optionChain);
+      res.json(result);
+    } catch (error: any) {
+      console.error("[AI STRATEGY API] Error:", error.message);
+      res.status(500).json({ error: "Strategy analysis failed", details: error.message });
+    }
+  });
+
   app.get("/api/auth/fyers/autologin", async (req, res) => {
     const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
     const userId = process.env.FYERS_USER_ID;

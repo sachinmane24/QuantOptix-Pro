@@ -81,6 +81,37 @@ export interface AIProbabilityModel {
   summary: string;
 }
 
+export interface AIDecisionReport {
+  symbol: string;
+  verdict: 'ENTER' | 'SKIP' | 'WATCH';
+  strategyName: string;
+  winProbability: number;
+  confidence: 'Low' | 'Medium' | 'High';
+  momentumScore: number;
+  institutionalActivityScore: number;
+  breakoutQualityScore: number;
+  riskScore: number;
+  technicalConflux: {
+    regimeAlignment: 'STRONG' | 'MODERATE' | 'WEAK' | 'NONE';
+    relativeVolumeVsAverage: string;
+    higherTimeframeBias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+    rsiOverextensionCheck: 'SAFE' | 'WARNING' | 'CRITICAL';
+  };
+  optionsMetricsEvaluation: {
+    recommendedStrikeSelection: string;
+    gammaSqueezePotential: 'High' | 'Medium' | 'Low';
+    thetaDecayRisk: 'High' | 'Medium' | 'Low';
+    impliedVolatilityRank: 'Low' | 'Moderate' | 'High';
+  };
+  suggestedRiskRules: {
+    dynamicStopLoss: number;
+    recommendedTarget1: number;
+    recommendedTarget2: number;
+    suggestedMaxCapitalAllocPercent: number;
+  };
+  rationales: string;
+}
+
 export interface TradeRecommendation {
   symbol: string;
   fyersSymbol?: string;

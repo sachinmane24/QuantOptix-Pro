@@ -20,6 +20,11 @@ export interface BreakoutTarget {
   vwap: number;
   ema20: number;
 
+  support: number;
+  resistance: number;
+  dayHigh: number;
+  dayLow: number;
+
   optionSymbol: string;
   optionType: 'CE' | 'PE';
   strike: number;
@@ -30,6 +35,8 @@ export interface BreakoutTarget {
   optionOIPeak: number;
   optionOIBuiltupPercentage: number;
   historicalOI: { time: string; oi: number; price: number }[];
+  optionDayHigh: number;
+  optionDayLow: number;
 
   pullbackActive: boolean;
   pullbackPrice: number;

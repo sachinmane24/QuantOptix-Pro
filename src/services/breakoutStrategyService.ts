@@ -13,6 +13,11 @@ export interface BreakoutTarget {
   vwap: number;
   ema20: number;
 
+  support: number;
+  resistance: number;
+  dayHigh: number;
+  dayLow: number;
+
   optionSymbol: string;
   optionType: 'CE' | 'PE';
   strike: number;
@@ -23,6 +28,8 @@ export interface BreakoutTarget {
   optionOIPeak: number;
   optionOIBuiltupPercentage: number;
   historicalOI: { time: string; oi: number; price: number }[];
+  optionDayHigh: number;
+  optionDayLow: number;
 
   pullbackActive: boolean;
   pullbackPrice: number;
@@ -105,6 +112,10 @@ export class BreakoutStrategyService {
         pChange: stock.pChange,
         vwap: basePri * 0.995,
         ema20: basePri * 0.998,
+        support: basePri * 0.991,
+        resistance: basePri * 1.018,
+        dayHigh: basePri * 1.015,
+        dayLow: basePri * 0.99,
         optionSymbol: optSym,
         optionType: 'CE',
         strike,
@@ -117,6 +128,8 @@ export class BreakoutStrategyService {
         historicalOI: [
           { time: '09:45', oi: 150000, price: initialOptVal }
         ],
+        optionDayHigh: initialOptVal * 1.1,
+        optionDayLow: initialOptVal * 0.95,
         pullbackActive: false,
         pullbackPrice: 0,
         setupTriggered: false,
@@ -143,6 +156,10 @@ export class BreakoutStrategyService {
         pChange: stock.pChange,
         vwap: basePri * 1.005,
         ema20: basePri * 1.002,
+        support: basePri * 0.982,
+        resistance: basePri * 1.012,
+        dayHigh: basePri * 1.005,
+        dayLow: basePri * 0.982,
         optionSymbol: optSym,
         optionType: 'PE',
         strike,
@@ -155,6 +172,8 @@ export class BreakoutStrategyService {
         historicalOI: [
           { time: '09:45', oi: 120000, price: initialOptVal }
         ],
+        optionDayHigh: initialOptVal * 1.1,
+        optionDayLow: initialOptVal * 0.95,
         pullbackActive: false,
         pullbackPrice: 0,
         setupTriggered: false,
@@ -307,6 +326,12 @@ export class BreakoutStrategyService {
           }
         }
       }
+
+      // Track dynamic day highs and lows for spot and option premium
+      target.dayHigh = Math.max(target.dayHigh || target.spotPrice, target.spotPrice);
+      target.dayLow = Math.min(target.dayLow || target.spotPrice, target.spotPrice);
+      target.optionDayHigh = Math.max(target.optionDayHigh || target.optionPrice, target.optionPrice);
+      target.optionDayLow = Math.min(target.optionDayLow || target.optionPrice, target.optionPrice);
 
       // If trade is executed, manage targets & stop losses visually
       if (target.tradeExecuted && target.entryPrice && !target.exitPrice) {

@@ -4,7 +4,7 @@
  */
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { StockData, OptionChainData, AIProbabilityModel, OptionAction, Trend, MarketRegime } from "../types";
+import { StockData, OptionChainData, AIProbabilityModel, AIDecisionReport, OptionAction, Trend, MarketRegime } from "../types";
 import { getStrikeInterval } from "./nseService";
 import axios from "axios";
 
@@ -171,6 +171,229 @@ export async function analyzeTradeProbability(
       summary: `[Q-ENGINE_PRO] HTF_BIAS: ${stock.higherTimeframeBias}. Alignment: ${isHtfAligned ? 'READY' : 'WAIT'}. Volume Presence: ${stock.relVolume > 2 ? 'INSTITUTIONAL' : 'RETAIL'}.`
     };
   }
+}
+
+export async function analyzeStrategyDecision(
+  stock: StockData,
+  optionChain: OptionChainData[]
+): Promise<AIDecisionReport> {
+  // If we are in the browser and don't have the AI client, call our local API instead
+  if (!isServer && !ai) {
+    try {
+      const response = await axios.post("/api/ai/analyze-strategy", { stock, optionChain });
+      return response.data;
+    } catch (error) {
+      console.error("Client AI Strategy Error (API):", error);
+      return getHeuristicStrategyDecisionFallback(stock, optionChain);
+    }
+  }
+
+  if (!ai) {
+    return getHeuristicStrategyDecisionFallback(stock, optionChain);
+  }
+
+  try {
+    const prompt = `
+      You are an elite quantitative derivatives desk strategist at a premier proprietary trading firm.
+      Analyze the underlying asset ${stock.symbol} and its top Option Chain contracts to determine if we should execute a day-trading or momentum scalping option position.
+
+      Market Variables for ${stock.symbol}:
+      - Current Spot Price: ₹${stock.lastPrice}
+      - Price Change: ${stock.pChange}%
+      - Relative Volume (RV): ${stock.relVolume} (Values > 2.0 indicate major institutional volume expansion)
+      - Futures OI Change: ${stock.oiChange}%
+      - Higher Timeframe (H1) Trend Bias: ${stock.higherTimeframeBias || 'NEUTRAL'}
+      - Intraday Trend Direction: ${stock.trend}
+      - Market Regime Archetype: ${stock.marketRegime}
+      - Sector Industry: ${stock.sector}
+      - RSI (14 Period): ${stock.rsi}
+
+      Target Option Chain Metrics (Top 5 Active Strikes):
+      ${JSON.stringify(optionChain.slice(0, 5))}
+
+      You must provide a highly professional, institutional-grade decision matrix detailing:
+      1. 'verdict': String, one of "ENTER" (if win Probability >= 75%), "SKIP", or "WATCH" (if borderline).
+      2. 'strategyName': String, identify the exact setup (e.g. "Bullish Breakout Pullback", "Mean Reversion Exhaustion", "Regime Trend Continuation").
+      3. 'winProbability': Number, 0 to 100, capping highest at 92%.
+      4. 'confidence': String, "High", "Medium", or "Low".
+      5. 'momentumScore', 'institutionalActivityScore', 'breakoutQualityScore', 'riskScore': Numbers from 0 to 10.
+      6. 'technicalConflux':
+         - 'regimeAlignment': "STRONG", "MODERATE", "WEAK", "NONE"
+         - 'relativeVolumeVsAverage': Professional description, e.g., "Extremely heavy at 3.4x average"
+         - 'higherTimeframeBias': "BULLISH", "BEARISH", "NEUTRAL"
+         - 'rsiOverextensionCheck': "SAFE", "WARNING", "CRITICAL"
+      7. 'optionsMetricsEvaluation':
+         - 'recommendedStrikeSelection': String, e.g. "3000 CE (ATM)" or "2900 PE"
+         - 'gammaSqueezePotential': "High", "Medium", "Low"
+         - 'thetaDecayRisk': "High", "Medium", "Low"
+         - 'impliedVolatilityRank': "Low", "Moderate", "High"
+      8. 'suggestedRiskRules':
+         - 'dynamicStopLoss': Number, standard stop price (suggested stop for the option premium if bought)
+         - 'recommendedTarget1': Number, target 1
+         - 'recommendedTarget2': Number, target 2
+         - 'suggestedMaxCapitalAllocPercent': Number, suggested capital allocation % per trade (e.g., 0.5 to 2.5)
+      9. 'rationales': Comprehensive 3-4 sentence professional quantitative breakdown explaining institutional positioning, order book density, index trend alignment, and why this strategy is suggested.
+
+      Ensure strict adherence to formatting. Your output must perfectly match the schema requested.
+    `;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            symbol: { type: Type.STRING },
+            verdict: { type: Type.STRING, enum: ["ENTER", "SKIP", "WATCH"] },
+            strategyName: { type: Type.STRING },
+            winProbability: { type: Type.NUMBER },
+            confidence: { type: Type.STRING, enum: ["Low", "Medium", "High"] },
+            momentumScore: { type: Type.NUMBER },
+            institutionalActivityScore: { type: Type.NUMBER },
+            breakoutQualityScore: { type: Type.NUMBER },
+            riskScore: { type: Type.NUMBER },
+            technicalConflux: {
+              type: Type.OBJECT,
+              properties: {
+                regimeAlignment: { type: Type.STRING, enum: ["STRONG", "MODERATE", "WEAK", "NONE"] },
+                relativeVolumeVsAverage: { type: Type.STRING },
+                higherTimeframeBias: { type: Type.STRING, enum: ["BULLISH", "BEARISH", "NEUTRAL"] },
+                rsiOverextensionCheck: { type: Type.STRING, enum: ["SAFE", "WARNING", "CRITICAL"] }
+              },
+              required: ["regimeAlignment", "relativeVolumeVsAverage", "higherTimeframeBias", "rsiOverextensionCheck"]
+            },
+            optionsMetricsEvaluation: {
+              type: Type.OBJECT,
+              properties: {
+                recommendedStrikeSelection: { type: Type.STRING },
+                gammaSqueezePotential: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
+                thetaDecayRisk: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
+                impliedVolatilityRank: { type: Type.STRING, enum: ["Low", "Moderate", "High"] }
+              },
+              required: ["recommendedStrikeSelection", "gammaSqueezePotential", "thetaDecayRisk", "impliedVolatilityRank"]
+            },
+            suggestedRiskRules: {
+              type: Type.OBJECT,
+              properties: {
+                dynamicStopLoss: { type: Type.NUMBER },
+                recommendedTarget1: { type: Type.NUMBER },
+                recommendedTarget2: { type: Type.NUMBER },
+                suggestedMaxCapitalAllocPercent: { type: Type.NUMBER }
+              },
+              required: ["dynamicStopLoss", "recommendedTarget1", "recommendedTarget2", "suggestedMaxCapitalAllocPercent"]
+            },
+            rationales: { type: Type.STRING }
+          },
+          required: [
+            "symbol", "verdict", "strategyName", "winProbability", "confidence",
+            "momentumScore", "institutionalActivityScore", "breakoutQualityScore", "riskScore",
+            "technicalConflux", "optionsMetricsEvaluation", "suggestedRiskRules", "rationales"
+          ]
+        }
+      }
+    });
+
+    const result = JSON.parse(response.text || "{}");
+    return {
+      symbol: stock.symbol,
+      verdict: result.verdict || 'WATCH',
+      strategyName: result.strategyName || 'Quantitative Momentum Setup',
+      winProbability: result.winProbability || 50,
+      confidence: result.confidence || 'Medium',
+      momentumScore: result.momentumScore || 5,
+      institutionalActivityScore: result.institutionalActivityScore || 5,
+      breakoutQualityScore: result.breakoutQualityScore || 5,
+      riskScore: result.riskScore || 5,
+      technicalConflux: {
+        regimeAlignment: result.technicalConflux?.regimeAlignment || 'MODERATE',
+        relativeVolumeVsAverage: result.technicalConflux?.relativeVolumeVsAverage || `${stock.relVolume.toFixed(2)}x vs Average`,
+        higherTimeframeBias: result.technicalConflux?.higherTimeframeBias || 'NEUTRAL',
+        rsiOverextensionCheck: result.technicalConflux?.rsiOverextensionCheck || 'SAFE'
+      },
+      optionsMetricsEvaluation: {
+        recommendedStrikeSelection: result.optionsMetricsEvaluation?.recommendedStrikeSelection || 'ATM Options Selection',
+        gammaSqueezePotential: result.optionsMetricsEvaluation?.gammaSqueezePotential || 'Medium',
+        thetaDecayRisk: result.optionsMetricsEvaluation?.thetaDecayRisk || 'Medium',
+        impliedVolatilityRank: result.optionsMetricsEvaluation?.impliedVolatilityRank || 'Moderate'
+      },
+      suggestedRiskRules: {
+        dynamicStopLoss: result.suggestedRiskRules?.dynamicStopLoss || parseFloat((stock.lastPrice * 0.98).toFixed(2)),
+        recommendedTarget1: result.suggestedRiskRules?.recommendedTarget1 || parseFloat((stock.lastPrice * 1.02).toFixed(2)),
+        recommendedTarget2: result.suggestedRiskRules?.recommendedTarget2 || parseFloat((stock.lastPrice * 1.05).toFixed(2)),
+        suggestedMaxCapitalAllocPercent: result.suggestedRiskRules?.suggestedMaxCapitalAllocPercent || 1.0
+      },
+      rationales: result.rationales || "Custom strategic decision generated successfully."
+    };
+  } catch (error) {
+    console.error("AI Strategy Analysis Error:", error);
+    return getHeuristicStrategyDecisionFallback(stock, optionChain);
+  }
+}
+
+export function getHeuristicStrategyDecisionFallback(
+  stock: StockData,
+  optionChain: OptionChainData[]
+): AIDecisionReport {
+  const momentum = Math.min(10, Math.floor(Math.abs(stock.pChange) * 2));
+  const instIdx = Math.min(10, Math.floor(stock.relVolume * 3));
+  
+  let winProb = 50; 
+  const isHtfAligned = (stock.trend === Trend.BULLISH && stock.higherTimeframeBias === 'BULLISH') || 
+                       (stock.trend === Trend.BEARISH && stock.higherTimeframeBias === 'BEARISH');
+  
+  if (isHtfAligned) winProb += 15;
+  if (stock.relVolume > 2.0) winProb += 15;
+  if (stock.marketRegime === MarketRegime.BREAKOUT) winProb += 10;
+  
+  if (stock.trend === Trend.BULLISH && stock.rsi > 72) winProb -= 20;
+  if (stock.trend === Trend.BEARISH && stock.rsi < 28) winProb -= 20;
+
+  const finalWinProb = Math.min(92, Math.max(15, winProb));
+  const verdict = finalWinProb >= 75 ? 'ENTER' : finalWinProb >= 55 ? 'WATCH' : 'SKIP';
+  const confidence = finalWinProb >= 75 ? 'High' : finalWinProb >= 55 ? 'Medium' : 'Low';
+
+  const contractType = stock.trend === Trend.BULLISH ? 'CE' : 'PE';
+  const interval = getStrikeInterval(stock.lastPrice);
+  const strike = Math.round(stock.lastPrice / interval) * interval;
+  const strikeStr = `${strike} ${contractType}`;
+
+  const optionLastPrice = optionChain?.[0]?.lastPrice || (stock.lastPrice * 0.02);
+  const stopLoss = optionLastPrice * 0.75;
+  const target1 = optionLastPrice * 1.35;
+  const target2 = optionLastPrice * 1.65;
+
+  return {
+    symbol: stock.symbol,
+    verdict,
+    strategyName: isHtfAligned ? "HTF Aligned Breakout Expansion" : "Intraday Range Scalp Strategy",
+    winProbability: finalWinProb,
+    confidence,
+    momentumScore: momentum,
+    institutionalActivityScore: instIdx,
+    breakoutQualityScore: stock.marketRegime === MarketRegime.BREAKOUT ? 9 : 5,
+    riskScore: stock.rsi > 70 || stock.rsi < 30 ? 8 : 3,
+    technicalConflux: {
+      regimeAlignment: stock.marketRegime === MarketRegime.BREAKOUT ? 'STRONG' : 'MODERATE',
+      relativeVolumeVsAverage: `${stock.relVolume.toFixed(2)}x vs average trading limit`,
+      higherTimeframeBias: stock.higherTimeframeBias || 'NEUTRAL',
+      rsiOverextensionCheck: stock.rsi > 70 || stock.rsi < 30 ? 'CRITICAL' : stock.rsi > 60 || stock.rsi < 40 ? 'WARNING' : 'SAFE'
+    },
+    optionsMetricsEvaluation: {
+      recommendedStrikeSelection: strikeStr,
+      gammaSqueezePotential: stock.relVolume > 2.5 ? 'High' : 'Medium',
+      thetaDecayRisk: 'Medium',
+      impliedVolatilityRank: 'Moderate'
+    },
+    suggestedRiskRules: {
+      dynamicStopLoss: parseFloat(stopLoss.toFixed(2)),
+      recommendedTarget1: parseFloat(target1.toFixed(2)),
+      recommendedTarget2: parseFloat(target2.toFixed(2)),
+      suggestedMaxCapitalAllocPercent: finalWinProb >= 75 ? 1.5 : 0.5
+    },
+    rationales: `Fallback Heuristic Engine Analysis: Asset indicates ${stock.marketRegime} dynamics in progress. High-timeframe ${stock.higherTimeframeBias || 'neutral'} alignment indicates a ${verdict} priority. Sizing recommended at ${finalWinProb >= 75 ? '1.5%' : '0.5%'} options capital allocated.`
+  };
 }
 
 export function generateRecommendation(
