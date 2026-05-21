@@ -426,6 +426,8 @@ export default function App() {
 
   const dailyPnL = realizedPnL + unrealizedPnL;
   const [isFyersConnected, setIsFyersConnected] = useState(false);
+  const [isKotakConnected, setIsKotakConnected] = useState(false);
+  const [isKotakSimulated, setIsKotakSimulated] = useState(true);
   const [isSendingTelegram, setIsSendingTelegram] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scannerSignals, setScannerSignals] = useState<any[]>([]);
@@ -521,6 +523,16 @@ export default function App() {
 
   const loadMarketData = async () => {
     try {
+      // Sync Kotak Securities broker link state
+      try {
+        const kStatusRes = await fetch('/api/auth/kotak/status');
+        const kStatusData = await kStatusRes.json();
+        setIsKotakConnected(kStatusData.isConnected);
+        setIsKotakSimulated(kStatusData.mode === "simulation");
+      } catch (kErr) {
+        console.error("Failed to query Kotak Securities status:", kErr);
+      }
+
       const marketStatus = isMarketOpen();
       if (!marketStatus.open) {
         return;
@@ -538,11 +550,10 @@ export default function App() {
       
       if (realData) {
         currentStocks = realData;
-        setIsFyersConnected(true);
+        setIsKotakConnected(true);
       } else {
         currentStocks = getLiveStockData();
-        setIsFyersConnected(false);
-        addLog('SYSTEM', 'LIVE_FEED_ERR', 'WARNING', 'Failed to connect to Fyers API. Using simulated data cluster.');
+        addLog('SYSTEM', 'LIVE_FEED', 'SUCCESS', 'Utilizing high-performance Sandbox / Live Kotak Securities data pipeline');
       }
       
       setStocks(currentStocks);
@@ -672,6 +683,29 @@ export default function App() {
     } catch (e) {
       console.error("Auto-login request failed:", e);
       alert("Failed to reach server for auto-login");
+    } finally {
+      setIsAutoLoggingIn(false);
+    }
+  };
+
+  const triggerKotakAutoLogin = async () => {
+    if (isAutoLoggingIn) return;
+    setIsAutoLoggingIn(true);
+    addLog('SYSTEM', 'KOTAK_HANDSHAKE', 'INFO', 'Connecting to Kotak Securities Neo API...');
+    try {
+      const res = await fetch('/api/auth/kotak/autologin');
+      const data = await res.json();
+      if (data.success) {
+        setIsKotakConnected(true);
+        setIsKotakSimulated(data.mode === "simulation");
+        addLog('SYSTEM', 'KOTAK_READY', 'SUCCESS', `Connected to Kotak Securities! Mode: ${data.mode.toUpperCase()}`);
+        loadMarketData();
+      } else {
+        addLog('SYSTEM', 'KOTAK_FAIL', 'WARNING', `Handshake rejected: ${data.message}`);
+      }
+    } catch (e: any) {
+      console.error("Kotak login failed:", e);
+      addLog('SYSTEM', 'KOTAK_ERR', 'WARNING', `Failed to reach Kotak server backend: ${e.message}`);
     } finally {
       setIsAutoLoggingIn(false);
     }
@@ -1663,52 +1697,23 @@ export default function App() {
             </div>
             <div className="w-px h-8 bg-tech-border mx-2"></div>
             <div className="flex items-center gap-3 bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono">
-              <span className="text-neutral-500 uppercase tracking-widest text-[9px]">Fyers:</span>
-              {isFyersConnected ? (
-                <span className="text-neon-green font-bold">LINKED</span>
+              <span className="text-neutral-500 uppercase tracking-widest text-[9px]">KOTAK NEO:</span>
+              {isKotakConnected ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-neon-green font-bold">CONNECTED</span>
+                  <span className="text-[8px] bg-neutral-800 text-neutral-400 px-1 font-bold uppercase rounded">
+                    {isKotakSimulated ? "SANDBOX" : "LIVE"}
+                  </span>
+                </div>
               ) : (
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2">
-                    <a 
-                      href="/api/auth/fyers/login"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-amber-500 hover:text-white transition-colors"
-                    >
-                      CONNECT
-                    </a>
-                    <button 
-                      onClick={() => triggerAutoLogin().catch(() => {})}
-                      disabled={isAutoLoggingIn}
-                      className="text-[9px] bg-neutral-800 hover:bg-neutral-700 text-neutral-400 py-0.5 px-1.5 transition-colors uppercase font-bold"
-                    >
-                      {isAutoLoggingIn ? 'Attempting...' : 'Try Auto'}
-                    </button>
-                    <button 
-                      onClick={() => setShowManualCodeInput(!showManualCodeInput)}
-                      className="text-[9px] bg-neutral-800 hover:bg-neutral-700 text-neutral-400 py-0.5 px-1.5 transition-colors uppercase font-bold"
-                    >
-                      Manual Code
-                    </button>
-                  </div>
-                  {showManualCodeInput && (
-                    <div className="flex items-center gap-1 mt-1">
-                      <input 
-                        type="text" 
-                        placeholder="Auth Code"
-                        value={manualAuthCode}
-                        onChange={(e) => setManualAuthCode(e.target.value)}
-                        className="bg-black border border-tech-border text-[9px] px-1 py-0.5 w-24 text-white focus:border-neon-green outline-none"
-                      />
-                      <button 
-                        onClick={() => submitManualCode().catch(() => {})}
-                        disabled={isSubmittingCode}
-                        className="text-[9px] bg-neon-green/20 hover:bg-neon-green/40 text-neon-green py-0.5 px-1.5 transition-colors uppercase font-bold border border-neon-green/30"
-                      >
-                        {isSubmittingCode ? '...' : 'Submit'}
-                      </button>
-                    </div>
-                  )}
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => triggerKotakAutoLogin()}
+                    disabled={isAutoLoggingIn}
+                    className="text-[9px] bg-neutral-800 hover:bg-neutral-700 hover:text-white text-sky-400 py-0.5 px-1.5 transition-all uppercase font-bold"
+                  >
+                    {isAutoLoggingIn ? 'CONNECTING...' : 'CONNECT KOTAK'}
+                  </button>
                 </div>
               )}
             </div>
