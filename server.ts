@@ -500,12 +500,18 @@ async function startServer() {
   }
 
   // Kotak Neo Live Login (NO fallback to simulator)
-  async function performKotakNeoLogin(): Promise<any> {
-    const consumerKey = process.env.KOTAK_NEO_CONSUMER_KEY;
-    const consumerSecret = process.env.KOTAK_NEO_CONSUMER_SECRET;
-    const userId = process.env.KOTAK_NEO_USER_ID;
-    const password = process.env.KOTAK_NEO_PASSWORD;
-    const pin = process.env.KOTAK_NEO_PIN;
+  async function performKotakNeoLogin(customCreds?: {
+    consumerKey?: string;
+    consumerSecret?: string;
+    userId?: string;
+    password?: string;
+    pin?: string;
+  }): Promise<any> {
+    const consumerKey = customCreds?.consumerKey || process.env.KOTAK_NEO_CONSUMER_KEY;
+    const consumerSecret = customCreds?.consumerSecret || process.env.KOTAK_NEO_CONSUMER_SECRET;
+    const userId = customCreds?.userId || process.env.KOTAK_NEO_USER_ID;
+    const password = customCreds?.password || process.env.KOTAK_NEO_PASSWORD;
+    const pin = customCreds?.pin || process.env.KOTAK_NEO_PIN;
 
     if (!consumerKey || !consumerSecret || !userId || !password || !pin) {
       console.warn("[KotakNeo] Missing credentials in environment secrets. Connection refused.");
@@ -643,6 +649,77 @@ async function startServer() {
         success: false, 
         message: "Kotak Securities API authentication failed. Ensure Kotak Neo developer/account credentials are set correctly.", 
         error: result?.error || "Unknown authentication error" 
+      });
+    }
+  });
+
+  app.post("/api/auth/kotak/manual-login", async (req, res) => {
+    const { consumerKey, consumerSecret, userId, password, pin } = req.body;
+    
+    if (!consumerKey || !consumerSecret || !userId || !password || !pin) {
+      return res.status(400).json({
+        success: false,
+        message: "All fields are required: Consumer Key, Consumer Secret, User ID, Password, and MPIN/PIN."
+      });
+    }
+
+    const result = await performKotakNeoLogin({
+      consumerKey,
+      consumerSecret,
+      userId,
+      password,
+      pin
+    }).catch(err => ({ success: false, error: err.message }));
+
+    if (result && result.success) {
+      process.env.KOTAK_NEO_CONSUMER_KEY = consumerKey;
+      process.env.KOTAK_NEO_CONSUMER_SECRET = consumerSecret;
+      process.env.KOTAK_NEO_USER_ID = userId;
+      process.env.KOTAK_NEO_PASSWORD = password;
+      process.env.KOTAK_NEO_PIN = pin;
+
+      try {
+        const fs = require('fs');
+        const envPath = path.join(process.cwd(), '.env');
+        let envContent = '';
+        if (fs.existsSync(envPath)) {
+          envContent = fs.readFileSync(envPath, 'utf8');
+        }
+        
+        const updates: Record<string, string> = {
+          KOTAK_NEO_CONSUMER_KEY: consumerKey,
+          KOTAK_NEO_CONSUMER_SECRET: consumerSecret,
+          KOTAK_NEO_USER_ID: userId,
+          KOTAK_NEO_PASSWORD: password,
+          KOTAK_NEO_PIN: pin
+        };
+
+        const lines = envContent.split('\n');
+        for (const [key, value] of Object.entries(updates)) {
+          const index = lines.findIndex(line => line.trim().startsWith(`${key}=`));
+          if (index >= 0) {
+            lines[index] = `${key}=${value}`;
+          } else {
+            lines.push(`${key}=${value}`);
+          }
+        }
+        fs.writeFileSync(envPath, lines.join('\n'), 'utf8');
+        console.log("[KotakNeo] Manual login keys persisted successfully in .env");
+      } catch (writeErr) {
+        console.warn("[KotakNeo] Persistence block ignored (writing to .env failed):", writeErr);
+      }
+
+      res.json({ 
+        success: true, 
+        message: "Manually authenticated and logged in to Kotak Securities Neo API!",
+        mode: "live",
+        token: result.token ? result.token.substring(0, 10) + "..." : "NONE"
+      });
+    } else {
+      res.status(401).json({ 
+        success: false, 
+        message: "Manual credentials handshake rejected.",
+        error: result?.error || "Unknown verification failure."
       });
     }
   });
@@ -1587,6 +1664,12 @@ async function startServer() {
       if (tradingService) {
         tradingService.setAutoTrade(enabled);
         io.emit("auto-trade-status", enabled);
+      }
+    });
+
+    socket.on("toggle-breakout-paper-mode", (enabled: boolean) => {
+      if (breakoutStrategyService) {
+        breakoutStrategyService.setPaperTradingMode(enabled);
       }
     });
 

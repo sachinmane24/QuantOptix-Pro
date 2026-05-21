@@ -1,6 +1,7 @@
 import { StockData, OptionChainData } from '../types';
 import { Server } from 'socket.io';
 import { getStockBasePrice, getFyersOptionSymbol } from './nseService';
+import axios from 'axios';
 
 export interface BreakoutTarget {
   symbol: string;
@@ -50,9 +51,15 @@ export class BreakoutStrategyService {
   public maxTradesPerDay: number = 3;
   public scanTimestamp: number = 0;
   public isMockData: boolean = true;
+  public paperTradingMode: boolean = true;
 
   constructor(io: Server) {
     this.io = io;
+  }
+
+  public setPaperTradingMode(enabled: boolean) {
+    this.paperTradingMode = enabled;
+    this.emitStatus();
   }
 
   public setEnabled(enabled: boolean) {
@@ -63,6 +70,41 @@ export class BreakoutStrategyService {
   public setAutoTrigger(enabled: boolean) {
     this.autoTrigger = enabled;
     this.emitStatus();
+  }
+
+  private async placeLiveKotakOrder(symbol: string, qty: number, price: number): Promise<string> {
+    const consumerKey = process.env.KOTAK_NEO_CONSUMER_KEY;
+    const token = process.env.KOTAK_NEO_ACCESS_TOKEN;
+
+    if (!consumerKey || !token) {
+      throw new Error("Kotak Securities is not logged in / credentials missing.");
+    }
+
+    try {
+      const response = await axios.post("https://napi.kotaksecurities.com/uploads/trade/v1/orders", {
+        symbol: symbol,
+        qty: qty,
+        type: "2", // Market order
+        side: "BUY",
+        price: price
+      }, {
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "neo-api-key": consumerKey,
+          "Content-Type": "application/json"
+        },
+        timeout: 5000
+      });
+
+      if (response.data && response.data.success) {
+        return response.data.orderId || `KOTAK_${Math.floor(Math.random() * 900000 + 100000)}`;
+      } else {
+        throw new Error(response.data.message || "API rejection");
+      }
+    } catch (err: any) {
+      const detail = err.response?.data?.message || err.message;
+      throw new Error(detail);
+    }
   }
 
   /**
@@ -272,7 +314,18 @@ export class BreakoutStrategyService {
               target.tradeExecuted = true;
               target.entryPrice = target.optionPrice;
               this.dailyTradesCount++;
-              this.io.emit("bot-log", `STRATEGY TRADE COMPLETE: Executed paper buy of ${target.optionSymbol} @ ₹${target.optionPrice} (Underlying: ₹${target.spotPrice.toFixed(2)})`);
+              if (this.paperTradingMode) {
+                this.io.emit("bot-log", `STRATEGY TRADE COMPLETE: Executed paper buy of ${target.optionSymbol} @ ₹${target.optionPrice} (Underlying: ₹${target.spotPrice.toFixed(2)})`);
+              } else {
+                this.io.emit("bot-log", `STRATEGY LIVE ORDER: Placing live order on Kotak Neo for ${target.optionSymbol} @ ₹${target.optionPrice}...`);
+                this.placeLiveKotakOrder(target.symbol, 500, target.optionPrice)
+                  .then((orderId) => {
+                    this.io.emit("bot-log", `STRATEGY LIVE SUCCESS: Filled live order on Kotak Neo! OrderID: ${orderId}`);
+                  })
+                  .catch((err) => {
+                    this.io.emit("bot-log", `STRATEGY LIVE FAILED: Order rejected by Kotak Securities: ${err.message}`);
+                  });
+              }
             }
           }
         }
@@ -321,7 +374,18 @@ export class BreakoutStrategyService {
               target.tradeExecuted = true;
               target.entryPrice = target.optionPrice;
               this.dailyTradesCount++;
-              this.io.emit("bot-log", `STRATEGY TRADE COMPLETE: Executed paper buy of ${target.optionSymbol} @ ₹${target.optionPrice} (Underlying: ₹${target.spotPrice.toFixed(2)})`);
+              if (this.paperTradingMode) {
+                this.io.emit("bot-log", `STRATEGY TRADE COMPLETE: Executed paper buy of ${target.optionSymbol} @ ₹${target.optionPrice} (Underlying: ₹${target.spotPrice.toFixed(2)})`);
+              } else {
+                this.io.emit("bot-log", `STRATEGY LIVE ORDER: Placing live order on Kotak Neo for ${target.optionSymbol} @ ₹${target.optionPrice}...`);
+                this.placeLiveKotakOrder(target.symbol, 500, target.optionPrice)
+                  .then((orderId) => {
+                    this.io.emit("bot-log", `STRATEGY LIVE SUCCESS: Filled live order on Kotak Neo! OrderID: ${orderId}`);
+                  })
+                  .catch((err) => {
+                    this.io.emit("bot-log", `STRATEGY LIVE FAILED: Order rejected by Kotak Securities: ${err.message}`);
+                  });
+              }
             }
           }
         }
@@ -434,7 +498,8 @@ export class BreakoutStrategyService {
       targets: this.targets,
       dailyTradesCount: this.dailyTradesCount,
       maxTradesPerDay: this.maxTradesPerDay,
-      scanTimestamp: this.scanTimestamp
+      scanTimestamp: this.scanTimestamp,
+      paperTradingMode: this.paperTradingMode
     });
   }
 }

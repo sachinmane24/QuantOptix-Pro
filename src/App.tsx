@@ -521,6 +521,18 @@ export default function App() {
   const [isSubmittingCode, setIsSubmittingCode] = useState(false);
   const [showManualCodeInput, setShowManualCodeInput] = useState(false);
 
+  // Kotak Manual Credentials states
+  const [showKotakSetupModal, setShowKotakSetupModal] = useState(false);
+  const [kotakForm, setKotakForm] = useState({
+    consumerKey: '',
+    consumerSecret: '',
+    userId: '',
+    password: '',
+    pin: ''
+  });
+  const [kotakError, setKotakError] = useState('');
+  const [isLoggingInKotakManual, setIsLoggingInKotakManual] = useState(false);
+
   const loadMarketData = async () => {
     try {
       // Sync Kotak Securities broker link state
@@ -708,6 +720,44 @@ export default function App() {
       addLog('SYSTEM', 'KOTAK_ERR', 'WARNING', `Failed to reach Kotak server backend: ${e.message}`);
     } finally {
       setIsAutoLoggingIn(false);
+    }
+  };
+
+  const triggerKotakManualLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!kotakForm.consumerKey || !kotakForm.consumerSecret || !kotakForm.userId || !kotakForm.password || !kotakForm.pin) {
+      setKotakError("All fields are mandatory.");
+      return;
+    }
+
+    setIsLoggingInKotakManual(true);
+    setKotakError('');
+    addLog('SYSTEM', 'KOTAK_MANUAL_HANDSHAKE', 'INFO', `Triggering manual login for Kotak User ID: ${kotakForm.userId}...`);
+
+    try {
+      const res = await fetch('/api/auth/kotak/manual-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(kotakForm)
+      });
+      
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setIsKotakConnected(true);
+        setIsKotakSimulated(false); // Manually logged in to production Neo Gateway
+        setShowKotakSetupModal(false);
+        addLog('SYSTEM', 'KOTAK_READY', 'SUCCESS', `Connected manually to Kotak Securities! Welcome, ${kotakForm.userId}.`);
+        loadMarketData();
+      } else {
+        const errorMsg = data.error || data.message || "Authentication rejected.";
+        setKotakError(errorMsg);
+        addLog('SYSTEM', 'KOTAK_FAIL', 'ERROR', `Manual handshake rejected: ${errorMsg}`);
+      }
+    } catch (err: any) {
+      setKotakError(err.message || "Network exception logging in Kotak.");
+      addLog('SYSTEM', 'KOTAK_ERR', 'ERROR', `Failed to reach Kotak server manual portal: ${err.message}`);
+    } finally {
+      setIsLoggingInKotakManual(false);
     }
   };
 
@@ -1007,7 +1057,8 @@ export default function App() {
           killSwitch: !!data.killSwitch,
           userId: data.userId || user.uid,
           maxConcurrentTrades: data.maxConcurrentTrades || 5,
-          maxCapitalPerTrade: data.maxCapitalPerTrade || 200000
+          maxCapitalPerTrade: data.maxCapitalPerTrade || 200000,
+          paperTradingMode: data.paperTradingMode !== undefined ? data.paperTradingMode : true
         };
         setRiskSettings(sanitized);
         setEditingSettings(sanitized);
@@ -1021,7 +1072,8 @@ export default function App() {
           riskPerTrade: 1, // 1%
           killSwitch: false,
           maxConcurrentTrades: 5,
-          maxCapitalPerTrade: 200000
+          maxCapitalPerTrade: 200000,
+          paperTradingMode: true
         };
         setDoc(doc(db, 'settings', user.uid), initial).catch(err => handleFirestoreError(err, OperationType.CREATE, `settings/${user.uid}`));
         setRiskSettings(initial);
@@ -1041,6 +1093,12 @@ export default function App() {
        setIsAutoTrading(false);
     }
   }, [riskSettings?.killSwitch]);
+
+  useEffect(() => {
+    if (socket && riskSettings) {
+      socket.emit("toggle-breakout-paper-mode", riskSettings.paperTradingMode !== false);
+    }
+  }, [riskSettings?.paperTradingMode, socket]);
 
   const handleLogout = () => {
     setUser(GUEST_USER);
@@ -1475,6 +1533,39 @@ export default function App() {
       // Log detailed calculation for transparency
       addLog(stock.symbol, 'ORDER_INIT', 'INFO', `Order Prep: ${numLots} Lots (Lot Size: ${lotSize}, Total QTY: ${qty}). Estimated Margin: ${formatCurrency(marginRequired)}`);
 
+      let orderId = `PAPER_${Math.floor(Math.random() * 900000 + 100000)}`;
+      let isPaperMode = true;
+
+      if (riskSettings && riskSettings.paperTradingMode === false) {
+        addLog(stock.symbol, 'LIVE_TRADE_INIT', 'INFO', `Placing live order on Kotak Neo for ${stock.symbol}...`);
+        try {
+          const tradeRes = await fetch('/api/trade/place', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              symbol: stock.symbol,
+              qty: qty,
+              type: "2", // Market order
+              side: "BUY", // Always buy on entry
+              price: entry
+            })
+          });
+          const tradeData = await tradeRes.json();
+          if (tradeRes.ok && tradeData.success) {
+            orderId = tradeData.orderId || `KOTAK_${Math.floor(Math.random() * 900000 + 100000)}`;
+            isPaperMode = false;
+            addLog(stock.symbol, 'LIVE_TRADE_SUCCESS', 'SUCCESS', `Live order successfully filled on Kotak Neo! OrderID: ${orderId}`);
+          } else {
+            throw new Error(tradeData.message || tradeData.details || "API rejected order placement.");
+          }
+        } catch (liveErr: any) {
+          const errMsg = `Live trade routing to Kotak Neo failed: ${liveErr.message || liveErr}`;
+          addLog(stock.symbol, 'LIVE_TRADE_FAIL', 'ERROR', errMsg);
+          setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: ${errMsg}`, ...prev]);
+          throw new Error(errMsg);
+        }
+      }
+
       const newPosition = {
         userId: userId,
         symbol: stock.symbol,
@@ -1496,6 +1587,8 @@ export default function App() {
         timestamp: Timestamp.now(),
         prob: analysis.winProbability,
         entryGreeks: rec.greeks,
+        isPaper: isPaperMode,
+        orderId: orderId,
         
         // Captured quantitative metadata for future refining of strategy rules
         strategyType: 'INSTITUTIONAL_CONFLUENCE',
@@ -1522,8 +1615,8 @@ export default function App() {
       const collectionRef = collection(db, 'trades');
       const docRef = await addDoc(collectionRef, newPosition);
       console.log('[DEBUG] FIRESTORE_SUCCESS | ID:', docRef.id);
-      addLog(stock.symbol, 'ORDER_SUCCESS', 'SUCCESS', `Order executed: ${newPosition.qty} units @ ${newPosition.entry}.`);
-      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER EXECUTED: ${rec.fyersSymbol || stock.symbol} ${rec.action} @ ${rec.entryPrice} QTY: ${qty}`, ...prev]);
+      addLog(stock.symbol, 'ORDER_SUCCESS', 'SUCCESS', `Order executed: ${newPosition.qty} units @ ${newPosition.entry} (${isPaperMode ? 'PAPER' : 'LIVE'}).`);
+      setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER EXECUTED (${isPaperMode ? 'PAPER' : 'LIVE'}): ${rec.fyersSymbol || stock.symbol} ${rec.action} @ ${rec.entryPrice} QTY: ${qty}`, ...prev]);
       
       // Notify Telegram
       sendTelegramNotification(formatTradeEntry(newPosition));
@@ -1704,15 +1797,36 @@ export default function App() {
                   <span className="text-[8px] bg-neutral-800 text-neutral-400 px-1 font-bold uppercase rounded">
                     {isKotakSimulated ? "SANDBOX" : "LIVE"}
                   </span>
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setKotakError('');
+                      setShowKotakSetupModal(true);
+                    }}
+                    className="text-neutral-400 hover:text-white ml-1 font-bold"
+                    title="Change Credentials"
+                  >
+                    ⚙️
+                  </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
                   <button 
                     onClick={() => triggerKotakAutoLogin()}
                     disabled={isAutoLoggingIn}
                     className="text-[9px] bg-neutral-800 hover:bg-neutral-700 hover:text-white text-sky-400 py-0.5 px-1.5 transition-all uppercase font-bold"
                   >
-                    {isAutoLoggingIn ? 'CONNECTING...' : 'CONNECT KOTAK'}
+                    {isAutoLoggingIn ? 'CONNECTING...' : 'AUTO'}
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setKotakError('');
+                      setShowKotakSetupModal(true);
+                    }}
+                    className="text-[9px] bg-neon-green/10 hover:bg-neon-green hover:text-black text-neon-green py-0.5 px-1.5 border border-neon-green/20 transition-all uppercase font-bold"
+                  >
+                    ✏️ MANUAL
                   </button>
                 </div>
               )}
@@ -2771,6 +2885,52 @@ export default function App() {
                             {riskSettings?.killSwitch ? "KILL_SWITCH_ACTIVE" : "ARM_KILL_SWITCH"}
                          </button>
                       </div>
+
+                      {/* Algorithmic Execution Mode Panel */}
+                      <div className="p-6 bg-tech-bg border border-tech-border/80 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                        <div className="space-y-1 md:max-w-md">
+                          <span className="text-[8px] font-mono font-bold text-neon-green uppercase tracking-widest block">ALGORITHMIC ROUTING ENGINE MODE</span>
+                          <h4 className="text-sm font-black text-white uppercase tracking-tight flex items-center gap-2">
+                            {editingSettings?.paperTradingMode !== false ? (
+                              <>
+                                <span className="inline-block w-2.5 h-2.5 bg-neon-green rounded-full shadow-[0_0_10px_rgba(0,255,148,0.5)]"></span>
+                                🛡️ SAFETIED SIMULATION (PAPER ACTIVE)
+                              </>
+                            ) : (
+                              <>
+                                <span className="inline-block w-2.5 h-2.5 bg-neon-red rounded-full shadow-[0_0_10px_rgba(255,100,100,0.5)]"></span>
+                                🔥 LIVE NEO PRODUCTION GATEWAY (LIVE DEPLOYED)
+                              </>
+                            )}
+                          </h4>
+                          <p className="text-[10px] text-neutral-500 leading-relaxed">
+                            {editingSettings?.paperTradingMode !== false 
+                              ? "Positions are recorded in a virtual cloud ledger. Local order streams undergo real-time simulation logic based on Fyers queue tickers. Zero capital liability."
+                              : "DANGER: Order execution triggers are converted into active production buy commands and forwarded immediately to Kotak Securities napi.kotaksecurities.com gateway."
+                            }
+                          </p>
+                        </div>
+                        <button
+                          disabled={riskSettings?.killSwitch}
+                          onClick={() => {
+                            const newPaperMode = editingSettings?.paperTradingMode !== false ? false : true;
+                            setEditingSettings(prev => {
+                              if (prev) return { ...prev, paperTradingMode: newPaperMode };
+                              if (riskSettings) return { ...riskSettings, paperTradingMode: newPaperMode };
+                              return null;
+                            });
+                          }}
+                          className={cn(
+                            "px-6 py-3 text-[9px] font-bold uppercase tracking-widest border transition-all self-start md:self-center leading-none",
+                            editingSettings?.paperTradingMode !== false
+                              ? "bg-neutral-950 text-neutral-400 border-neutral-800 hover:border-neon-red hover:text-neon-red"
+                              : "bg-neon-red/10 text-neon-red border-neon-red hover:bg-neon-red hover:text-white",
+                            riskSettings?.killSwitch && "opacity-20 cursor-not-allowed"
+                          )}
+                        >
+                          {editingSettings?.paperTradingMode !== false ? "DEPLOY_LIVE_GATEWAY" : "ENGAGE_PAPER_SHIELD"}
+                        </button>
+                      </div>
                       
                       <div className="grid grid-cols-2 gap-6">
                          {[
@@ -3468,6 +3628,121 @@ export default function App() {
             </div>
          </div>
       </footer>
+
+      {showKotakSetupModal && (
+        <div id="kotak-credentials-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg bg-tech-surface border border-tech-border p-6 font-mono relative shadow-2xl">
+            {/* Header border decor */}
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-sky-500 shadow-[0_0_8px_rgba(14,165,233,0.5)]"></div>
+            
+            <div className="flex justify-between items-center mb-6">
+              <div>
+                <span className="text-[8px] font-bold text-sky-400 uppercase tracking-widest block">SECURE KOTAK NEO GATEWAY</span>
+                <h3 className="text-sm font-black text-white uppercase tracking-tight">LINK BROKER ACCOUNT</h3>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setShowKotakSetupModal(false)}
+                className="text-neutral-500 hover:text-white text-xs border border-tech-border px-1.5 py-0.5 hover:bg-neutral-900 transition-all font-bold"
+              >
+                ESC_CLOSE
+              </button>
+            </div>
+
+            <p className="text-[10px] text-neutral-400 mb-6 leading-relaxed bg-black/40 p-3 border border-tech-border/30">
+              Use your Kotak Securities developer portal keys. These credentials are secure and will be saved to your environment secrets block for live order execution routing.
+            </p>
+
+            <form onSubmit={triggerKotakManualLogin} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Key (API Key)</label>
+                <input 
+                  type="text"
+                  required
+                  placeholder="Enter Kotak Neo Consumer Key"
+                  value={kotakForm.consumerKey}
+                  onChange={(e) => setKotakForm(prev => ({ ...prev, consumerKey: e.target.value }))}
+                  className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Secret (Secret Key)</label>
+                <input 
+                  type="password"
+                  required
+                  placeholder="Enter Kotak Neo Consumer Secret"
+                  value={kotakForm.consumerSecret}
+                  onChange={(e) => setKotakForm(prev => ({ ...prev, consumerSecret: e.target.value }))}
+                  className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1 col-span-1 border-r border-tech-border/30 pr-2">
+                  <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Neo User ID</label>
+                  <input 
+                    type="text"
+                    required
+                    placeholder="User ID"
+                    value={kotakForm.userId}
+                    onChange={(e) => setKotakForm(prev => ({ ...prev, userId: e.target.value }))}
+                    className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                  />
+                </div>
+
+                <div className="space-y-1 col-span-1 border-r border-tech-border/30 pr-2">
+                  <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Password</label>
+                  <input 
+                    type="password"
+                    required
+                    placeholder="Password"
+                    value={kotakForm.password}
+                    onChange={(e) => setKotakForm(prev => ({ ...prev, password: e.target.value }))}
+                    className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                  />
+                </div>
+
+                <div className="space-y-1 col-span-1">
+                  <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">MPIN (4-6 Digit)</label>
+                  <input 
+                    type="password"
+                    required
+                    maxLength={6}
+                    placeholder="MPIN"
+                    value={kotakForm.pin}
+                    onChange={(e) => setKotakForm(prev => ({ ...prev, pin: e.target.value }))}
+                    className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                  />
+                </div>
+              </div>
+
+              {kotakError && (
+                <div className="p-3 bg-red-950/25 border border-red-900/50 text-red-400 text-[10px] leading-relaxed">
+                  ⚠️ AUTH_FAILURE: {kotakError}
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-4">
+                <button 
+                  type="button"
+                  onClick={() => setShowKotakSetupModal(false)}
+                  className="flex-1 bg-transparent hover:bg-neutral-900 text-neutral-400 hover:text-white border border-tech-border py-2.5 text-[10px] font-bold uppercase transition-all"
+                >
+                  ABORT_ACTION
+                </button>
+                <button 
+                  type="submit"
+                  disabled={isLoggingInKotakManual}
+                  className="flex-1 bg-sky-500/10 hover:bg-sky-500 text-sky-400 hover:text-white border border-sky-500/30 py-2.5 text-[10px] font-bold uppercase transition-all flex items-center justify-center gap-2"
+                >
+                  {isLoggingInKotakManual ? 'ESTABLISHING HANDSHAKE...' : 'ESTABLISH BROKER_CHANNEL'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -175,4 +175,5 @@ export interface RiskSettings {
   killSwitch: boolean;
   maxConcurrentTrades?: number;
   maxCapitalPerTrade?: number;
+  paperTradingMode?: boolean;
 }
