@@ -100,7 +100,12 @@ let declines = 0;
  * Automates the login flow for Fyers V3 using TOTP and PIN.
  * This skips the manual redirect flow.
  */
-async function performAutoLogin(force = false) {
+async function performAutoLogin(force = false, isUserInitiated = false) {
+  if (!isUserInitiated) {
+    console.log("[AutoLogin] Background automated auto-login is disabled per user request to prevent account locks.");
+    return { success: false, error: "Background auto-login disabled to prevent account locks." };
+  }
+
   const nowTime = Date.now();
   if (nowTime < fyersRateLimitLockedUntil) {
     const secsLeft = Math.round((fyersRateLimitLockedUntil - nowTime) / 1000);
@@ -484,20 +489,8 @@ async function startServer() {
   }
 
   async function handleSessionError(): Promise<string | null> {
-    if (process.env.FYERS_TOTP_SECRET) {
-      console.log("[Session Recovery] Auth error detected. Attempting to refresh Fyers token...");
-      process.env.FYERS_ACCESS_TOKEN = ""; // clear stale token
-      const result = await performAutoLogin(true).catch(() => null);
-      if (result && result.success && result.token) {
-        console.log("[Session Recovery] Auto-login succeeded! Token successfully refreshed.");
-        try {
-          setupFyersSocket();
-        } catch (e) {
-          console.error("[Session Recovery] Fyers Data Socket setup failed:", e);
-        }
-        return result.token;
-      }
-    }
+    console.log("[Session Recovery] Auth error detected. Session recovery auto-login is disabled per user instructions.");
+    process.env.FYERS_ACCESS_TOKEN = ""; // clear stale token
     return null;
   }
 
@@ -594,7 +587,7 @@ async function startServer() {
       });
     }
 
-    const result = await performAutoLogin().catch(err => ({ success: false, error: err.message }));
+    const result = await performAutoLogin(false, true).catch(err => ({ success: false, error: err.message }));
     if (result && result.success) {
       try { setupFyersSocket(); } catch (e) {}
       res.json({ success: true, message: "Auto-login successful", token: result.token.substring(0, 10) + "..." });
@@ -739,6 +732,7 @@ async function startServer() {
 
     // Manual mappings for well-known stock tickers to provide extreme realism
     const prices: Record<string, number> = {
+      'HYUNDAI': 1800,
       'RELIANCE': 2950,
       'TCS': 3850,
       'INFY': 1560,
@@ -921,55 +915,42 @@ async function startServer() {
     };
   }
 
-  // Proxy for FYERS Data with Caching and Fallbacks
-  app.get("/api/market/quotes", async (req, res) => {
+  // Helper to fetch quotes directly from Fyers API (sequentially or with caching/rate-limit locks and mock fallbacks)
+  async function getDirectQuotes(requestedSymbols: string[]): Promise<any[]> {
     let token = process.env.FYERS_ACCESS_TOKEN;
-    const { symbols } = req.query;
+    const now = Date.now();
 
     if (!token && process.env.FYERS_TOTP_SECRET) {
-      console.log("[Proxy] Token missing but credentials found. Attempting auto-login...");
+      console.log("[DirectQuotes] Token missing but credentials found. Attempting auto-login...");
       const result = await performAutoLogin().catch(() => null);
       token = result?.success ? result.token : undefined;
     }
 
-    console.log(`[Proxy] Fetching quotes for symbols size: ${String(symbols).length}`);
-
-    if (!symbols) {
-      return res.status(400).json({ error: "Missing symbols parameter" });
-    }
-
-    const symbolsStr = Array.isArray(symbols) ? symbols.join(",") : String(symbols);
-    const requestedSymbols = symbolsStr.split(",").map(s => s.trim()).filter(Boolean);
-
-    const now = Date.now();
-
-    // Check if Fyers API is currently rate-limit locked due to Cloudflare block
     if (now < fyersRateLimitLockedUntil) {
       const secsLeft = Math.round((fyersRateLimitLockedUntil - now) / 1000);
-      console.warn(`[Proxy Fyers Rate-Limit Lock] Fyers is under Cloudflare lock. Bypassing request to avoid extending the block. Locked for ${secsLeft}s.`);
-      const allMockOrCached = requestedSymbols.map(sym => {
+      console.warn(`[DirectQuotes Rate-Limit Lock] Fyers is under Cloudflare lock. Bypassing request to avoid extending the block. Locked for ${secsLeft}s.`);
+      return requestedSymbols.map(sym => {
         const cached = quotesCache.get(sym);
         if (cached) return cached.data;
         const mockItem = generateMockQuoteItem(sym);
         quotesCache.set(sym, { timestamp: now - CACHE_TTL + 500, data: mockItem });
         return mockItem;
       });
-      return res.json({ s: "ok", d: allMockOrCached, mock: true, rateLimited: true });
     }
 
     if (!token) {
-      console.log(`[Proxy Mock Mode] Token missing. Generating randomized mock responses for ${requestedSymbols.length} symbols.`);
-      const allMockData = requestedSymbols.map(sym => {
+      return requestedSymbols.map(sym => {
+        const cached = quotesCache.get(sym);
+        if (cached) return cached.data;
         const mockItem = generateMockQuoteItem(sym);
         quotesCache.set(sym, { timestamp: now, data: mockItem });
         return mockItem;
       });
-      return res.json({ s: "ok", d: allMockData, mock: true });
     }
-    
+
     const clientId = process.env.FYERS_CLIENT_ID;
     if (!clientId) {
-      return res.status(500).json({ error: "FYERS_CLIENT_ID not configured" });
+      throw new Error("FYERS_CLIENT_ID not configured");
     }
 
     const symbolsToFetch: string[] = [];
@@ -987,19 +968,15 @@ async function startServer() {
 
     // If completely cached & fresh, return immediately
     if (symbolsToFetch.length === 0) {
-      console.log(`[Proxy Cache] Served all ${requestedSymbols.length} symbols from fresh cache.`);
-      return res.json({ s: "ok", d: responseDataList });
+      return requestedSymbols.map(sym => quotesCache.get(sym)?.data).filter(Boolean);
     }
 
     try {
       // Compute correct Authorization header for Fyers V3
-      let authHeader = token;
-      if (!token.includes(":")) {
-        authHeader = `${clientId}:${token}`;
-      }
+      let authHeader = token.includes(":") ? token : `${clientId}:${token}`;
       
       const fetchSymbolsStr = symbolsToFetch.join(",");
-      console.log(`[Proxy] Requesting ${symbolsToFetch.length} uncached symbols via Fyers API...`);
+      console.log(`[DirectQuotes] Requesting ${symbolsToFetch.length} uncached symbols via Fyers API...`);
       
       let response;
       try {
@@ -1015,16 +992,16 @@ async function startServer() {
         }
       } catch (err: any) {
         if (isCloudflareRateLimit(err)) {
-          console.error("[Proxy Quotes] Cloudflare rate limit (Error 1015) detected on quotes query! Engaging lock for 5 minutes.");
+          console.error("[DirectQuotes] Cloudflare rate limit (Error 1015) detected on quotes query! Engaging lock for 5 minutes.");
           fyersRateLimitLockedUntil = Date.now() + 5 * 60 * 1000;
           throw err;
         }
         if (isAuthError(err)) {
-          console.warn("[Proxy] Fyers authorization error detected in market query. Trying auto-login refresh...");
+          console.warn("[DirectQuotes] Fyers authorization error detected in market query. Trying auto-login refresh...");
           const newToken = await handleSessionError();
           if (newToken) {
             authHeader = newToken.includes(":") ? newToken : `${clientId}:${newToken}`;
-            console.log("[Proxy] Retrying quotes fetch with fresh token...");
+            console.log("[DirectQuotes] Retrying quotes fetch with fresh token...");
             response = await axios.get(`https://api-t1.fyers.in/data/quotes?symbols=${fetchSymbolsStr}`, {
               headers: {
                 'Authorization': authHeader
@@ -1049,20 +1026,17 @@ async function startServer() {
         }
 
         // build combined response keeping requested order
-        const finalData = requestedSymbols.map(sym => {
+        return requestedSymbols.map(sym => {
           const cached = quotesCache.get(sym);
           return cached ? cached.data : null;
         }).filter(Boolean);
-
-        console.log(`[Proxy Success] Responding with ${finalData.length} records (${symbolsToFetch.length} new, ${requestedSymbols.length - symbolsToFetch.length} cached).`);
-        return res.json({ s: "ok", d: finalData });
       } else {
-        console.warn("[Proxy Warning] Fyers API non-ok result:", response.data);
+        console.warn("[DirectQuotes Warning] Fyers API non-ok result:", response.data);
         throw new Error(response.data?.message || "Invalid Fyers API Response");
       }
     } catch (error: any) {
       const errorMsg = error.response?.data?.message || error.message;
-      console.warn(`[Proxy Warning] Fyers query failed (${errorMsg}). Initiating stale-cache or mock fallback.`);
+      console.warn(`[DirectQuotes Warning] Fyers query failed (${errorMsg}). Initiating stale-cache or mock fallback.`);
 
       const fallbackDataList: any[] = [];
       const missedSymbols: string[] = [];
@@ -1083,19 +1057,37 @@ async function startServer() {
           quotesCache.set(sym, { timestamp: now - CACHE_TTL + 500, data: mockItem }); // Stale cache
           fallbackDataList.push(mockItem);
         }
-        console.log(`[Proxy Fallback] Served ${requestedSymbols.length} symbols using cache fallbacks.`);
-        return res.json({ s: "ok", d: fallbackDataList, mock: true });
+        return requestedSymbols.map(sym => quotesCache.get(sym)?.data).filter(Boolean);
       }
 
       // Fallback entirely to mocks if cache is completely empty
-      console.log(`[Proxy Fallback] Cache empty. Generating fully randomized mock response.`);
-      const allMockData = requestedSymbols.map(sym => {
+      console.log(`[DirectQuotes Fallback] Cache empty. Generating fully randomized mock response.`);
+      return requestedSymbols.map(sym => {
         const mockItem = generateMockQuoteItem(sym);
         quotesCache.set(sym, { timestamp: now, data: mockItem });
         return mockItem;
       });
+    }
+  }
 
-      return res.json({ s: "ok", d: allMockData, mock: true });
+  // Proxy for FYERS Data with Caching and Fallbacks
+  app.get("/api/market/quotes", async (req, res) => {
+    const { symbols } = req.query;
+
+    if (!symbols) {
+      return res.status(400).json({ error: "Missing symbols parameter" });
+    }
+
+    const symbolsStr = Array.isArray(symbols) ? symbols.join(",") : String(symbols);
+    const requestedSymbols = symbolsStr.split(",").map(s => s.trim()).filter(Boolean);
+
+    console.log(`[Proxy] Fetching quotes for symbols size: ${requestedSymbols.length}`);
+
+    try {
+      const data = await getDirectQuotes(requestedSymbols);
+      return res.json({ s: "ok", d: data });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
     }
   });
 
@@ -1253,9 +1245,60 @@ async function startServer() {
   app.post("/api/breakout/trigger-scan", express.json(), async (req, res) => {
     if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
     try {
-      const { getLiveStockData } = require("./src/services/nseService");
-      const currentStocks = getLiveStockData();
+      const { FNO_SYMBOLS } = require("./src/services/fnoData");
+      console.log(`[BreakoutStrategy] Triggering active F&O live scan for ${FNO_SYMBOLS.length} stocks...`);
+      
+      const allQuotes: any[] = [];
+      const chunks = [];
+      for (let i = 0; i < FNO_SYMBOLS.length; i += 50) {
+        chunks.push(FNO_SYMBOLS.slice(i, i + 50));
+      }
+
+      for (const chunk of chunks) {
+        const symbolsToFetch = chunk.map((s: string) => `NSE:${s}-EQ`);
+        const quotes = await getDirectQuotes(symbolsToFetch).catch(() => []);
+        if (quotes && Array.isArray(quotes)) {
+          allQuotes.push(...quotes);
+        }
+      }
+
+      let currentStocks = [];
+      if (allQuotes.length > 0) {
+        currentStocks = allQuotes.map(item => {
+          const symbol = item.n.includes('-INDEX') ? item.n : item.n.split(':')[1].split('-')[0];
+          return {
+            symbol,
+            lastPrice: item.v.lp,
+            pChange: item.v.chp
+          };
+        });
+      } else {
+        // Fallback to offline simulator helper if all quotes fetch fails
+        console.warn("[BreakoutStrategy] Active quotes fetch yielded 0 items. Falling back to simulated cluster.");
+        const { getLiveStockData } = require("./src/services/nseService");
+        currentStocks = getLiveStockData();
+      }
+
       await breakoutStrategyService.runBreakoutScan(currentStocks);
+
+      // Dynamically subscribe Fyers websocket connection to newly identified breakout symbols and options!
+      if (breakoutStrategyService.targets && breakoutStrategyService.targets.length > 0 && fyersDataConn && typeof fyersDataConn.subscribe === 'function') {
+        const symbolsToSubscribe: string[] = [];
+        breakoutStrategyService.targets.forEach((target: any) => {
+          symbolsToSubscribe.push(`NSE:${target.symbol}-EQ`);
+          if (target.optionSymbol) {
+             symbolsToSubscribe.push(target.optionSymbol);
+          }
+        });
+        
+        try {
+          console.log(`[Fyers WS] Dynamically subscribing to scanned breakout targets:`, symbolsToSubscribe);
+          fyersDataConn.subscribe(symbolsToSubscribe);
+        } catch (e) {
+          console.warn("[Fyers WS] Failed to dynamically subscribe to scanned targets on socket:", e);
+        }
+      }
+
       res.json({ success: true, targets: breakoutStrategyService.targets });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

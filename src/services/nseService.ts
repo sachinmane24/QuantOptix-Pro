@@ -26,6 +26,7 @@ export function getStockBasePrice(symbol: string): number {
 
   // Manual mappings for well-known stock tickers to provide extreme realism
   const prices: Record<string, number> = {
+    'HYUNDAI': 1800,
     'RELIANCE': 2950,
     'TCS': 3850,
     'INFY': 1560,
