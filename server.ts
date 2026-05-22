@@ -13,6 +13,8 @@ import { BreakoutStrategyService } from "./src/services/breakoutStrategyService"
 import { isMarketOpen, isLoginTime } from "./src/services/marketHoursService";
 import { MarketRegimeService } from "./src/services/marketRegimeService";
 import { MarketRegime, StockData, Trend } from "./src/types";
+import { FNO_SYMBOLS } from "./src/services/fnoData";
+import { getLiveStockData } from "./src/services/nseService";
 
 dotenv.config();
 
@@ -933,7 +935,6 @@ async function startServer() {
   app.post("/api/breakout/trigger-scan", express.json(), async (req, res) => {
     if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
     try {
-      const { FNO_SYMBOLS } = require("./src/services/fnoData");
       console.log(`[BreakoutStrategy] Triggering active F&O live scan for ${FNO_SYMBOLS.length} stocks...`);
       
       const allQuotes: any[] = [];
@@ -962,7 +963,6 @@ async function startServer() {
         });
       } else {
         console.warn("[BreakoutStrategy] Active quotes fetch yielded 0 items. Falling back to simulated cluster.");
-        const { getLiveStockData } = require("./src/services/nseService");
         currentStocks = getLiveStockData();
       }
 
