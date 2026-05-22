@@ -425,9 +425,12 @@ export default function App() {
   }, [positions, monitoredPrices]);
 
   const dailyPnL = realizedPnL + unrealizedPnL;
-  const [isFyersConnected, setIsFyersConnected] = useState(false);
-  const [isKotakConnected, setIsKotakConnected] = useState(false);
-  const [isKotakSimulated, setIsKotakSimulated] = useState(true);
+  const [isDhanConnected, setIsDhanConnected] = useState(false);
+  const [dhanClientId, setDhanClientId] = useState('');
+  const [showDhanSetupModal, setShowDhanSetupModal] = useState(false);
+  const [dhanForm, setDhanForm] = useState({ token: '', clientId: '' });
+  const [dhanError, setDhanError] = useState('');
+  const [isLoggingInDhan, setIsLoggingInDhan] = useState(false);
   const [isSendingTelegram, setIsSendingTelegram] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scannerSignals, setScannerSignals] = useState<any[]>([]);
@@ -539,14 +542,14 @@ export default function App() {
 
   const loadMarketData = async () => {
     try {
-      // Sync Kotak Securities broker link state
+      // Sync Dhan broker link state
       try {
-        const kStatusRes = await fetch('/api/auth/kotak/status');
-        const kStatusData = await kStatusRes.json();
-        setIsKotakConnected(kStatusData.isConnected);
-        setIsKotakSimulated(kStatusData.mode === "simulation");
-      } catch (kErr) {
-        console.error("Failed to query Kotak Securities status:", kErr);
+        const dStatusRes = await fetch('/api/auth/dhan/status');
+        const dStatusData = await dStatusRes.json();
+        setIsDhanConnected(dStatusData.isConnected);
+        setDhanClientId(dStatusData.clientId || "");
+      } catch (dErr) {
+        console.error("Failed to query Dhan status:", dErr);
       }
 
       const marketStatus = isMarketOpen();
@@ -566,10 +569,10 @@ export default function App() {
       
       if (realData) {
         currentStocks = realData;
-        setIsKotakConnected(true);
+        setIsDhanConnected(true);
       } else {
         currentStocks = getLiveStockData();
-        addLog('SYSTEM', 'LIVE_FEED', 'SUCCESS', 'Utilizing high-performance Sandbox / Live Kotak Securities data pipeline');
+        addLog('SYSTEM', 'LIVE_FEED', 'SUCCESS', 'Utilizing high-performance Sandbox / Live Dhan HQ data pipeline');
       }
       
       setStocks(currentStocks);
@@ -675,73 +678,41 @@ export default function App() {
     }
   };
 
-  const triggerKotakAutoLogin = async () => {
-    if (isAutoLoggingIn) return;
-    setIsAutoLoggingIn(true);
-    addLog('SYSTEM', 'KOTAK_HANDSHAKE', 'INFO', 'Connecting to Kotak Securities Neo API...');
-    try {
-      const res = await fetch('/api/auth/kotak/autologin');
-      const data = await res.json();
-      if (data.success) {
-        setIsKotakConnected(true);
-        setIsKotakSimulated(data.mode === "simulation");
-        addLog('SYSTEM', 'KOTAK_READY', 'SUCCESS', `Connected to Kotak Securities! Mode: ${data.mode.toUpperCase()}`);
-        loadMarketData();
-      } else {
-        addLog('SYSTEM', 'KOTAK_FAIL', 'WARNING', `Handshake rejected: ${data.message}`);
-      }
-    } catch (e: any) {
-      console.error("Kotak login failed:", e);
-      addLog('SYSTEM', 'KOTAK_ERR', 'WARNING', `Failed to reach Kotak server backend: ${e.message}`);
-    } finally {
-      setIsAutoLoggingIn(false);
-    }
-  };
-
-  const triggerKotakManualLogin = async (e?: React.FormEvent) => {
+  const triggerDhanConnect = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    
-    if (kotakFormMethod === 'totp') {
-      if (!kotakForm.consumerKey || !kotakForm.mobile || !kotakForm.ucc || !kotakForm.pin || !kotakForm.totpSecret) {
-        setKotakError("All fields (Consumer Key, Mobile, UCC, PIN, and TOTP Secret) are mandatory.");
-        return;
-      }
-    } else {
-      if (!kotakForm.consumerKey || !kotakForm.consumerSecret || !kotakForm.userId || !kotakForm.password || !kotakForm.pin) {
-        setKotakError("All fields are mandatory for Legacy login.");
-        return;
-      }
+    if (!dhanForm.token) {
+      setDhanError("Access Token is mandatory.");
+      return;
     }
 
-    setIsLoggingInKotakManual(true);
-    setKotakError('');
-    const referenceId = kotakFormMethod === 'totp' ? kotakForm.ucc : kotakForm.userId;
-    addLog('SYSTEM', 'KOTAK_MANUAL_HANDSHAKE', 'INFO', `Triggering manual login for Kotak User ID: ${referenceId}...`);
+    setIsLoggingInDhan(true);
+    setDhanError('');
+    addLog('SYSTEM', 'DHAN_CONNECT', 'INFO', `Connecting to Dhan HQ API for Client ID: ${dhanForm.clientId || "Personal Token"}...`);
 
     try {
-      const res = await fetch('/api/auth/kotak/manual-login', {
+      const res = await fetch('/api/auth/dhan/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(kotakForm)
+        body: JSON.stringify(dhanForm)
       });
       
       const data = await res.json();
       if (res.ok && data.success) {
-        setIsKotakConnected(true);
-        setIsKotakSimulated(false); // Manually logged in to production Neo Gateway
-        setShowKotakSetupModal(false);
-        addLog('SYSTEM', 'KOTAK_READY', 'SUCCESS', `Connected manually to Kotak Securities! Welcome, ${referenceId}.`);
+        setIsDhanConnected(true);
+        setDhanClientId(dhanForm.clientId || "Personal Token");
+        setShowDhanSetupModal(false);
+        addLog('SYSTEM', 'DHAN_READY', 'SUCCESS', "Successfully authorized with Dhan Live API!");
         loadMarketData();
       } else {
-        const errorMsg = data.error || data.message || "Authentication rejected.";
-        setKotakError(errorMsg);
-        addLog('SYSTEM', 'KOTAK_FAIL', 'ERROR', `Manual handshake rejected: ${errorMsg}`);
+        const errorMsg = data.message || "Authorization rejected.";
+        setDhanError(errorMsg);
+        addLog('SYSTEM', 'DHAN_FAIL', 'ERROR', `Dhan Handshake rejected: ${errorMsg}`);
       }
     } catch (err: any) {
-      setKotakError(err.message || "Network exception logging in Kotak.");
-      addLog('SYSTEM', 'KOTAK_ERR', 'ERROR', `Failed to reach Kotak server manual portal: ${err.message}`);
+      setDhanError(err.message || "Network exception connecting to Dhan.");
+      addLog('SYSTEM', 'DHAN_ERR', 'ERROR', `Failed to reach Dhan server gateway: ${err.message}`);
     } finally {
-      setIsLoggingInKotakManual(false);
+      setIsLoggingInDhan(false);
     }
   };
 
@@ -1496,7 +1467,7 @@ export default function App() {
       let isPaperMode = true;
 
       if (riskSettings && riskSettings.paperTradingMode === false) {
-        addLog(stock.symbol, 'LIVE_TRADE_INIT', 'INFO', `Placing live order on Kotak Neo for ${stock.symbol}...`);
+        addLog(stock.symbol, 'LIVE_TRADE_INIT', 'INFO', `Placing live order on Dhan for ${stock.symbol}...`);
         try {
           const tradeRes = await fetch('/api/trade/place', {
             method: 'POST',
@@ -1511,14 +1482,14 @@ export default function App() {
           });
           const tradeData = await tradeRes.json();
           if (tradeRes.ok && tradeData.success) {
-            orderId = tradeData.orderId || `KOTAK_${Math.floor(Math.random() * 900000 + 100000)}`;
+            orderId = tradeData.orderId || `DHAN_${Math.floor(Math.random() * 900000 + 100000)}`;
             isPaperMode = false;
-            addLog(stock.symbol, 'LIVE_TRADE_SUCCESS', 'SUCCESS', `Live order successfully filled on Kotak Neo! OrderID: ${orderId}`);
+            addLog(stock.symbol, 'LIVE_TRADE_SUCCESS', 'SUCCESS', `Live order successfully filled on Dhan HQ! OrderID: ${orderId}`);
           } else {
             throw new Error(tradeData.message || tradeData.details || "API rejected order placement.");
           }
         } catch (liveErr: any) {
-          const errMsg = `Live trade routing to Kotak Neo failed: ${liveErr.message || liveErr}`;
+          const errMsg = `Live trade routing to Dhan Live failed: ${liveErr.message || liveErr}`;
           addLog(stock.symbol, 'LIVE_TRADE_FAIL', 'ERROR', errMsg);
           setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] ORDER REJECTED: ${errMsg}`, ...prev]);
           throw new Error(errMsg);
@@ -1749,43 +1720,37 @@ export default function App() {
             </div>
             <div className="w-px h-8 bg-tech-border mx-2"></div>
             <div className="flex items-center gap-3 bg-tech-surface border border-tech-border px-3 py-1 text-[10px] font-mono">
-              <span className="text-neutral-500 uppercase tracking-widest text-[9px]">KOTAK NEO:</span>
-              {isKotakConnected ? (
+              <span className="text-neutral-500 uppercase tracking-widest text-[9px]">DHAN HQ:</span>
+              {isDhanConnected ? (
                 <div className="flex items-center gap-2">
                   <span className="text-neon-green font-bold">CONNECTED</span>
                   <span className="text-[8px] bg-neutral-800 text-neutral-400 px-1 font-bold uppercase rounded">
-                    {isKotakSimulated ? "SANDBOX" : "LIVE"}
+                    {dhanClientId || "Live"}
                   </span>
                   <button 
                     type="button"
                     onClick={() => {
-                      setKotakError('');
-                      setShowKotakSetupModal(true);
+                      setDhanError('');
+                      setShowDhanSetupModal(true);
                     }}
                     className="text-neutral-400 hover:text-white ml-1 font-bold"
-                    title="Change Credentials"
+                    title="Change Dhan Token"
                   >
                     ⚙️
                   </button>
                 </div>
               ) : (
                 <div className="flex items-center gap-1.5">
-                  <button 
-                    onClick={() => triggerKotakAutoLogin()}
-                    disabled={isAutoLoggingIn}
-                    className="text-[9px] bg-neutral-800 hover:bg-neutral-700 hover:text-white text-sky-400 py-0.5 px-1.5 transition-all uppercase font-bold"
-                  >
-                    {isAutoLoggingIn ? 'CONNECTING...' : 'AUTO'}
-                  </button>
+                  <span className="text-neutral-500 font-bold uppercase">OFFLINE</span>
                   <button 
                     type="button"
                     onClick={() => {
-                      setKotakError('');
-                      setShowKotakSetupModal(true);
+                      setDhanError('');
+                      setShowDhanSetupModal(true);
                     }}
                     className="text-[9px] bg-neon-green/10 hover:bg-neon-green hover:text-black text-neon-green py-0.5 px-1.5 border border-neon-green/20 transition-all uppercase font-bold"
                   >
-                    ✏️ MANUAL
+                    🔑 AUTHORIZE
                   </button>
                 </div>
               )}
@@ -3588,20 +3553,20 @@ export default function App() {
          </div>
       </footer>
 
-      {showKotakSetupModal && (
-        <div id="kotak-credentials-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      {showDhanSetupModal && (
+        <div id="dhan-credentials-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="w-full max-w-lg bg-tech-surface border border-tech-border p-6 font-mono relative shadow-2xl">
             {/* Header border decor */}
-            <div className="absolute top-0 left-0 right-0 h-[2px] bg-sky-500 shadow-[0_0_8px_rgba(14,165,233,0.5)]"></div>
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-neon-green shadow-[0_0_8px_rgba(0,255,148,0.5)]"></div>
             
             <div className="flex justify-between items-center mb-6">
               <div>
-                <span className="text-[8px] font-bold text-sky-400 uppercase tracking-widest block">SECURE KOTAK NEO GATEWAY</span>
-                <h3 className="text-sm font-black text-white uppercase tracking-tight">LINK BROKER ACCOUNT</h3>
+                <span className="text-[8px] font-bold text-neon-green uppercase tracking-widest block">SECURE DHAN HQ API</span>
+                <h3 className="text-sm font-black text-white uppercase tracking-tight">LINK DHAN BROKER ACCOUNT</h3>
               </div>
               <button 
                 type="button"
-                onClick={() => setShowKotakSetupModal(false)}
+                onClick={() => setShowDhanSetupModal(false)}
                 className="text-neutral-500 hover:text-white text-xs border border-tech-border px-1.5 py-0.5 hover:bg-neutral-900 transition-all font-bold"
               >
                 ESC_CLOSE
@@ -3609,203 +3574,53 @@ export default function App() {
             </div>
 
             <p className="text-[10px] text-neutral-400 mb-6 leading-relaxed bg-black/40 p-3 border border-tech-border/30">
-              Use your Kotak Securities developer portal keys. These credentials are secure and will be saved to your environment secrets block for live order execution routing.
+              Paste your Dhan HQ Access Token down below. Your token is transmitted securely via backend API queries and never exposed in browser payloads.
             </p>
 
-            {/* Tabs for choosing login method */}
-            <div className="flex border-b border-tech-border mb-4">
-              <button
-                type="button"
-                onClick={() => {
-                  setKotakFormMethod('totp');
-                  setKotakError('');
-                }}
-                className={`flex-1 pb-2 text-[10px] font-bold uppercase transition-all border-b-2 ${
-                  kotakFormMethod === 'totp' ? 'border-sky-500 text-sky-400 font-black' : 'border-transparent text-neutral-500 hover:text-white'
-                }`}
-              >
-                TOTP DYNAMIC (PREFERRED)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setKotakFormMethod('legacy');
-                  setKotakError('');
-                }}
-                className={`flex-1 pb-2 text-[10px] font-bold uppercase transition-all border-b-2 ${
-                  kotakFormMethod === 'legacy' ? 'border-sky-500 text-sky-400 font-black' : 'border-transparent text-neutral-500 hover:text-white'
-                }`}
-              >
-                LEGACY PASSWORD
-              </button>
-            </div>
+            <form onSubmit={triggerDhanConnect} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Dhan Client ID (Optional)</label>
+                <input 
+                  type="text"
+                  placeholder="Enter Dhan Client ID for reference"
+                  value={dhanForm.clientId}
+                  onChange={(e) => setDhanForm(prev => ({ ...prev, clientId: e.target.value }))}
+                  className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
+                />
+              </div>
 
-            <form onSubmit={triggerKotakManualLogin} className="space-y-4">
-              {kotakFormMethod === 'totp' ? (
-                <>
-                  <div className="space-y-1">
-                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Key (API Key)</label>
-                    <input 
-                      type="text"
-                      required
-                      placeholder="Enter Kotak Neo Consumer Key"
-                      value={kotakForm.consumerKey}
-                      onChange={(e) => setKotakForm(prev => ({ ...prev, consumerKey: e.target.value }))}
-                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                    />
-                  </div>
+              <div className="space-y-1">
+                <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Access Token (Mandatory)</label>
+                <textarea 
+                  required
+                  rows={4}
+                  placeholder="Paste your long-lived Dhan Access Token here..."
+                  value={dhanForm.token}
+                  onChange={(e) => setDhanForm(prev => ({ ...prev, token: e.target.value }))}
+                  className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans resize-none"
+                />
+              </div>
 
-                  <div className="space-y-1">
-                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Secret (Optional)</label>
-                    <input 
-                      type="password"
-                      placeholder="Enter Kotak Neo Consumer Secret (Omit for public api key)"
-                      value={kotakForm.consumerSecret}
-                      onChange={(e) => setKotakForm(prev => ({ ...prev, consumerSecret: e.target.value }))}
-                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Registered Mobile</label>
-                      <input 
-                        type="text"
-                        required
-                        placeholder="Eg: +91999996708"
-                        value={kotakForm.mobile}
-                        onChange={(e) => setKotakForm(prev => ({ ...prev, mobile: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Unique Client Code (UCC)</label>
-                      <input 
-                        type="text"
-                        required
-                        placeholder="Eg: ABC12"
-                        value={kotakForm.ucc}
-                        onChange={(e) => setKotakForm(prev => ({ ...prev, ucc: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">MPIN (4 or 6 Digits)</label>
-                      <input 
-                        type="password"
-                        required
-                        maxLength={6}
-                        placeholder="MPIN"
-                        value={kotakForm.pin}
-                        onChange={(e) => setKotakForm(prev => ({ ...prev, pin: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">TOTP Secret Key (Google Auth)</label>
-                      <input 
-                        type="password"
-                        required
-                        placeholder="Secret Key (Base32)"
-                        value={kotakForm.totpSecret}
-                        onChange={(e) => setKotakForm(prev => ({ ...prev, totpSecret: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                      />
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="space-y-1">
-                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Key (API Key)</label>
-                    <input 
-                      type="text"
-                      required
-                      placeholder="Enter Kotak Neo Consumer Key"
-                      value={kotakForm.consumerKey}
-                      onChange={(e) => setKotakForm(prev => ({ ...prev, consumerKey: e.target.value }))}
-                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Secret (Secret Key)</label>
-                    <input 
-                      type="password"
-                      required
-                      placeholder="Enter Kotak Neo Consumer Secret"
-                      value={kotakForm.consumerSecret}
-                      onChange={(e) => setKotakForm(prev => ({ ...prev, consumerSecret: e.target.value }))}
-                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="space-y-1 col-span-1 border-r border-tech-border/30 pr-2">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Neo User ID</label>
-                      <input 
-                        type="text"
-                        required
-                        placeholder="User ID"
-                        value={kotakForm.userId}
-                        onChange={(e) => setKotakForm(prev => ({ ...prev, userId: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                      />
-                    </div>
-
-                    <div className="space-y-1 col-span-1 border-r border-tech-border/30 pr-2">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Password</label>
-                      <input 
-                        type="password"
-                        required
-                        placeholder="Password"
-                        value={kotakForm.password}
-                        onChange={(e) => setKotakForm(prev => ({ ...prev, password: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                      />
-                    </div>
-
-                    <div className="space-y-1 col-span-1">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">MPIN (4-6 Digit)</label>
-                      <input 
-                        type="password"
-                        required
-                        maxLength={6}
-                        placeholder="MPIN"
-                        value={kotakForm.pin}
-                        onChange={(e) => setKotakForm(prev => ({ ...prev, pin: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {kotakError && (
+              {dhanError && (
                 <div className="p-3 bg-red-950/25 border border-red-900/50 text-red-400 text-[10px] leading-relaxed">
-                  ⚠️ AUTH_FAILURE: {kotakError}
+                  ⚠️ AUTH_FAILURE: {dhanError}
                 </div>
               )}
 
               <div className="flex gap-3 pt-4">
                 <button 
                   type="button"
-                  onClick={() => setShowKotakSetupModal(false)}
+                  onClick={() => setShowDhanSetupModal(false)}
                   className="flex-1 bg-transparent hover:bg-neutral-900 text-neutral-400 hover:text-white border border-tech-border py-2.5 text-[10px] font-bold uppercase transition-all"
                 >
                   ABORT_ACTION
                 </button>
                 <button 
                   type="submit"
-                  disabled={isLoggingInKotakManual}
-                  className="flex-1 bg-sky-500/10 hover:bg-sky-500 text-sky-400 hover:text-white border border-sky-500/30 py-2.5 text-[10px] font-bold uppercase transition-all flex items-center justify-center gap-2"
+                  disabled={isLoggingInDhan}
+                  className="flex-1 bg-neon-green/10 hover:bg-neon-green text-neon-green hover:text-black border border-neon-green/30 py-2.5 text-[10px] font-bold uppercase transition-all flex items-center justify-center gap-2"
                 >
-                  {isLoggingInKotakManual ? 'ESTABLISHING HANDSHAKE...' : 'ESTABLISH BROKER_CHANNEL'}
+                  {isLoggingInDhan ? 'VALIDATING CONNECTION...' : 'ESTABLISH DHAN_CHANNEL'}
                 </button>
               </div>
             </form>
