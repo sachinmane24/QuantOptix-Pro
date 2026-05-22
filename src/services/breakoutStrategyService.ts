@@ -73,7 +73,7 @@ export class BreakoutStrategyService {
   }
 
   private async placeLiveKotakOrder(symbol: string, qty: number, price: number): Promise<string> {
-    const consumerKey = process.env.KOTAK_NEO_CONSUMER_KEY;
+    const consumerKey = process.env.KOTAK_CONSUMER_KEY || process.env.KOTAK_NEO_CONSUMER_KEY;
     const token = process.env.KOTAK_NEO_ACCESS_TOKEN;
 
     if (!consumerKey || !token) {

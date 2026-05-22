@@ -528,8 +528,12 @@ export default function App() {
     consumerSecret: '',
     userId: '',
     password: '',
-    pin: ''
+    pin: '',
+    mobile: '',
+    ucc: '',
+    totpSecret: ''
   });
+  const [kotakFormMethod, setKotakFormMethod] = useState<'totp' | 'legacy'>('totp');
   const [kotakError, setKotakError] = useState('');
   const [isLoggingInKotakManual, setIsLoggingInKotakManual] = useState(false);
 
@@ -671,35 +675,6 @@ export default function App() {
     }
   };
 
-  const triggerAutoLogin = async () => {
-    if (isAutoLoggingIn) return;
-    setIsAutoLoggingIn(true);
-    try {
-      const res = await fetch('/api/auth/fyers/autologin');
-      const data = await res.json();
-      if (data.success) {
-        setIsFyersConnected(true);
-        loadMarketData();
-      } else {
-        let errorMsg = data.message || "Auto-login failed";
-        if (data.details && typeof data.details === 'string' && data.details.includes('Account blocked')) {
-          errorMsg = "Your Fyers account is currently BLOCKED. This usually happens after multiple failed login attempts or security triggers. Please log in manually at fyers.in once to unblock your account.";
-        } else if (data.details && typeof data.details === 'object' && JSON.stringify(data.details).includes('Account blocked')) {
-          errorMsg = "Your Fyers account is currently BLOCKED. Please log in manually at fyers.in once to unblock your account.";
-        }
-        
-        const details = data.details ? `\n\nReason: ${typeof data.details === 'object' ? JSON.stringify(data.details) : data.details}` : "";
-        const debug = data.debug_info ? `\n\nEnvironment (Masked):\n- Client: ${data.debug_info.clientId}\n- User: ${data.debug_info.userId}\n- PIN: ${data.debug_info.pin}\n- TOTP: ${data.debug_info.totp}` : "";
-        alert(`${errorMsg}${details}${debug}`);
-      }
-    } catch (e) {
-      console.error("Auto-login request failed:", e);
-      alert("Failed to reach server for auto-login");
-    } finally {
-      setIsAutoLoggingIn(false);
-    }
-  };
-
   const triggerKotakAutoLogin = async () => {
     if (isAutoLoggingIn) return;
     setIsAutoLoggingIn(true);
@@ -725,14 +700,23 @@ export default function App() {
 
   const triggerKotakManualLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!kotakForm.consumerKey || !kotakForm.consumerSecret || !kotakForm.userId || !kotakForm.password || !kotakForm.pin) {
-      setKotakError("All fields are mandatory.");
-      return;
+    
+    if (kotakFormMethod === 'totp') {
+      if (!kotakForm.consumerKey || !kotakForm.mobile || !kotakForm.ucc || !kotakForm.pin || !kotakForm.totpSecret) {
+        setKotakError("All fields (Consumer Key, Mobile, UCC, PIN, and TOTP Secret) are mandatory.");
+        return;
+      }
+    } else {
+      if (!kotakForm.consumerKey || !kotakForm.consumerSecret || !kotakForm.userId || !kotakForm.password || !kotakForm.pin) {
+        setKotakError("All fields are mandatory for Legacy login.");
+        return;
+      }
     }
 
     setIsLoggingInKotakManual(true);
     setKotakError('');
-    addLog('SYSTEM', 'KOTAK_MANUAL_HANDSHAKE', 'INFO', `Triggering manual login for Kotak User ID: ${kotakForm.userId}...`);
+    const referenceId = kotakFormMethod === 'totp' ? kotakForm.ucc : kotakForm.userId;
+    addLog('SYSTEM', 'KOTAK_MANUAL_HANDSHAKE', 'INFO', `Triggering manual login for Kotak User ID: ${referenceId}...`);
 
     try {
       const res = await fetch('/api/auth/kotak/manual-login', {
@@ -746,7 +730,7 @@ export default function App() {
         setIsKotakConnected(true);
         setIsKotakSimulated(false); // Manually logged in to production Neo Gateway
         setShowKotakSetupModal(false);
-        addLog('SYSTEM', 'KOTAK_READY', 'SUCCESS', `Connected manually to Kotak Securities! Welcome, ${kotakForm.userId}.`);
+        addLog('SYSTEM', 'KOTAK_READY', 'SUCCESS', `Connected manually to Kotak Securities! Welcome, ${referenceId}.`);
         loadMarketData();
       } else {
         const errorMsg = data.error || data.message || "Authentication rejected.";
@@ -758,31 +742,6 @@ export default function App() {
       addLog('SYSTEM', 'KOTAK_ERR', 'ERROR', `Failed to reach Kotak server manual portal: ${err.message}`);
     } finally {
       setIsLoggingInKotakManual(false);
-    }
-  };
-
-  const submitManualCode = async () => {
-    if (!manualAuthCode) return;
-    setIsSubmittingCode(true);
-    try {
-      const res = await fetch('/api/auth/fyers/submit-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ auth_code: manualAuthCode })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setIsFyersConnected(true);
-        setShowManualCodeInput(false);
-        loadMarketData();
-      } else {
-        alert(data.message || "Code exchange failed");
-      }
-    } catch (e) {
-      console.error("Code submission failed:", e);
-      alert("Failed to reach server for code exchange");
-    } finally {
-      setIsSubmittingCode(false);
     }
   };
 
@@ -3653,69 +3612,179 @@ export default function App() {
               Use your Kotak Securities developer portal keys. These credentials are secure and will be saved to your environment secrets block for live order execution routing.
             </p>
 
+            {/* Tabs for choosing login method */}
+            <div className="flex border-b border-tech-border mb-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setKotakFormMethod('totp');
+                  setKotakError('');
+                }}
+                className={`flex-1 pb-2 text-[10px] font-bold uppercase transition-all border-b-2 ${
+                  kotakFormMethod === 'totp' ? 'border-sky-500 text-sky-400 font-black' : 'border-transparent text-neutral-500 hover:text-white'
+                }`}
+              >
+                TOTP DYNAMIC (PREFERRED)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setKotakFormMethod('legacy');
+                  setKotakError('');
+                }}
+                className={`flex-1 pb-2 text-[10px] font-bold uppercase transition-all border-b-2 ${
+                  kotakFormMethod === 'legacy' ? 'border-sky-500 text-sky-400 font-black' : 'border-transparent text-neutral-500 hover:text-white'
+                }`}
+              >
+                LEGACY PASSWORD
+              </button>
+            </div>
+
             <form onSubmit={triggerKotakManualLogin} className="space-y-4">
-              <div className="space-y-1">
-                <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Key (API Key)</label>
-                <input 
-                  type="text"
-                  required
-                  placeholder="Enter Kotak Neo Consumer Key"
-                  value={kotakForm.consumerKey}
-                  onChange={(e) => setKotakForm(prev => ({ ...prev, consumerKey: e.target.value }))}
-                  className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                />
-              </div>
+              {kotakFormMethod === 'totp' ? (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Key (API Key)</label>
+                    <input 
+                      type="text"
+                      required
+                      placeholder="Enter Kotak Neo Consumer Key"
+                      value={kotakForm.consumerKey}
+                      onChange={(e) => setKotakForm(prev => ({ ...prev, consumerKey: e.target.value }))}
+                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                    />
+                  </div>
 
-              <div className="space-y-1">
-                <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Secret (Secret Key)</label>
-                <input 
-                  type="password"
-                  required
-                  placeholder="Enter Kotak Neo Consumer Secret"
-                  value={kotakForm.consumerSecret}
-                  onChange={(e) => setKotakForm(prev => ({ ...prev, consumerSecret: e.target.value }))}
-                  className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                />
-              </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Secret (Optional)</label>
+                    <input 
+                      type="password"
+                      placeholder="Enter Kotak Neo Consumer Secret (Omit for public api key)"
+                      value={kotakForm.consumerSecret}
+                      onChange={(e) => setKotakForm(prev => ({ ...prev, consumerSecret: e.target.value }))}
+                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                    />
+                  </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1 col-span-1 border-r border-tech-border/30 pr-2">
-                  <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Neo User ID</label>
-                  <input 
-                    type="text"
-                    required
-                    placeholder="User ID"
-                    value={kotakForm.userId}
-                    onChange={(e) => setKotakForm(prev => ({ ...prev, userId: e.target.value }))}
-                    className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                  />
-                </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Registered Mobile</label>
+                      <input 
+                        type="text"
+                        required
+                        placeholder="Eg: +91999996708"
+                        value={kotakForm.mobile}
+                        onChange={(e) => setKotakForm(prev => ({ ...prev, mobile: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                      />
+                    </div>
 
-                <div className="space-y-1 col-span-1 border-r border-tech-border/30 pr-2">
-                  <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Password</label>
-                  <input 
-                    type="password"
-                    required
-                    placeholder="Password"
-                    value={kotakForm.password}
-                    onChange={(e) => setKotakForm(prev => ({ ...prev, password: e.target.value }))}
-                    className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                  />
-                </div>
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Unique Client Code (UCC)</label>
+                      <input 
+                        type="text"
+                        required
+                        placeholder="Eg: ABC12"
+                        value={kotakForm.ucc}
+                        onChange={(e) => setKotakForm(prev => ({ ...prev, ucc: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                      />
+                    </div>
+                  </div>
 
-                <div className="space-y-1 col-span-1">
-                  <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">MPIN (4-6 Digit)</label>
-                  <input 
-                    type="password"
-                    required
-                    maxLength={6}
-                    placeholder="MPIN"
-                    value={kotakForm.pin}
-                    onChange={(e) => setKotakForm(prev => ({ ...prev, pin: e.target.value }))}
-                    className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
-                  />
-                </div>
-              </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">MPIN (4 or 6 Digits)</label>
+                      <input 
+                        type="password"
+                        required
+                        maxLength={6}
+                        placeholder="MPIN"
+                        value={kotakForm.pin}
+                        onChange={(e) => setKotakForm(prev => ({ ...prev, pin: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">TOTP Secret Key (Google Auth)</label>
+                      <input 
+                        type="password"
+                        required
+                        placeholder="Secret Key (Base32)"
+                        value={kotakForm.totpSecret}
+                        onChange={(e) => setKotakForm(prev => ({ ...prev, totpSecret: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                      />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Key (API Key)</label>
+                    <input 
+                      type="text"
+                      required
+                      placeholder="Enter Kotak Neo Consumer Key"
+                      value={kotakForm.consumerKey}
+                      onChange={(e) => setKotakForm(prev => ({ ...prev, consumerKey: e.target.value }))}
+                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Consumer Secret (Secret Key)</label>
+                    <input 
+                      type="password"
+                      required
+                      placeholder="Enter Kotak Neo Consumer Secret"
+                      value={kotakForm.consumerSecret}
+                      onChange={(e) => setKotakForm(prev => ({ ...prev, consumerSecret: e.target.value }))}
+                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1 col-span-1 border-r border-tech-border/30 pr-2">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Neo User ID</label>
+                      <input 
+                        type="text"
+                        required
+                        placeholder="User ID"
+                        value={kotakForm.userId}
+                        onChange={(e) => setKotakForm(prev => ({ ...prev, userId: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                      />
+                    </div>
+
+                    <div className="space-y-1 col-span-1 border-r border-tech-border/30 pr-2">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Password</label>
+                      <input 
+                        type="password"
+                        required
+                        placeholder="Password"
+                        value={kotakForm.password}
+                        onChange={(e) => setKotakForm(prev => ({ ...prev, password: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                      />
+                    </div>
+
+                    <div className="space-y-1 col-span-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">MPIN (4-6 Digit)</label>
+                      <input 
+                        type="password"
+                        required
+                        maxLength={6}
+                        placeholder="MPIN"
+                        value={kotakForm.pin}
+                        onChange={(e) => setKotakForm(prev => ({ ...prev, pin: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-sky-400 font-sans"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               {kotakError && (
                 <div className="p-3 bg-red-950/25 border border-red-900/50 text-red-400 text-[10px] leading-relaxed">

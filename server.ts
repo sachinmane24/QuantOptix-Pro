@@ -101,234 +101,6 @@ let currentRegime: any = { regime: MarketRegime.SIDEWAYS, description: "Initiali
 let advances = 0;
 let declines = 0;
 
-/**
- * Automates the login flow for Fyers V3 using TOTP and PIN.
- * This skips the manual redirect flow.
- */
-async function performAutoLogin(force = false, isUserInitiated = false) {
-  if (!isUserInitiated) {
-    console.log("[AutoLogin] Background automated auto-login is disabled per user request to prevent account locks.");
-    return { success: false, error: "Background auto-login disabled to prevent account locks." };
-  }
-
-  const nowTime = Date.now();
-  if (nowTime < fyersRateLimitLockedUntil) {
-    const secsLeft = Math.round((fyersRateLimitLockedUntil - nowTime) / 1000);
-    console.warn(`[AutoLogin Blocked] Fyers is under Cloudflare rate-limit lock. Skipping flow to avoid further lockout. Locked for ${secsLeft}s.`);
-    return { success: false, error: `Cloudflare rate limit active. Locked for ${secsLeft}s.` };
-  }
-
-  // If a login attempt is already in progress, DO NOT interrupt it or start another one under any circumstances.
-  if (loginPromise) {
-    console.log("[AutoLogin] Re-using active login flow in progress. Deduping concurrent trigger...");
-    return loginPromise;
-  }
-
-  // Prevent login spamming by checking cooldown
-  const elapsed = nowTime - lastLoginAttemptTime;
-  if (elapsed < LOGIN_COOLDOWN_MS) {
-    const secsLeft = Math.round((LOGIN_COOLDOWN_MS - elapsed) / 1000);
-    if (!lastLoginSucceeded) {
-      console.warn(`[AutoLogin Cooldown Locked] Prior login attempt failed. Blocking retry to prevent rate lockout. Re-try in ${secsLeft}s.`);
-      return { success: false, error: `Auto-login cooldown active (prior attempt failed). Retry in ${secsLeft}s.` };
-    }
-    
-    // If it succeeded previously but someone is forcing it, enforce cooldown
-    if (force) {
-      console.warn(`[AutoLogin Cooldown] Login was attempted too recently (${Math.round(elapsed / 1000)}s ago). Enforcing cooldown to prevent Fyers/Cloudflare rate limits.`);
-      return { success: false, error: `Login cooldown active. Retry in ${secsLeft}s.` };
-    }
-    
-    // If not forced and we have a valid token, we can just return it
-    if (process.env.FYERS_ACCESS_TOKEN) {
-      return { success: true, token: process.env.FYERS_ACCESS_TOKEN };
-    }
-  }
-
-  // Record this login attempt timestamp
-  lastLoginAttemptTime = nowTime;
-  lastLoginSucceeded = false; // reset until this attempt succeeds
-
-  const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
-  const secretKey = process.env.FYERS_SECRET_KEY || process.env.FYERS_SECRET_ID;
-  const userId = process.env.FYERS_USER_ID;
-  const pin = process.env.FYERS_PIN;
-  const totpSecret = process.env.FYERS_TOTP_SECRET || process.env.FYERS_TOTP_SECRI;
-  const appUrl = process.env.APP_URL?.replace(/\/$/, "");
-  
-  // Priority: Secret > Env Defined
-  const redirectUri = process.env.FYERS_REDIRECT_URI || process.env.FYERS_REDIRECT_URL || (appUrl ? `${appUrl}/api/auth/fyers/callback` : "https://www.google.com/");
-
-  if (!clientId || !secretKey || !userId || !pin || !totpSecret || !redirectUri) {
-    const missing = [];
-    if (!clientId) missing.push("FYERS_CLIENT_ID/APP_ID");
-    if (!secretKey) missing.push("FYERS_SECRET_KEY/ID");
-    if (!userId) missing.push("FYERS_USER_ID");
-    if (!pin) missing.push("FYERS_PIN");
-    if (!totpSecret) missing.push("FYERS_TOTP_SECRET/SECRI");
-    if (!redirectUri) missing.push("FYERS_REDIRECT_URI/URL");
-    
-    console.log(`[AutoLogin] Missing automated login credentials: ${missing.join(", ")}. Skipping...`);
-    return { success: false, error: "Missing credentials", missing };
-  }
-
-  loginPromise = (async () => {
-    try {
-      const mask = (s: string | undefined) => s ? `${s.substring(0, 2)}...${s.substring(s.length - 2)} (len: ${s.length})` : "MISSING";
-      console.log(`[AutoLogin] Starting flow for USER: ${userId}, CLIENT: ${clientId}`);
-
-      // Step 0: Handle TOTP boundary (match Python script logic)
-      const now = Math.floor(Date.now() / 1000);
-      const secsRemaining = 30 - (now % 30);
-      if (secsRemaining < 5) {
-        console.log(`[AutoLogin] TOTP near boundary (${secsRemaining}s left). Waiting ${secsRemaining + 1}s...`);
-        await new Promise(r => setTimeout(r, (secsRemaining + 1) * 1000));
-      }
-
-      // Helper for base64
-      const b64 = (s: string) => Buffer.from(s).toString('base64');
-
-      const headers = {
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
-      };
-
-      // Step 1: send_login_otp
-      console.log("[AutoLogin] Step 1: send_login_otp");
-      const r1 = await axios.post("https://api-t2.fyers.in/vagator/v2/send_login_otp", {
-        fy_id: userId,
-        app_id: "2"
-      }, { headers, timeout: 15000 });
-
-      if (r1.data.s !== "ok") {
-        throw new Error(`Step 1 (send_login_otp) failed: ${JSON.stringify(r1.data)}`);
-      }
-      let requestKey = r1.data.request_key;
-      console.log("[AutoLogin] Step 1 OK");
-
-      // Step 2: verify_otp (TOTP)
-      const totpCode = getTOTPToken(totpSecret);
-      if (!totpCode) {
-        throw new Error("Failed to generate TOTP code. authenticator is undefined or error occurred.");
-      }
-      
-      console.log(`[AutoLogin] Step 2: verify_otp (TOTP: ${totpCode})`);
-      const r2 = await axios.post("https://api-t2.fyers.in/vagator/v2/verify_otp", {
-        request_key: requestKey,
-        otp: totpCode
-      }, { headers, timeout: 15000 });
-
-      if (r2.data.s !== "ok") {
-        throw new Error(`Step 2 (verify_otp) failed: ${JSON.stringify(r2.data)}`);
-      }
-      requestKey = r2.data.request_key;
-      console.log("[AutoLogin] Step 2 OK");
-
-      // Step 3: verify_pin_v2 (PIN base64 encoded)
-      console.log("[AutoLogin] Step 3: verify_pin_v2");
-      const r3 = await axios.post("https://api-t2.fyers.in/vagator/v2/verify_pin_v2", {
-        request_key: requestKey,
-        identity_type: "pin",
-        identifier: b64(pin)
-      }, { headers, timeout: 15000 });
-
-      if (r3.data.s !== "ok") {
-        throw new Error(`Step 3 (verify_pin_v2) failed: ${JSON.stringify(r3.data)}`);
-      }
-      const fyersInternalToken = r3.data.data.access_token;
-      console.log("[AutoLogin] Step 3 OK");
-
-      // Step 4: get auth_code from /api/v3/token
-      console.log("[AutoLogin] Step 4: get_auth_code");
-      const appIdOnly = clientId.split("-")[0];
-      const r4 = await axios.post("https://api-t1.fyers.in/api/v3/token", {
-          fyers_id: userId,
-          app_id: appIdOnly,
-          redirect_uri: redirectUri,
-          appType: "100",
-          code_challenge: "",
-          state: "None",
-          scope: "",
-          nonce: "",
-          response_type: "code",
-          create_cookie: true
-      }, {
-        headers: {
-          ...headers,
-          "Authorization": `Bearer ${fyersInternalToken}`
-        },
-        timeout: 15000
-      });
-
-      if (r4.data.s !== "ok") {
-        throw new Error(`Step 4 (get_auth_code) failed: ${JSON.stringify(r4.data)}`);
-      }
-
-      const redirectUrl = r4.data.Url;
-      const urlObj = new URL(redirectUrl);
-      const authCode = urlObj.searchParams.get("auth_code");
-
-      if (!authCode) {
-        throw new Error(`Step 4 Failed: Auth code not found in redirect URL: ${redirectUrl}`);
-      }
-      console.log("[AutoLogin] Step 4 OK");
-
-      // Step 5: exchange auth_code for Access Token
-      console.log("[AutoLogin] Step 5: generate_access_token");
-      const appIdHash = crypto.createHash('sha256').update(`${clientId}:${secretKey}`).digest('hex');
-      const r5 = await axios.post('https://api-t1.fyers.in/api/v3/validate-authcode', {
-        grant_type: 'authorization_code',
-        appIdHash: appIdHash,
-        code: authCode
-      }, { timeout: 15000 });
-
-      if (r5.data.s !== "ok") {
-        throw new Error(`Step 5 (validate_authcode) failed: ${JSON.stringify(r5.data)}`);
-      }
-
-      const finalAccessToken = r5.data.access_token;
-      console.log("[AutoLogin] Success! Fyers session refreshed.");
-      
-      process.env.FYERS_ACCESS_TOKEN = finalAccessToken;
-      lastLoginSucceeded = true;
-      
-      // Notify Telegram if possible
-      const botToken = process.env.TELEGRAM_BOT_TOKEN;
-      const chatId = process.env.TELEGRAM_CHAT_ID;
-      if (botToken && chatId) {
-        axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-          chat_id: chatId,
-          text: `✅ <b>Fyers Auto-Login Successful</b>\nSession refreshed at ${new Date().toLocaleTimeString('en-IN', {timeZone: 'Asia/Kolkata'})} IST.`,
-          parse_mode: 'HTML'
-        }).catch(err => {
-          console.error("[AutoLogin] Telegram notification failed:", err.message);
-        });
-      }
-
-      return { success: true, token: finalAccessToken };
-    } catch (error: any) {
-      lastLoginSucceeded = false;
-      const respData = error.response?.data || error.message;
-      console.error("[AutoLogin] Failed:", respData);
-      
-      if (isCloudflareRateLimit(error)) {
-        console.error("[AutoLogin Rate-Limit] Cloudflare rate limit (Error 1015) detected! Engaging lock for 5 minutes.");
-        fyersRateLimitLockedUntil = Date.now() + 5 * 60 * 1000;
-      }
-      return { success: false, error: respData };
-    } finally {
-      loginPromise = null;
-    }
-  })().catch(err => {
-    console.error("[AutoLogin] IIFE Rejection:", err);
-    return { success: false, error: err.message };
-  });
-
-  return loginPromise;
-}
-
 async function startServer() {
   console.log("[Server] Starting server initialization...");
   const app = express();
@@ -506,34 +278,47 @@ async function startServer() {
     userId?: string;
     password?: string;
     pin?: string;
+    mobile?: string;
+    ucc?: string;
+    totpSecret?: string;
   }): Promise<any> {
-    const consumerKey = customCreds?.consumerKey || process.env.KOTAK_NEO_CONSUMER_KEY;
-    const consumerSecret = customCreds?.consumerSecret || process.env.KOTAK_NEO_CONSUMER_SECRET;
-    const userId = customCreds?.userId || process.env.KOTAK_NEO_USER_ID;
-    const password = customCreds?.password || process.env.KOTAK_NEO_PASSWORD;
-    const pin = customCreds?.pin || process.env.KOTAK_NEO_PIN;
+    const consumerKey = customCreds?.consumerKey || process.env.KOTAK_CONSUMER_KEY || process.env.KOTAK_NEO_CONSUMER_KEY;
+    const consumerSecret = customCreds?.consumerSecret || process.env.KOTAK_CONSUMER_SECRET || process.env.KOTAK_NEO_CONSUMER_SECRET || "";
+    
+    // Check if the new TOTP security variables are provided
+    const mobile = customCreds?.mobile || process.env.KOTAK_MOBILE;
+    const ucc = customCreds?.ucc || process.env.KOTAK_UCC;
+    const pin = customCreds?.pin || process.env.KOTAK_MPIN || process.env.KOTAK_NEO_PIN;
+    const totpSecret = customCreds?.totpSecret || process.env.KOTAK_TOTP_SECRET;
 
-    if (!consumerKey || !consumerSecret || !userId || !password || !pin) {
-      console.warn("[KotakNeo] Missing credentials in environment secrets. Connection refused.");
+    // Check if legacy credentials are provided as fallback
+    const legacyUserId = customCreds?.userId || process.env.KOTAK_NEO_USER_ID;
+    const legacyPassword = customCreds?.password || process.env.KOTAK_NEO_PASSWORD;
+
+    const isTotpFlow = !!(consumerKey && mobile && ucc && pin && totpSecret);
+    const isLegacyFlow = !isTotpFlow && !!(consumerKey && legacyUserId && legacyPassword && pin);
+
+    if (!isTotpFlow && !isLegacyFlow) {
+      console.warn("[KotakNeo] Missing credentials configuration in environment secrets.");
       isKotakNeoConnected = false;
       process.env.KOTAK_NEO_ACCESS_TOKEN = "";
       kotakNeoToken = "";
       return { 
         success: false, 
         mode: "failed", 
-        error: "Kotak Neo API keys or credentials are not configured in your environment secrets. Please verify KOTAK_NEO_CONSUMER_KEY, KOTAK_NEO_CONSUMER_SECRET, KOTAK_NEO_USER_ID, KOTAK_NEO_PASSWORD, and KOTAK_NEO_PIN." 
+        error: "Kotak Neo API keys or credentials are not configured correctly in your environment. Please verify KOTAK_CONSUMER_KEY, KOTAK_MOBILE, KOTAK_UCC, KOTAK_MPIN, and KOTAK_TOTP_SECRET." 
       };
     }
 
     try {
-      console.log(`[KotakNeo] Found Kotak Neo keys. Attempting login for User ${userId}...`);
+      console.log(`[KotakNeo] Initiating authentication flow (Flow: ${isTotpFlow ? "TOTP-based" : "Legacy Password-based"})...`);
       const basicAuth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
       const tokenRes = await axios.post("https://napi.kotaksecurities.com/oauth2/token", "grant_type=client_credentials", {
         headers: {
           "Authorization": `Basic ${basicAuth}`,
           "Content-Type": "application/x-www-form-urlencoded"
         },
-        timeout: 8000
+        timeout: 10000
       });
 
       const rootToken = tokenRes.data.access_token;
@@ -541,38 +326,97 @@ async function startServer() {
         throw new Error("Unable to obtain initial oauth access token from Kotak API.");
       }
 
-      console.log("[KotakNeo] Step 1: OAuth Access Token obtained. Probing User login...");
-      const sessionRes = await axios.post("https://napi.kotaksecurities.com/uploads/user/v1/login", {
-        userId: userId,
-        password: password
-      }, {
-        headers: {
-          "Authorization": `Bearer ${rootToken}`,
-          "Content-Type": "application/json",
-          "neo-api-key": consumerKey
-        },
-        timeout: 8000
-      });
+      let finalToken = "";
 
-      console.log("[KotakNeo] Step 2: Credentials accepted. Verifying MPIN / 4-digit PIN...");
-      const pinRes = await axios.post("https://napi.kotaksecurities.com/uploads/user/v1/login/pin", {
-        userId: userId,
-        pin: pin
-      }, {
-        headers: {
-          "Authorization": `Bearer ${rootToken}`,
-          "Content-Type": "application/json",
-          "neo-api-key": consumerKey
-        },
-        timeout: 8000
-      });
+      if (isTotpFlow) {
+        // Step 1: Generate dynamic TOTP
+        const totpToken = getTOTPToken(totpSecret);
+        if (!totpToken) {
+          throw new Error("Failed to generate dynamic TOTP code from secret. Please check your KOTAK_TOTP_SECRET.");
+        }
+        console.log(`[KotakNeo] Dynamic TOTP token generated: ${totpToken}`);
 
-      const finalToken = pinRes.data?.data?.token || pinRes.data?.token || rootToken;
+        // Format mobile number correctly (prepend +91 if needed)
+        let formattedMobile = mobile.trim();
+        if (!formattedMobile.startsWith("+")) {
+          if (formattedMobile.length === 10) {
+            formattedMobile = "+91" + formattedMobile;
+          } else if (formattedMobile.length === 12 && formattedMobile.startsWith("91")) {
+            formattedMobile = "+" + formattedMobile;
+          }
+        }
+
+        console.log(`[KotakNeo] Step 2: Performing TOTP dynamic login for User: ${ucc}, Mobile: ${formattedMobile}...`);
+        const otpRes = await axios.post("https://napi.kotaksecurities.com/uploads/user/v1/login/otp", {
+          mobilenumber: formattedMobile,
+          ucc: ucc,
+          totp: totpToken
+        }, {
+          headers: {
+            "Authorization": `Bearer ${rootToken}`,
+            "Content-Type": "application/json",
+            "neo-api-key": consumerKey
+          },
+          timeout: 10000
+        });
+
+        const viewToken = otpRes.data?.data?.token || otpRes.data?.token;
+        if (!viewToken) {
+          throw new Error(otpRes.data?.message || "Unable to extract View Session token from Kotak TOTP verification response.");
+        }
+
+        console.log(`[KotakNeo] Step 3: Verifying MPIN dynamically...`);
+        const pinRes = await axios.post("https://napi.kotaksecurities.com/uploads/user/v1/login/pin", {
+          userId: ucc,
+          pin: pin,
+          mpin: pin
+        }, {
+          headers: {
+            "Authorization": `Bearer ${viewToken}`,
+            "Content-Type": "application/json",
+            "neo-api-key": consumerKey
+          },
+          timeout: 10000
+        });
+
+        finalToken = pinRes.data?.data?.token || pinRes.data?.token || viewToken;
+      } else {
+        // Legacy flow
+        console.log(`[KotakNeo] Step 2: Logging in with legacy credentials for User: ${legacyUserId}...`);
+        const sessionRes = await axios.post("https://napi.kotaksecurities.com/uploads/user/v1/login", {
+          userId: legacyUserId,
+          password: legacyPassword
+        }, {
+          headers: {
+            "Authorization": `Bearer ${rootToken}`,
+            "Content-Type": "application/json",
+            "neo-api-key": consumerKey
+          },
+          timeout: 10000
+        });
+
+        console.log(`[KotakNeo] Step 3: Verifying legacy pin...`);
+        const pinRes = await axios.post("https://napi.kotaksecurities.com/uploads/user/v1/login/pin", {
+          userId: legacyUserId,
+          pin: pin,
+          mpin: pin
+        }, {
+          headers: {
+            "Authorization": `Bearer ${rootToken}`,
+            "Content-Type": "application/json",
+            "neo-api-key": consumerKey
+          },
+          timeout: 10000
+        });
+
+        finalToken = pinRes.data?.data?.token || pinRes.data?.token || rootToken;
+      }
+
       process.env.KOTAK_NEO_ACCESS_TOKEN = finalToken;
       kotakNeoToken = finalToken;
       isKotakNeoConnected = true;
 
-      console.log("[KotakNeo] Step 3: MPIN Verified Successfully. Kotak Neo Connected!");
+      console.log("[KotakNeo] MPIN / Handshake Verified Successfully! Kotak Neo Connected.");
       
       if (scannerService && !scannerService.isRunning) {
         scannerService.start().catch((e: any) => console.error("[Scanner Start Error]", e));
@@ -580,7 +424,7 @@ async function startServer() {
       return { success: true, mode: "live", token: finalToken };
     } catch (error: any) {
       const errMsg = error.response?.data?.message || error.message;
-      console.error(`[KotakNeo API Error] login failed: ${errMsg}. Connection refused.`);
+      console.error(`[KotakNeo API Error] Handshake failed: ${errMsg}. Connection refused.`);
       
       isKotakNeoConnected = false;
       process.env.KOTAK_NEO_ACCESS_TOKEN = "";
@@ -613,7 +457,10 @@ async function startServer() {
     );
     
     const kotakKeys = allEnvKeys.filter(k => k.startsWith('KOTAK_'));
-    const isKotakConfigured = !!(process.env.KOTAK_NEO_CONSUMER_KEY && process.env.KOTAK_NEO_CONSUMER_SECRET);
+    const isKotakConfigured = !!(
+      (process.env.KOTAK_CONSUMER_KEY && process.env.KOTAK_MOBILE && process.env.KOTAK_UCC && process.env.KOTAK_MPIN && process.env.KOTAK_TOTP_SECRET) ||
+      (process.env.KOTAK_NEO_CONSUMER_KEY && process.env.KOTAK_NEO_CONSUMER_SECRET)
+    );
 
     res.json({ 
       status: "alive", 
@@ -654,12 +501,16 @@ async function startServer() {
   });
 
   app.post("/api/auth/kotak/manual-login", async (req, res) => {
-    const { consumerKey, consumerSecret, userId, password, pin } = req.body;
+    const { consumerKey, consumerSecret, userId, password, pin, mobile, ucc, totpSecret } = req.body;
     
-    if (!consumerKey || !consumerSecret || !userId || !password || !pin) {
+    // Check if we are using TOTP or legacy
+    const isTotp = !!(consumerKey && mobile && ucc && pin && totpSecret);
+    const isLegacy = !isTotp && !!(consumerKey && userId && password && pin);
+
+    if (!isTotp && !isLegacy) {
       return res.status(400).json({
         success: false,
-        message: "All fields are required: Consumer Key, Consumer Secret, User ID, Password, and MPIN/PIN."
+        message: "Invalid credentials format. Choose TOTP dynamic login or Legacy login by filling necessary fields."
       });
     }
 
@@ -668,15 +519,43 @@ async function startServer() {
       consumerSecret,
       userId,
       password,
-      pin
+      pin,
+      mobile,
+      ucc,
+      totpSecret
     }).catch(err => ({ success: false, error: err.message }));
 
     if (result && result.success) {
-      process.env.KOTAK_NEO_CONSUMER_KEY = consumerKey;
-      process.env.KOTAK_NEO_CONSUMER_SECRET = consumerSecret;
-      process.env.KOTAK_NEO_USER_ID = userId;
-      process.env.KOTAK_NEO_PASSWORD = password;
-      process.env.KOTAK_NEO_PIN = pin;
+      const updates: Record<string, string> = {
+        KOTAK_CONSUMER_KEY: consumerKey || "",
+        KOTAK_CONSUMER_SECRET: consumerSecret || "",
+        KOTAK_MOBILE: mobile || "",
+        KOTAK_UCC: ucc || "",
+        KOTAK_MPIN: pin || "",
+        KOTAK_TOTP_SECRET: totpSecret || ""
+      };
+
+      if (isTotp) {
+        process.env.KOTAK_CONSUMER_KEY = consumerKey;
+        if (consumerSecret) process.env.KOTAK_CONSUMER_SECRET = consumerSecret;
+        process.env.KOTAK_MOBILE = mobile;
+        process.env.KOTAK_UCC = ucc;
+        process.env.KOTAK_MPIN = pin;
+        process.env.KOTAK_TOTP_SECRET = totpSecret;
+      } else {
+        process.env.KOTAK_NEO_CONSUMER_KEY = consumerKey;
+        if (consumerSecret) process.env.KOTAK_NEO_CONSUMER_SECRET = consumerSecret;
+        process.env.KOTAK_NEO_USER_ID = userId;
+        process.env.KOTAK_NEO_PASSWORD = password;
+        process.env.KOTAK_NEO_PIN = pin;
+
+        // Populate updates record for legacy too
+        updates.KOTAK_NEO_CONSUMER_KEY = consumerKey || "";
+        updates.KOTAK_NEO_CONSUMER_SECRET = consumerSecret || "";
+        updates.KOTAK_NEO_USER_ID = userId || "";
+        updates.KOTAK_NEO_PASSWORD = password || "";
+        updates.KOTAK_NEO_PIN = pin || "";
+      }
 
       try {
         const fs = require('fs');
@@ -686,16 +565,9 @@ async function startServer() {
           envContent = fs.readFileSync(envPath, 'utf8');
         }
         
-        const updates: Record<string, string> = {
-          KOTAK_NEO_CONSUMER_KEY: consumerKey,
-          KOTAK_NEO_CONSUMER_SECRET: consumerSecret,
-          KOTAK_NEO_USER_ID: userId,
-          KOTAK_NEO_PASSWORD: password,
-          KOTAK_NEO_PIN: pin
-        };
-
         const lines = envContent.split('\n');
         for (const [key, value] of Object.entries(updates)) {
+          if (!value) continue;
           const index = lines.findIndex(line => line.trim().startsWith(`${key}=`));
           if (index >= 0) {
             lines[index] = `${key}=${value}`;
@@ -750,7 +622,10 @@ async function startServer() {
       isConnected: isKotakNeoConnected,
       mode: isKotakNeoConnected ? "live" : "disconnected",
       tokenPresent: !!process.env.KOTAK_NEO_ACCESS_TOKEN,
-      configured: !!process.env.KOTAK_NEO_CONSUMER_KEY
+      configured: !!(
+        (process.env.KOTAK_CONSUMER_KEY && process.env.KOTAK_MOBILE && process.env.KOTAK_UCC && process.env.KOTAK_MPIN && process.env.KOTAK_TOTP_SECRET) ||
+        process.env.KOTAK_NEO_CONSUMER_KEY
+      )
     });
   });
 
@@ -793,41 +668,10 @@ async function startServer() {
   });
 
   app.get("/api/auth/fyers/autologin", async (req, res) => {
-    const clientId = process.env.FYERS_CLIENT_ID || process.env.FYERS_APP_ID;
-    const userId = process.env.FYERS_USER_ID;
-    const totpSecret = process.env.FYERS_TOTP_SECRET || process.env.FYERS_TOTP_SECRI;
-
-    if (!clientId || !userId || !totpSecret) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Missing credentials for auto-login. Ensure FYERS_CLIENT_ID, FYERS_USER_ID, and FYERS_TOTP_SECRET are set in environment.",
-        debug: {
-          hasClientId: !!clientId,
-          hasUserId: !!userId,
-          hasTotp: !!totpSecret,
-          keysFound: Object.keys(process.env).filter(k => k.startsWith('FYERS_'))
-        }
-      });
-    }
-
-    const result = await performAutoLogin(false, true).catch(err => ({ success: false, error: err.message }));
-    if (result && result.success) {
-      try { setupFyersSocket(); } catch (e) {}
-      res.json({ success: true, message: "Auto-login successful", token: result.token.substring(0, 10) + "..." });
-    } else {
-      const mask = (s: string | undefined) => s ? `${s.substring(0, 2)}...${s.substring(s.length - 2)} (len: ${s.length})` : "MISSING";
-      res.status(500).json({ 
-        success: false, 
-        message: "Auto-login failed.", 
-        details: result?.error || "Unknown reason",
-        debug_info: {
-          clientId: mask(clientId),
-          userId: userId,
-          pin: mask(process.env.FYERS_PIN),
-          totp: mask(totpSecret)
-        }
-      });
-    }
+    res.status(400).json({ 
+      success: false, 
+      message: "Fyers Auto-Login Flow has been deprecated and disabled. Code flows have shifted natively to Kotak Neo."
+    });
   });
 
   app.get("/api/auth/fyers/login", (req, res) => {
@@ -1156,12 +1000,6 @@ async function startServer() {
     }
 
     let token = process.env.FYERS_ACCESS_TOKEN;
-
-    if (!token && process.env.FYERS_TOTP_SECRET) {
-      console.log("[DirectQuotes] Token missing but credentials found. Attempting auto-login...");
-      const result = await performAutoLogin().catch(() => null);
-      token = result?.success ? result.token : undefined;
-    }
 
     if (now < fyersRateLimitLockedUntil) {
       const secsLeft = Math.round((fyersRateLimitLockedUntil - now) / 1000);
@@ -1702,15 +1540,7 @@ async function startServer() {
         io.emit("market-regime-update", regime);
       }
 
-      // 1. Check for Auto-Login at 08:55 AM IST
-      if (isLoginTime(now)) {
-        console.log("[Scheduler] 08:55 AM IST detected. Triggering automated Fyers login...");
-        const result = await performAutoLogin().catch(err => ({ success: false, error: err.message }));
-        if (result && result.success) {
-          console.log("[Scheduler] Automated login successful. Renewing sockets...");
-          setupFyersSocket();
-        }
-      }
+
   
       // 2. Check Market Status & Optimize Services
       const marketStatus = isMarketOpen(now);
@@ -1760,26 +1590,7 @@ async function startServer() {
         console.error("[Server Startup] Failed to execute initial Kotak Neo handshake:", err);
       });
 
-    // Try auto-login AFTER server is listening
-    if (!process.env.FYERS_ACCESS_TOKEN && process.env.FYERS_TOTP_SECRET) {
-      console.log("[Server Startup] Triggering automated login...");
-      performAutoLogin()
-        .then((result) => {
-          if (result && result.success) {
-            console.log("[Server Startup] Automated login successful. Initializing sockets.");
-            try {
-              setupFyersSocket();
-            } catch (e) {
-              console.error("[Server Startup] Deferred socket setup failed:", e);
-            }
-          } else {
-            console.log("[Server Startup] Automated login failed or credentials missing:", result?.error || "Unknown");
-          }
-        })
-        .catch(err => {
-          console.error("[Server Startup] login-then-socket chain failed:", err);
-        });
-    }
+
   });
 }
 
