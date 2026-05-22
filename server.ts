@@ -87,7 +87,7 @@ async function loadDhanScripMaster() {
   } catch (err: any) {
     console.error("[Dhan Warning] Failed to stream scrip master from CDN. Sourcing manual backup index:", err.message);
     const fallbackScrips: Record<string, string> = {
-      "NIFTY50": "2885", "NIFTY": "2885", "BANKNIFTY": "4", "NIFTYBANK": "4",
+      "NIFTY50": "13", "NIFTY": "13", "BANKNIFTY": "25", "NIFTYBANK": "25", "INDIAVIX": "37",
       "RELIANCE": "11536", "HDFCBANK": "1333", "ICICIBANK": "4963", "SBIN": "3045",
       "INFY": "1594", "TCS": "11532", "AXISBANK": "5900", "KOTAKBANK": "1922"
     };
@@ -481,8 +481,40 @@ async function startServer() {
     return null;
   }
 
+  // Helper to check if Indian market (NSE) is open in IST
+  function isMarketOpenIST(date: Date = new Date()): boolean {
+    const istFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+
+    const parts = istFormatter.formatToParts(date);
+    const getPart = (type: string) => parts.find(p => p.type === type)?.value || '';
+
+    const hours = parseInt(getPart('hour'), 10);
+    const minutes = parseInt(getPart('minute'), 10);
+    const dayOfWeek = date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
+
+    if (dayOfWeek === 'Sat' || dayOfWeek === 'Sun') {
+      return false;
+    }
+
+    const currentTime = hours * 100 + minutes;
+    if (currentTime < 915 || currentTime >= 1530) {
+      return false;
+    }
+
+    return true;
+  }
+
   // Helper to generate mock quotes if API completely fails or is limiting
   function generateMockQuoteItem(symbolStr: string): any {
+    const closed = !isMarketOpenIST();
     let basePrice = 500;
     const isIndex = symbolStr.includes('-INDEX');
     
@@ -505,16 +537,18 @@ async function startServer() {
         basePrice = type === 'CE' ? (ceIntrinsic + timeValue + stableNoise) : (peIntrinsic + timeValue + stableNoise);
         if (basePrice < 1.5) basePrice = 1.5;
       } else {
-        basePrice = 45 + (Math.random() * 50);
+        basePrice = 45;
       }
     } else {
       basePrice = getStockBasePrice(symbolStr);
-      basePrice = basePrice * (1 + (Math.random() * 0.02 - 0.01));
+      if (!closed) {
+        basePrice = basePrice * (1 + (Math.random() * 0.02 - 0.01));
+      }
     }
     
-    const ch = (Math.random() * basePrice * 0.02) - (basePrice * 0.01);
-    const chp = (ch / basePrice) * 100;
-    const lp = basePrice + ch;
+    const ch = closed ? 0 : ((Math.random() * basePrice * 0.02) - (basePrice * 0.01));
+    const chp = closed ? 0 : ((ch / basePrice) * 100);
+    const lp = closed ? basePrice : (basePrice + ch);
     
     return {
       n: symbolStr,
@@ -537,6 +571,17 @@ async function startServer() {
 
   // Helper to fetch quotes directly from Dhan API (with backup caching and simulation fallback)
   async function getDirectQuotes(requestedSymbols: string[]): Promise<any[]> {
+    const INDEX_MAPPINGS: Record<string, { securityId: string; segment: string }> = {
+      "NIFTY50-INDEX": { securityId: "13", segment: "IDX_I" },
+      "NIFTYBANK-INDEX": { securityId: "25", segment: "IDX_I" },
+      "INDIAVIX-INDEX": { securityId: "37", segment: "IDX_I" },
+      "NIFTY50": { securityId: "13", segment: "IDX_I" },
+      "NIFTYBANK": { securityId: "25", segment: "IDX_I" },
+      "BANKNIFTY": { securityId: "25", segment: "IDX_I" },
+      "INDIAVIX": { securityId: "37", segment: "IDX_I" },
+      "VIX": { securityId: "37", segment: "IDX_I" }
+    };
+
     const now = Date.now();
     const token = process.env.DHAN_ACCESS_TOKEN;
 
@@ -546,17 +591,20 @@ async function startServer() {
         
         requestedSymbols.forEach(sym => {
           let segment = "NSE_EQ";
-          if (sym.includes("-INDEX")) {
-            segment = "NSE_EQ"; 
-          } else if (sym.includes("NIFTY") || sym.includes("BANKNIFTY") || /CE|PE|PUT/.test(sym)) {
-            segment = "NSE_FNO";
-          }
-          
           let clean = sym.replace("NSE:", "").toUpperCase();
-          let securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase());
           
-          if (!securityId) {
-            securityId = sym.includes("NIFTY50") ? "2885" : "11536";
+          let securityId = "";
+          const iMap = INDEX_MAPPINGS[clean] || INDEX_MAPPINGS[sym.toUpperCase()];
+          if (iMap) {
+            segment = iMap.segment;
+            securityId = iMap.securityId;
+          } else {
+            if (sym.includes("NIFTY") || sym.includes("BANKNIFTY") || /CE|PE|PUT/.test(sym)) {
+              segment = "NSE_FNO";
+            } else {
+              segment = "NSE_EQ";
+            }
+            securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
           }
 
           instruments.push({
@@ -576,21 +624,55 @@ async function startServer() {
           timeout: 4000
         });
 
-        if (response.data && response.data.status === "success" && Array.isArray(response.data.data)) {
+        if (response.data && (response.data.status === "success" || response.data.status === "SUCCESS") && Array.isArray(response.data.data)) {
           return requestedSymbols.map(sym => {
             let clean = sym.replace("NSE:", "").toUpperCase();
-            let securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || (sym.includes("NIFTY50") ? "2885" : "11536");
             
-            const match = response.data.data.find((item: any) => String(item.securityId) === String(securityId));
-            const lp = match ? Number(match.lastPrice) : (generateMockQuoteItem(sym).v.lp);
+            let securityId = "";
+            const iMap = INDEX_MAPPINGS[clean] || INDEX_MAPPINGS[sym.toUpperCase()];
+            if (iMap) {
+              securityId = iMap.securityId;
+            } else {
+              securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
+            }
             
-            const mock = generateMockQuoteItem(sym);
-            mock.v.lp = lp;
-            mock.v.high = Number((lp * 1.01).toFixed(2));
-            mock.v.low = Number((lp * 0.99).toFixed(2));
-            mock.v.open = lp;
-            mock.v.prev_close = lp;
-            return mock;
+            const match = response.data.data.find((item: any) => {
+              if (!item) return false;
+              const targetId = String(securityId);
+              const itemId = String(item.securityId || item.security_id || item.securityId || "");
+              return itemId === targetId;
+            });
+
+            let lp = 0;
+            if (match) {
+              lp = Number(match.lastPrice || match.last_price || match.ltp || match.lp || 0);
+            }
+            
+            if (!lp || isNaN(lp)) {
+              return generateMockQuoteItem(sym);
+            }
+
+            const basePrice = getStockBasePrice(sym);
+            const ch = lp - basePrice;
+            const chp = basePrice > 0 ? (ch / basePrice) * 100 : 0;
+
+            return {
+              n: sym,
+              s: "ok",
+              v: {
+                lp: Number(lp.toFixed(2)),
+                ch: Number(ch.toFixed(2)),
+                chp: Number(chp.toFixed(2)),
+                vol: Math.floor(500000 + Math.random() * 1000000),
+                oi: sym.includes('INDEX') ? 0 : Math.floor(10000 + Math.random() * 50000),
+                oic: 0,
+                avg_price: lp,
+                high: Number((lp * 1.005).toFixed(2)),
+                low: Number((lp * 0.995).toFixed(2)),
+                open: basePrice,
+                prev_close: basePrice
+              }
+            };
           });
         }
       } catch (err: any) {

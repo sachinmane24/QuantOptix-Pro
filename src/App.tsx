@@ -540,7 +540,7 @@ export default function App() {
   const [kotakError, setKotakError] = useState('');
   const [isLoggingInKotakManual, setIsLoggingInKotakManual] = useState(false);
 
-  const loadMarketData = async () => {
+  const loadMarketData = async (forceFetch = false) => {
     try {
       // Sync Dhan broker link state
       try {
@@ -553,7 +553,7 @@ export default function App() {
       }
 
       const marketStatus = isMarketOpen();
-      if (!marketStatus.open) {
+      if (!marketStatus.open && !forceFetch) {
         return;
       }
 
@@ -747,7 +747,7 @@ export default function App() {
     };
     checkServer();
 
-    loadMarketData().catch(e => console.error("[Mount] loadMarketData error:", e));
+    loadMarketData(true).catch(e => console.error("[Mount] loadMarketData error:", e));
     
     // Refresh interval every 5 mins to sync universe and scan
     const refreshInterval = setInterval(() => {
