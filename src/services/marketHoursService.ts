@@ -97,5 +97,5 @@ export function isLoginTime(date: Date = new Date()): boolean {
     hour: '2-digit', 
     minute: '2-digit' 
   });
-  return istTime === '08:55';
+  return istTime === '08:50';
 }

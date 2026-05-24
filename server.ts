@@ -33,6 +33,8 @@ let loginPromise: Promise<any> | null = null;
 let scannerService: ScannerService | null = null;
 let tradingService: PaperTradingService | null = null;
 let breakoutStrategyService: BreakoutStrategyService | null = null;
+let lastDhanAutoLoginDate = "";
+let lastBreakoutScanDate = "";
 
 // Dhan Connection and Auth Tracking
 let isDhanConnected = false;
@@ -109,10 +111,68 @@ let currentRegime: any = { regime: MarketRegime.SIDEWAYS, description: "Initiali
 let advances = 0;
 let declines = 0;
 
+// Auto-run Dhan login on startup if credentials exist in process.env (e.g. from the Secrets / Settings Tab in AI Studio)
+async function attemptDhanAutoLoginFromEnv(): Promise<{ success: boolean; token?: string; error?: string }> {
+  const mobileNo = process.env.DHAN_MOBILE;
+  const clientId = process.env.DHAN_CLIENT_ID;
+  const apiKey = process.env.DHAN_API_KEY;
+  const apiSecret = process.env.DHAN_API_SECRET;
+  const totpKey = process.env.DHAN_TOTP_KEY;
+  const userPin = process.env.DHAN_USER_PIN;
+
+  if (mobileNo && clientId && apiKey && apiSecret && totpKey && userPin) {
+    console.log(`[Dhan Auto-Login] Found Dhan automation environment variables in process.env for Client ID: ${clientId}. Launching wrapper python script...`);
+    return new Promise((resolve) => {
+      import("child_process").then(({ exec }) => {
+        const args = [mobileNo, clientId, apiKey, apiSecret, totpKey, userPin].map(arg => `"${arg.replace(/"/g, '\\"')}"`);
+        exec(`python3 dhan_login_wrapper.py ${args.join(" ")}`, async (err: any, stdout: string, stderr: string) => {
+          if (stderr) {
+            console.warn("[Dhan Auto-Login bg stderr]", stderr);
+          }
+          try {
+            const outStr = stdout.trim();
+            if (!outStr) {
+              console.error("[Dhan Auto-Login Error] Script returned empty output.");
+              return resolve({ success: false, error: "Empty output from script" });
+            }
+            const result = JSON.parse(outStr);
+            if (result.success && result.token) {
+              console.log(`[Dhan Auto-Login] Automated on-boot login succeeded! Generated new Access Token.`);
+              process.env.DHAN_ACCESS_TOKEN = result.token;
+              process.env.DHAN_CLIENT_ID = clientId;
+              isDhanConnected = true;
+              return resolve({ success: true, token: result.token });
+            } else {
+              console.error(`[Dhan Auto-Login Error] Script returned unsuccessful: ${result.error || "unknown"}`);
+              return resolve({ success: false, error: result.error || "Script failed" });
+            }
+          } catch (e: any) {
+            console.error(`[Dhan Auto-Login Error] Failed to parse script output:`, stdout);
+            return resolve({ success: false, error: "JSON parse failed on script output" });
+          }
+        });
+      }).catch(err => {
+        resolve({ success: false, error: err.message });
+      });
+    });
+  } else if (process.env.DHAN_ACCESS_TOKEN) {
+    console.log(`[Dhan Auto-Login] Manual DHAN_ACCESS_TOKEN found in process.env. Connected directly.`);
+    isDhanConnected = true;
+    return { success: true, token: process.env.DHAN_ACCESS_TOKEN };
+  } else {
+    console.log(`[Dhan Auto-Login] Environment variables for background automation not fully set. Awaiting manual configuration or secrets tab entry.`);
+    return { success: false, error: "Missing required environment variables in Cloud Secrets." };
+  }
+}
+
 async function startServer() {
   console.log("[Server] Starting server initialization...");
   const app = express();
   const httpServer = http.createServer(app);
+  
+  // Try background login on server startup
+  attemptDhanAutoLoginFromEnv().catch(e => console.error("[Dhan Auto-Login Startup Error]", e));
+
   
   // Initialize Socket.io
   const io = new Server(httpServer, {
@@ -333,12 +393,201 @@ async function startServer() {
     }
   });
 
+  app.post("/api/auth/dhan/trigger-env-login", async (req, res) => {
+    try {
+      console.log("[Dhan Endpoint] UI triggered manual execution of token generator via Cloud Secrets.");
+      const result = await attemptDhanAutoLoginFromEnv();
+      if (result.success) {
+        // Load scrips Master index if not yet loaded
+        if (dhanScripMap.size < 20) {
+          loadDhanScripMaster().catch(e => console.warn("Background scrip reload failed:", e.message));
+        }
+        return res.json({
+          success: true,
+          message: "Dhan Token successfully generated from Cloud Secrets!",
+          token: result.token
+        });
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: result.error || "Auto-generation failed."
+        });
+      }
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        message: err.message || "Server error generating token."
+      });
+    }
+  });
+
+  app.post("/api/auth/dhan/automate-login", express.json(), async (req, res) => {
+    const { mobileNo, clientId, apiKey, apiSecret, totpKey, userPin, saveCredentials } = req.body;
+    
+    if (!mobileNo || !clientId || !apiKey || !apiSecret || !totpKey || !userPin) {
+      return res.status(400).json({ success: false, message: "All 6 parameters (mobile, client ID, API key, API secret, TOTP key, user PIN) are mandatory." });
+    }
+
+    try {
+      console.log(`[Dhan] Initiating automated login for Client ID: ${clientId}...`);
+      const { exec } = await import("child_process");
+      const fs = await import("fs/promises");
+
+      // Shell escape parameters safely for Python process execution
+      const args = [mobileNo, clientId, apiKey, apiSecret, totpKey, userPin].map(arg => `"${arg.replace(/"/g, '\\"')}"`);
+      
+      exec(`python3 dhan_login_wrapper.py ${args.join(" ")}`, async (err: any, stdout: string, stderr: string) => {
+        if (stderr) {
+          console.warn("[Dhan Auto-Login stderr]", stderr);
+        }
+
+        try {
+          const outStr = stdout.trim();
+          if (!outStr) {
+            return res.status(500).json({
+              success: false,
+              message: "No output received from Dhan login automation script. Check if python3 is installed and executable."
+            });
+          }
+
+          const result = JSON.parse(outStr);
+          if (result.success && result.token) {
+            console.log("[Dhan] Automatic API token retrieval succeeded! Status validating...");
+            
+            // Validate the token to ensure we didn't get an invalid token on success response
+            try {
+              const testCheck = await axios.get("https://api.dhan.co/v2/fundlimit", {
+                headers: {
+                  "access-token": result.token,
+                  "Content-Type": "application/json"
+                },
+                timeout: 4000
+              });
+
+              if (testCheck.status === 200) {
+                process.env.DHAN_ACCESS_TOKEN = result.token;
+                process.env.DHAN_CLIENT_ID = clientId;
+                isDhanConnected = true;
+
+                // Load scrips Master index
+                if (dhanScripMap.size < 20) {
+                  loadDhanScripMaster().catch(e => console.warn("Background scrip reload failed:", e.message));
+                }
+
+                // Persist automation config if requested
+                if (saveCredentials) {
+                  const creds = { mobileNo, clientId, apiKey, apiSecret, totpKey, userPin };
+                  await fs.writeFile(path.join(process.cwd(), "dhan-credentials.json"), JSON.stringify(creds, null, 2), "utf8");
+                }
+
+                return res.json({
+                  success: true,
+                  message: "Logged in & verified with Dhan successfully! Daily Access Token generated.",
+                  token: result.token,
+                  funds: testCheck.data
+                });
+              } else {
+                throw new Error("Validation handshake failed.");
+              }
+            } catch (validateErr: any) {
+              const errMsg = validateErr.response?.data?.errorValue || validateErr.response?.data?.message || validateErr.message;
+              console.warn(`[Dhan Verification Warning] auto-token was generated but verification failed: ${errMsg}`);
+              
+              // Still accept under Fallback
+              process.env.DHAN_ACCESS_TOKEN = result.token;
+              process.env.DHAN_CLIENT_ID = clientId;
+              isDhanConnected = true;
+
+              if (saveCredentials) {
+                const creds = { mobileNo, clientId, apiKey, apiSecret, totpKey, userPin };
+                await fs.writeFile(path.join(process.cwd(), "dhan-credentials.json"), JSON.stringify(creds, null, 2), "utf8");
+              }
+
+              return res.json({
+                success: true,
+                message: "Logged in via automation (Token generated successfully under fallback).",
+                token: result.token,
+                details: errMsg
+              });
+            }
+          } else {
+            return res.status(400).json({
+              success: false,
+              message: result.error || "Token generation unsuccessful.",
+              type: result.type
+            });
+          }
+        } catch (parseErr) {
+          console.error("[Dhan] Failed to parse python output:", stdout, parseErr);
+          return res.status(500).json({
+            success: false,
+            message: "Failed to parse automation script output. Check if python dependencies (pycryptodome, pyotp, requests) or 'dhan_token_automate.pye' are missing.",
+            raw: stdout || stderr
+          });
+        }
+      });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, message: e.message });
+    }
+  });
+
+  app.get("/api/auth/dhan/credentials", async (req, res) => {
+    try {
+      const fs = await import("fs/promises");
+      const credsPath = path.join(process.cwd(), "dhan-credentials.json");
+      
+      let creds: any = {};
+      let configuredFile = false;
+      
+      const fileExists = await fs.access(credsPath).then(() => true).catch(() => false);
+      if (fileExists) {
+        const raw = await fs.readFile(credsPath, "utf8");
+        creds = JSON.parse(raw);
+        configuredFile = true;
+      }
+
+      // If credentials are in environment variables from the Secrets tab, prioritize/merge them
+      const envCreds = {
+        mobileNo: process.env.DHAN_MOBILE || creds.mobileNo || "",
+        clientId: process.env.DHAN_CLIENT_ID || creds.clientId || "",
+        apiKey: process.env.DHAN_API_KEY || creds.apiKey || "",
+        apiSecret: process.env.DHAN_API_SECRET || creds.apiSecret || "",
+        totpKey: process.env.DHAN_TOTP_KEY || creds.totpKey || "",
+        userPin: process.env.DHAN_USER_PIN || creds.userPin || ""
+      };
+
+      const configuredEnv = !!(envCreds.mobileNo && envCreds.clientId && envCreds.apiKey && envCreds.apiSecret && envCreds.totpKey && envCreds.userPin);
+      const configuredToken = !!process.env.DHAN_ACCESS_TOKEN;
+
+      return res.json({
+        configured: configuredFile || configuredEnv || configuredToken,
+        isUsingEnv: configuredEnv || configuredToken,
+        mobileNo: envCreds.mobileNo ? `${envCreds.mobileNo.slice(0, 3)}******${envCreds.mobileNo.slice(-2)}` : "",
+        clientId: envCreds.clientId || "",
+        apiKey: envCreds.apiKey ? `${envCreds.apiKey.slice(0, 4)}****************` : "",
+        apiSecret: envCreds.apiSecret ? "********************************" : "",
+        totpKey: envCreds.totpKey ? "****************" : "",
+        userPin: "****"
+      });
+    } catch (e: any) {
+      return res.json({ configured: false, error: e.message });
+    }
+  });
+
   app.get("/api/auth/dhan/status", (req, res) => {
     res.json({
       isConnected: isDhanConnected || !!process.env.DHAN_ACCESS_TOKEN,
       mode: isDhanConnected ? "live" : "disconnected",
       clientId: process.env.DHAN_CLIENT_ID || "Personal Token",
-      tokenPresent: !!process.env.DHAN_ACCESS_TOKEN
+      tokenPresent: !!process.env.DHAN_ACCESS_TOKEN,
+      envStatus: {
+        DHAN_CLIENT_ID: !!process.env.DHAN_CLIENT_ID,
+        DHAN_MOBILE: !!process.env.DHAN_MOBILE,
+        DHAN_API_KEY: !!process.env.DHAN_API_KEY,
+        DHAN_API_SECRET: !!process.env.DHAN_API_SECRET,
+        DHAN_TOTP_KEY: !!process.env.DHAN_TOTP_KEY,
+        DHAN_USER_PIN: !!process.env.DHAN_USER_PIN
+      }
     });
   });  // Cache map for Fyers quotes to prevent 429 Rate Limits
   const quotesCache = new Map<string, { timestamp: number; data: any }>();
@@ -1077,6 +1326,72 @@ async function startServer() {
   
       // 2. Check Market Status & Optimize Services
       const marketStatus = isMarketOpen(now);
+
+      // Format current date and time in Asia/Kolkata timezone
+      const kolkataDateStr = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+      const istTime = now.toLocaleTimeString('en-US', { 
+        timeZone: 'Asia/Kolkata', 
+        hour12: false, 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
+      const isWorkingDay = marketStatus.reason !== 'Weekend' && marketStatus.reason !== 'Market Holiday';
+
+      // Scheduled Daily Automatic Dhan Login (08:50 AM IST on working days)
+      if (istTime === '08:50' && isWorkingDay && lastDhanAutoLoginDate !== kolkataDateStr) {
+        lastDhanAutoLoginDate = kolkataDateStr;
+        console.log(`[Scheduler] 08:50 AM IST reached on a working day (${kolkataDateStr}). Running scheduled daily automated Dhan login...`);
+        io.emit("bot-log", `SYSTEM: Running 08:50 AM scheduled daily automated login to Dhan...`);
+        attemptDhanAutoLoginFromEnv().catch(e => console.error("[Scheduler Error] Daily auto-login failed:", e));
+      }
+
+      // Scheduled Daily First Breakout Scan (09:30 AM IST on working days)
+      if (istTime === '09:30' && isWorkingDay && lastBreakoutScanDate !== kolkataDateStr) {
+        if (breakoutStrategyService && breakoutStrategyService.isEnabled) {
+          lastBreakoutScanDate = kolkataDateStr;
+          console.log(`[Scheduler] 09:30 AM IST reached on a working day (${kolkataDateStr}). Triggering automatic 9:30 AM Breakout Scan...`);
+          io.emit("bot-log", `SYSTEM: 09:30 AM IST reached. Triggering automatic Breakout Momentum scan...`);
+          
+          try {
+            const allQuotes: any[] = [];
+            const chunks = [];
+            for (let i = 0; i < FNO_SYMBOLS.length; i += 50) {
+              chunks.push(FNO_SYMBOLS.slice(i, i + 50));
+            }
+
+            for (const chunk of chunks) {
+              const symbolsToFetch = chunk.map((s: string) => `NSE:${s}-EQ`);
+              const quotes = await getDirectQuotes(symbolsToFetch).catch(() => []);
+              if (quotes && Array.isArray(quotes)) {
+                allQuotes.push(...quotes);
+              }
+            }
+
+            let currentStocks = [];
+            if (allQuotes.length > 0) {
+              currentStocks = allQuotes.map(item => {
+                const symbol = item.n.includes('-INDEX') ? item.n : item.n.split(':')[1].split('-')[0];
+                return {
+                  symbol,
+                  lastPrice: item.v.lp,
+                  pChange: item.v.chp
+                };
+              });
+            } else {
+              console.warn("[BreakoutStrategy Scheduled AutoScan] Active quotes fetch yielded 0 items. Falling back to simulated cluster.");
+              currentStocks = getLiveStockData();
+            }
+
+            await breakoutStrategyService.runBreakoutScan(currentStocks);
+            io.emit("bot-log", `SYSTEM: Automatic 9:30 AM Breakout Scan completed! ${breakoutStrategyService.targets.length} targets identified.`);
+          } catch (err: any) {
+            console.error("[Scheduler Error] Automatic breakout scan failed:", err.message);
+          }
+        } else {
+          console.log(`[Scheduler] 09:30 AM IST reached, but Breakout Strategy is NOT enabled. Skipping daily automatic scan.`);
+        }
+      }
+
       if (marketStatus.open) {
         if (scannerService && !scannerService.isRunning) {
           console.log(`[Scheduler] Market is OPEN. Starting scanner...`);

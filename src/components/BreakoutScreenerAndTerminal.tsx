@@ -109,11 +109,11 @@ export const BreakoutScreenerAndTerminal: React.FC<BreakoutScreenerAndTerminalPr
             <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-ping" />
             <h2 className="text-sm font-black text-white uppercase tracking-[0.2em] flex items-center gap-2">
               <Flame size={16} className="text-neon-green" />
-              9:45 AM Breakout Pullback Engine
+              9:30 AM Breakout Pullback Engine
             </h2>
           </div>
           <p className="text-neutral-500 font-mono text-[9px] uppercase tracking-wider max-w-xl">
-            Auto-Scans F&O at 09:45 AM for extreme outliers. Tracks pullback down to EMA20 and confirms
+            Auto-Scans F&O at 09:30 AM for extreme outliers. Tracks pullback down to EMA20 and confirms
             long option chain buildup before execution. Max 3 trades daily.
           </p>
         </div>
@@ -181,7 +181,7 @@ export const BreakoutScreenerAndTerminal: React.FC<BreakoutScreenerAndTerminalPr
             )}
           >
             <RefreshCw size={12} className={cn("inline", scanning && "animate-spin")} />
-            {state?.targets && state.targets.length > 0 ? "Reset & Re-Scan F&O" : "Run 9:45 Breakout Scan"}
+            {state?.targets && state.targets.length > 0 ? "Reset & Re-Scan F&O" : "Run 9:30 Breakout Scan"}
           </button>
         </div>
       </div>
@@ -209,7 +209,7 @@ export const BreakoutScreenerAndTerminal: React.FC<BreakoutScreenerAndTerminalPr
           },
           { 
             label: 'Execution Time Window', 
-            val: '9:45 AM - 11:30 AM', 
+            val: '9:30 AM - 11:30 AM', 
             sub: 'Morning Momentum High Probability Period',
             theme: 'border-tech-border'
           },
@@ -227,7 +227,7 @@ export const BreakoutScreenerAndTerminal: React.FC<BreakoutScreenerAndTerminalPr
           <Layers size={32} className="mx-auto text-neutral-600 mb-3 animate-pulse" />
           <h3 className="text-xs font-black text-white uppercase tracking-widest mb-1">No Breakout Targets Loaded</h3>
           <p className="text-[10px] text-neutral-500 font-mono max-w-sm mx-auto mb-4">
-            The strategy scans at 09:45 AM to isolate extreme price breakouts with matching option volume. Click the scan button above to launch candidate detection.
+            The strategy scans at 09:30 AM to isolate extreme price breakouts with matching option volume. Click the scan button above to launch candidate detection.
           </p>
           <button
             onClick={handleScan}
@@ -296,7 +296,7 @@ export const BreakoutScreenerAndTerminal: React.FC<BreakoutScreenerAndTerminalPr
                           </div>
                         </div>
                         <div>
-                          <div className="text-neutral-500 text-[8px] uppercase">9:45 AM Spot</div>
+                          <div className="text-neutral-500 text-[8px] uppercase">9:30 AM Spot</div>
                           <div className="text-neutral-300 font-bold">₹{target.initialSpotPrice.toFixed(2)}</div>
                           <div className="text-[8px] text-neutral-500">Base Reference</div>
                         </div>
@@ -415,7 +415,7 @@ export const BreakoutScreenerAndTerminal: React.FC<BreakoutScreenerAndTerminalPr
                     {state?.targets.filter(t => t.tradeExecuted).length === 0 ? (
                       <tr>
                         <td colSpan={7} className="text-center py-6 text-neutral-500 font-mono text-[9px] uppercase tracking-[0.1em]">
-                          No active trades running under 9:45 AM breakout framework.
+                          No active trades running under 9:30 AM breakout framework.
                         </td>
                       </tr>
                     ) : (
@@ -504,7 +504,7 @@ export const BreakoutScreenerAndTerminal: React.FC<BreakoutScreenerAndTerminalPr
                   <div className="space-y-2">
                     <div className="flex justify-between text-[8px] font-mono text-neutral-500 uppercase tracking-widest">
                       <span>Historical OI Trend Accumulation</span>
-                      <span className="text-neutral-400">9:45 AM - Live</span>
+                      <span className="text-neutral-400">9:30 AM - Live</span>
                     </div>
                     
                     <div className="h-44 w-full bg-tech-bg/50 border border-tech-border flex items-center justify-center relative p-1">

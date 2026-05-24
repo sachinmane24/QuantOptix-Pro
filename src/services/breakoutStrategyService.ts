@@ -7,7 +7,7 @@ export interface BreakoutTarget {
   symbol: string;
   type: 'BULLISH_BREAKOUT' | 'BEARISH_BREAKOUT';
   spotPrice: number;
-  initialSpotPrice: number; // Price at 9:45 AM
+  initialSpotPrice: number; // Price at 9:30 AM
   morningHigh: number;
   morningLow: number;
   pChange: number;
@@ -23,7 +23,7 @@ export interface BreakoutTarget {
   optionType: 'CE' | 'PE';
   strike: number;
   optionPrice: number;
-  optionInitialPrice: number; // Option premium at 9:45 AM
+  optionInitialPrice: number; // Option premium at 9:30 AM
   optionPriceHigh: number;
   optionOI: number;
   optionOIPeak: number;
@@ -108,10 +108,10 @@ export class BreakoutStrategyService {
   }
 
   /**
-   * Run the 9:45 AM scan to select top 2 gainers and top 2 losers
+   * Run the 9:30 AM scan to select top 2 gainers and top 2 losers
    */
   public async runBreakoutScan(allStocks: StockData[]) {
-    console.log("[BreakoutStrategy] Running 9:45 AM Breakout Scan...");
+    console.log("[BreakoutStrategy] Running 9:30 AM Breakout Scan...");
     this.scanTimestamp = Date.now();
     this.targets = [];
 
@@ -168,7 +168,7 @@ export class BreakoutStrategyService {
         optionOIPeak: 150000,
         optionOIBuiltupPercentage: 0,
         historicalOI: [
-          { time: '09:45', oi: 150000, price: initialOptVal }
+          { time: '09:30', oi: 150000, price: initialOptVal }
         ],
         optionDayHigh: initialOptVal * 1.1,
         optionDayLow: initialOptVal * 0.95,
@@ -212,7 +212,7 @@ export class BreakoutStrategyService {
         optionOIPeak: 120000,
         optionOIBuiltupPercentage: 0,
         historicalOI: [
-          { time: '09:45', oi: 120000, price: initialOptVal }
+          { time: '09:30', oi: 120000, price: initialOptVal }
         ],
         optionDayHigh: initialOptVal * 1.1,
         optionDayLow: initialOptVal * 0.95,
@@ -226,7 +226,7 @@ export class BreakoutStrategyService {
 
     console.log(`[BreakoutStrategy] Initialized targeted stocks:`, this.targets.map(t => `${t.symbol} (${t.type})`));
     this.emitStatus();
-    this.io.emit("bot-log", `SYSTEM: Run 9:45 AM Breakout Strategy Scan completed. Isolated ${this.targets.length} targets.`);
+    this.io.emit("bot-log", `SYSTEM: Run 9:30 AM Breakout Strategy Scan completed. Isolated ${this.targets.length} targets.`);
   }
 
   private getStrikeInterval(price: number): number {
@@ -262,7 +262,7 @@ export class BreakoutStrategyService {
       const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 
       if (target.type === 'BULLISH_BREAKOUT') {
-        // Bullish stock: Ideally pulls back to EMA20 / VWAP or below 9:45 AM initial price
+        // Bullish stock: Ideally pulls back to EMA20 / VWAP or below 9:30 AM initial price
         // Target pullback is below EMA20 / vwap or 1% below morning high
         const pullbackThreshold = target.morningHigh * 0.988; // pull down 1.2% from high
         if (!target.pullbackActive && target.spotPrice <= pullbackThreshold) {

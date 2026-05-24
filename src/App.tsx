@@ -427,8 +427,19 @@ export default function App() {
   const dailyPnL = realizedPnL + unrealizedPnL;
   const [isDhanConnected, setIsDhanConnected] = useState(false);
   const [dhanClientId, setDhanClientId] = useState('');
+  const [dhanEnvStatus, setDhanEnvStatus] = useState<Record<string, boolean>>({});
   const [showDhanSetupModal, setShowDhanSetupModal] = useState(false);
   const [dhanForm, setDhanForm] = useState({ token: '', clientId: '' });
+  const [dhanAuthMode, setDhanAuthMode] = useState<'manual' | 'automate'>('automate');
+  const [dhanAutomateForm, setDhanAutomateForm] = useState({
+    mobileNo: '',
+    clientId: '',
+    apiKey: '',
+    apiSecret: '',
+    totpKey: '',
+    userPin: '',
+    saveCredentials: true
+  });
   const [dhanError, setDhanError] = useState('');
   const [isLoggingInDhan, setIsLoggingInDhan] = useState(false);
   const [isSendingTelegram, setIsSendingTelegram] = useState(false);
@@ -524,22 +535,6 @@ export default function App() {
   const [isSubmittingCode, setIsSubmittingCode] = useState(false);
   const [showManualCodeInput, setShowManualCodeInput] = useState(false);
 
-  // Kotak Manual Credentials states
-  const [showKotakSetupModal, setShowKotakSetupModal] = useState(false);
-  const [kotakForm, setKotakForm] = useState({
-    consumerKey: '',
-    consumerSecret: '',
-    userId: '',
-    password: '',
-    pin: '',
-    mobile: '',
-    ucc: '',
-    totpSecret: ''
-  });
-  const [kotakFormMethod, setKotakFormMethod] = useState<'totp' | 'legacy'>('totp');
-  const [kotakError, setKotakError] = useState('');
-  const [isLoggingInKotakManual, setIsLoggingInKotakManual] = useState(false);
-
   const loadMarketData = async (forceFetch = false) => {
     try {
       // Sync Dhan broker link state
@@ -548,6 +543,9 @@ export default function App() {
         const dStatusData = await dStatusRes.json();
         setIsDhanConnected(dStatusData.isConnected);
         setDhanClientId(dStatusData.clientId || "");
+        if (dStatusData.envStatus) {
+          setDhanEnvStatus(dStatusData.envStatus);
+        }
       } catch (dErr) {
         console.error("Failed to query Dhan status:", dErr);
       }
@@ -715,6 +713,105 @@ export default function App() {
       setIsLoggingInDhan(false);
     }
   };
+
+  const triggerDhanAutomateLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!dhanAutomateForm.mobileNo || !dhanAutomateForm.clientId || !dhanAutomateForm.apiKey || !dhanAutomateForm.apiSecret || !dhanAutomateForm.totpKey || !dhanAutomateForm.userPin) {
+      setDhanError("All 6 automation parameters are required.");
+      return;
+    }
+
+    setIsLoggingInDhan(true);
+    setDhanError('');
+    addLog('SYSTEM', 'DHAN_AUTO_LOGIN', 'INFO', `Invoking Dhan automation engine for Client ID: ${dhanAutomateForm.clientId}...`);
+
+    try {
+      const res = await fetch('/api/auth/dhan/automate-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(dhanAutomateForm)
+      });
+      
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setIsDhanConnected(true);
+        setDhanClientId(dhanAutomateForm.clientId);
+        setShowDhanSetupModal(false);
+        addLog('SYSTEM', 'DHAN_AUTO_READY', 'SUCCESS', "Successfully authorized with Dhan Auto Login!");
+        loadMarketData(true);
+      } else {
+        const errorMsg = data.message || "Automation execution rejected.";
+        setDhanError(errorMsg);
+        addLog('SYSTEM', 'DHAN_AUTO_FAIL', 'ERROR', `Dhan Auto-Login rejected: ${errorMsg}`);
+      }
+    } catch (err: any) {
+      setDhanError(err.message || "Network exception invoking automation.");
+      addLog('SYSTEM', 'DHAN_AUTO_ERR', 'ERROR', `Dhan Auto-Login call error: ${err.message}`);
+    } finally {
+      setIsLoggingInDhan(false);
+    }
+  };
+
+  const handleManualEnvLogin = async () => {
+    setIsLoggingInDhan(true);
+    setDhanError('');
+    addLog('SYSTEM', 'DHAN_AUTO_SECRET', 'INFO', 'Connecting & generating Dhan token from Cloud environment secrets...');
+
+    try {
+      const res = await fetch('/api/auth/dhan/trigger-env-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setIsDhanConnected(true);
+        setDhanClientId(dhanEnvStatus?.DHAN_CLIENT_ID || "Cloud Secrets Client");
+        setShowDhanSetupModal(false);
+        addLog('SYSTEM', 'DHAN_AUTO_SECRET_OK', 'SUCCESS', "Dhan Access Token successfully generated from Cloud Secrets!");
+        loadMarketData(true);
+      } else {
+        const errorMsg = data.message || "Failed to generate token.";
+        setDhanError(errorMsg);
+        addLog('SYSTEM', 'DHAN_AUTO_SECRET_FAIL', 'ERROR', `Dhan Secrets handshaking failed: ${errorMsg}`);
+      }
+    } catch (err: any) {
+      setDhanError(err.message || "Network error invoking background login.");
+      addLog('SYSTEM', 'DHAN_AUTO_SECRET_ERR', 'ERROR', `Network error triggering secrets login: ${err.message}`);
+    } finally {
+      setIsLoggingInDhan(false);
+    }
+  };
+
+  // Fetch stored credentials when modal opens
+  useEffect(() => {
+    const fetchDhanCreds = async () => {
+      try {
+        const res = await fetch('/api/auth/dhan/credentials');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.configured) {
+            setDhanAutomateForm({
+              mobileNo: data.mobileNo || '',
+              clientId: data.clientId || '',
+              apiKey: data.apiKey || '',
+              apiSecret: data.apiSecret || '',
+              totpKey: data.totpKey || '',
+              userPin: data.userPin || '',
+              saveCredentials: true
+            });
+            if (!dhanForm.clientId && data.clientId) {
+              setDhanForm(prev => ({ ...prev, clientId: data.clientId }));
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Failed to load Dhan stored credentials:", err);
+      }
+    };
+    if (showDhanSetupModal) {
+      fetchDhanCreds();
+    }
+  }, [showDhanSetupModal]);
 
   // Live re-evaluation for selected stock when data updates
   useEffect(() => {
@@ -1897,7 +1994,7 @@ export default function App() {
                             onClick={handleBreakoutTriggerScan}
                             className="bg-neon-green text-black px-4 py-1.5 text-[9px] font-black uppercase tracking-widest hover:bg-[#00e082] transition-colors shadow-[0_0_10px_rgba(0,255,148,0.3)] animate-pulse"
                           >
-                            TRIGGER 9:45 AM SCAN
+                            TRIGGER 9:30 AM SCAN
                           </button>
                         )}
                       </div>
@@ -1908,7 +2005,7 @@ export default function App() {
                         <Target className="mx-auto text-neutral-700 mb-4 animate-pulse" size={36} />
                         <h3 className="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">Institutional Scan Standby</h3>
                         <p className="text-[11px] text-neutral-500 font-mono max-w-xl mx-auto mb-6">
-                          No active targets tracked. Our algorithmic scanner selects 4 high-beta F&O stocks with strong momentum at 9:45 AM to trade post-pullback breakouts. Trigger a live scan below to begin tracking.
+                          No active targets tracked. Our algorithmic scanner selects 4 high-beta F&O stocks with strong momentum at 9:30 AM to trade post-pullback breakouts. Trigger a live scan below to begin tracking.
                         </p>
                         <button
                           onClick={handleBreakoutTriggerScan}
@@ -2035,7 +2132,7 @@ export default function App() {
                                     </div>
                                     <div className="flex justify-between text-[8px] text-neutral-500 font-mono uppercase">
                                       <span>Day Low: ₹{(target.dayLow || target.morningLow).toFixed(1)}</span>
-                                      <span>9:45 AM Open: ₹{target.initialSpotPrice.toFixed(1)}</span>
+                                      <span>9:30 AM Open: ₹{target.initialSpotPrice.toFixed(1)}</span>
                                       <span>Day High: ₹{(target.dayHigh || target.morningHigh).toFixed(1)}</span>
                                     </div>
                                   </div>
@@ -3555,13 +3652,13 @@ export default function App() {
 
       {showDhanSetupModal && (
         <div id="dhan-credentials-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-lg bg-tech-surface border border-tech-border p-6 font-mono relative shadow-2xl">
+          <div className="w-full max-w-xl bg-tech-surface border border-tech-border p-6 font-mono relative shadow-2xl overflow-y-auto max-h-[90vh]">
             {/* Header border decor */}
             <div className="absolute top-0 left-0 right-0 h-[2px] bg-neon-green shadow-[0_0_8px_rgba(0,255,148,0.5)]"></div>
             
             <div className="flex justify-between items-center mb-6">
               <div>
-                <span className="text-[8px] font-bold text-neon-green uppercase tracking-widest block">SECURE DHAN HQ API</span>
+                <span className="text-[8px] font-bold text-neon-green uppercase tracking-widest block font-mono">SECURE DHAN HQ API</span>
                 <h3 className="text-sm font-black text-white uppercase tracking-tight">LINK DHAN BROKER ACCOUNT</h3>
               </div>
               <button 
@@ -3573,57 +3670,261 @@ export default function App() {
               </button>
             </div>
 
-            <p className="text-[10px] text-neutral-400 mb-6 leading-relaxed bg-black/40 p-3 border border-tech-border/30">
-              Paste your Dhan HQ Access Token down below. Your token is transmitted securely via backend API queries and never exposed in browser payloads.
-            </p>
-
-            <form onSubmit={triggerDhanConnect} className="space-y-4">
-              <div className="space-y-1">
-                <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Dhan Client ID (Optional)</label>
-                <input 
-                  type="text"
-                  placeholder="Enter Dhan Client ID for reference"
-                  value={dhanForm.clientId}
-                  onChange={(e) => setDhanForm(prev => ({ ...prev, clientId: e.target.value }))}
-                  className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
-                />
+            {/* Cloud Secrets Detection Status Card */}
+            <div className="mb-6 p-4 bg-neon-green/5 border border-neon-green/10 rounded">
+              <span className="text-[8px] font-bold text-neon-green uppercase tracking-widest block font-mono mb-2">● CLOUD CONTAINER SECRETS DETECTION (SECRETS TAB)</span>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-[9px]">
+                {Object.entries({
+                  'DHAN_CLIENT_ID': dhanEnvStatus?.DHAN_CLIENT_ID,
+                  'DHAN_MOBILE': dhanEnvStatus?.DHAN_MOBILE,
+                  'DHAN_API_KEY': dhanEnvStatus?.DHAN_API_KEY,
+                  'DHAN_API_SECRET': dhanEnvStatus?.DHAN_API_SECRET,
+                  'DHAN_TOTP_KEY': dhanEnvStatus?.DHAN_TOTP_KEY,
+                  'DHAN_USER_PIN': dhanEnvStatus?.DHAN_USER_PIN,
+                }).map(([key, val]) => (
+                  <div key={key} className="flex items-center gap-1.5 font-mono">
+                    <span className={val ? "text-neon-green font-bold text-[11px]" : "text-neutral-600 font-bold text-[11px]"}>
+                      {val ? "✓" : "✗"}
+                    </span>
+                    <span className={val ? "text-white font-medium" : "text-neutral-500"}>
+                      {key}
+                    </span>
+                  </div>
+                ))}
               </div>
-
-              <div className="space-y-1">
-                <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Access Token (Mandatory)</label>
-                <textarea 
-                  required
-                  rows={4}
-                  placeholder="Paste your long-lived Dhan Access Token here..."
-                  value={dhanForm.token}
-                  onChange={(e) => setDhanForm(prev => ({ ...prev, token: e.target.value }))}
-                  className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans resize-none"
-                />
-              </div>
-
-              {dhanError && (
-                <div className="p-3 bg-red-950/25 border border-red-900/50 text-red-400 text-[10px] leading-relaxed">
-                  ⚠️ AUTH_FAILURE: {dhanError}
+              <p className="text-[9px] text-neutral-400 mt-3 leading-relaxed">
+                {dhanEnvStatus && Object.values(dhanEnvStatus).every(Boolean) 
+                  ? "✅ Great news! Perfect. All 6 required variables are successfully loaded from your container's Secrets environment. The daily automated background login is armed and active."
+                  : "💡 You can enter these credentials either on the cloud container variables (Secrets tab in AI Studio), or use the forms below for temporary browser session override."
+                }
+              </p>
+              {dhanEnvStatus && Object.values(dhanEnvStatus).every(Boolean) && (
+                <div className="mt-4 pt-4 border-t border-neon-green/15 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={handleManualEnvLogin}
+                    disabled={isLoggingInDhan}
+                    className="w-full bg-neon-green/15 text-neon-green border border-neon-green hover:bg-neon-green hover:text-black hover:shadow-[0_0_12px_rgba(0,255,148,0.25)] py-2 text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                  >
+                    {isLoggingInDhan ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin"></span>
+                        GENERATING SESSION TOKEN...
+                      </>
+                    ) : (
+                      "🚀 GENERATE DHAN ACCESS TOKEN FROM SECRETS NOW"
+                    )}
+                  </button>
+                  <p className="text-[8px] text-neutral-500 font-mono text-center">
+                    Runs the python login wrapper script in real-time to authenticate your Dhan broker account.
+                  </p>
                 </div>
               )}
+            </div>
 
-              <div className="flex gap-3 pt-4">
-                <button 
-                  type="button"
-                  onClick={() => setShowDhanSetupModal(false)}
-                  className="flex-1 bg-transparent hover:bg-neutral-900 text-neutral-400 hover:text-white border border-tech-border py-2.5 text-[10px] font-bold uppercase transition-all"
-                >
-                  ABORT_ACTION
-                </button>
-                <button 
-                  type="submit"
-                  disabled={isLoggingInDhan}
-                  className="flex-1 bg-neon-green/10 hover:bg-neon-green text-neon-green hover:text-black border border-neon-green/30 py-2.5 text-[10px] font-bold uppercase transition-all flex items-center justify-center gap-2"
-                >
-                  {isLoggingInDhan ? 'VALIDATING CONNECTION...' : 'ESTABLISH DHAN_CHANNEL'}
-                </button>
-              </div>
-            </form>
+            {/* Authentication Mode Selection Tab */}
+            <div className="grid grid-cols-2 gap-2 mb-6 border-b border-tech-border pb-4">
+              <button
+                type="button"
+                onClick={() => setDhanAuthMode('automate')}
+                className={`py-2 text-[10px] font-black uppercase tracking-wider text-center border transition-all ${
+                  dhanAuthMode === 'automate'
+                    ? 'border-neon-green text-neon-green bg-neon-green/5 shadow-[0_0_8px_rgba(0,255,148,0.1)]'
+                    : 'border-tech-border text-neutral-500 hover:text-white bg-transparent'
+                }`}
+              >
+                AUTOMATED OTP/TOTP LOGIN
+              </button>
+              <button
+                type="button"
+                onClick={() => setDhanAuthMode('manual')}
+                className={`py-2 text-[10px] font-black uppercase tracking-wider text-center border transition-all ${
+                  dhanAuthMode === 'manual'
+                    ? 'border-neon-green text-neon-green bg-neon-green/5 shadow-[0_0_8px_rgba(0,255,148,0.1)]'
+                    : 'border-tech-border text-neutral-500 hover:text-white bg-transparent'
+                }`}
+              >
+                MANUAL ACCESS TOKEN
+              </button>
+            </div>
+
+            {dhanAuthMode === 'manual' ? (
+              <>
+                <p className="text-[10px] text-neutral-400 mb-6 leading-relaxed bg-black/40 p-3 border border-tech-border/30">
+                  Paste your Dhan HQ Access Token down below. Your token is transmitted securely via backend API queries and never exposed in browser payloads.
+                </p>
+
+                <form onSubmit={triggerDhanConnect} className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Dhan Client ID (Optional)</label>
+                    <input 
+                      type="text"
+                      placeholder="Enter Dhan Client ID for reference"
+                      value={dhanForm.clientId}
+                      onChange={(e) => setDhanForm(prev => ({ ...prev, clientId: e.target.value }))}
+                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Access Token (Mandatory)</label>
+                    <textarea 
+                      required
+                      rows={4}
+                      placeholder="Paste your long-lived Dhan Access Token here..."
+                      value={dhanForm.token}
+                      onChange={(e) => setDhanForm(prev => ({ ...prev, token: e.target.value }))}
+                      className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans resize-none"
+                    />
+                  </div>
+
+                  {dhanError && (
+                    <div className="p-3 bg-red-950/25 border border-red-900/50 text-red-400 text-[10px] leading-relaxed">
+                      ⚠️ AUTH_FAILURE: {dhanError}
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-4">
+                    <button 
+                      type="button"
+                      onClick={() => setShowDhanSetupModal(false)}
+                      className="flex-1 bg-transparent hover:bg-neutral-900 text-neutral-400 hover:text-white border border-tech-border py-2.5 text-[10px] font-bold uppercase transition-all"
+                    >
+                      ABORT_ACTION
+                    </button>
+                    <button 
+                      type="submit"
+                      disabled={isLoggingInDhan}
+                      className="flex-1 bg-neon-green/10 hover:bg-neon-green text-neon-green hover:text-black border border-neon-green/30 py-2.5 text-[10px] font-bold uppercase transition-all flex items-center justify-center gap-2"
+                    >
+                      {isLoggingInDhan ? 'VALIDATING CONNECTION...' : 'ESTABLISH DHAN_CHANNEL'}
+                    </button>
+                  </div>
+                </form>
+              </>
+            ) : (
+              <>
+                <p className="text-[10px] text-neutral-400 mb-6 leading-relaxed bg-black/40 p-3 border border-tech-border/30">
+                  Dhan API V2.0 requires dynamic daily token renew. Fill out your credentials below to enable your background Python integration (<code className="text-white">dhan_token_automate</code>) to automatically solve login, generate, and refresh access tokens daily.
+                </p>
+
+                <form onSubmit={triggerDhanAutomateLogin} className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Mobile Number</label>
+                      <input 
+                        type="text"
+                        required
+                        placeholder="e.g. 9876543210"
+                        value={dhanAutomateForm.mobileNo}
+                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, mobileNo: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Dhan Client ID</label>
+                      <input 
+                        type="text"
+                        required
+                        placeholder="e.g. 11002233"
+                        value={dhanAutomateForm.clientId}
+                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, clientId: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">API Key</label>
+                      <input 
+                        type="password"
+                        required
+                        placeholder="Paste your Dhan API Key"
+                        value={dhanAutomateForm.apiKey}
+                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, apiKey: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">API Secret</label>
+                      <input 
+                        type="password"
+                        required
+                        placeholder="Paste your Dhan API Secret"
+                        value={dhanAutomateForm.apiSecret}
+                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, apiSecret: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">TOTP Secret Key</label>
+                      <input 
+                        type="password"
+                        required
+                        placeholder="Google Authenticator Seed Key"
+                        value={dhanAutomateForm.totpKey}
+                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, totpKey: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Dhan PIN / Mobile Passcode</label>
+                      <input 
+                        type="password"
+                        required
+                        placeholder="4 or 6-digit Dhan login PIN"
+                        value={dhanAutomateForm.userPin}
+                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, userPin: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <input 
+                      type="checkbox"
+                      id="save-dhan-automated-creds"
+                      checked={dhanAutomateForm.saveCredentials}
+                      onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, saveCredentials: e.target.checked }))}
+                      className="accent-neon-green cursor-pointer"
+                    />
+                    <label htmlFor="save-dhan-automated-creds" className="text-[9px] text-neutral-400 select-none cursor-pointer uppercase tracking-wider">
+                      Save credentials securely on server for automatic login
+                    </label>
+                  </div>
+
+                  {dhanError && (
+                    <div className="p-3 bg-red-950/25 border border-red-900/50 text-red-400 text-[10px] leading-relaxed">
+                      ⚠️ AUTO_AUTH_FAILURE: {dhanError}
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-4">
+                    <button 
+                      type="button"
+                      onClick={() => setShowDhanSetupModal(false)}
+                      className="flex-1 bg-transparent hover:bg-neutral-900 text-neutral-400 hover:text-white border border-tech-border py-2.5 text-[10px] font-bold uppercase transition-all"
+                    >
+                      ABORT_ACTION
+                    </button>
+                    <button 
+                      type="submit"
+                      disabled={isLoggingInDhan}
+                      className="flex-1 bg-neon-green/10 hover:bg-neon-green text-neon-green hover:text-black border border-neon-green/30 py-2.5 text-[10px] font-bold uppercase transition-all flex items-center justify-center gap-2"
+                    >
+                      {isLoggingInDhan ? 'GENERATING TOKEN...' : 'ESTABLISH AUTO_CHANNEL'}
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
           </div>
         </div>
       )}
