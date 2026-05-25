@@ -31,7 +31,7 @@ def GetAccessToken(client_id, user_pin, totp_key):
             if "accessToken" in data:
                 return {"success": True, "token": data["accessToken"]}
             else:
-                return {"success": False, "error": "API returned 200 but no accessToken in response", "type": "AUTH_FAIL"}
+                return {"success": False, "error": f"API returned 200 but no accessToken in response. Data: {json.dumps(data)}", "type": "AUTH_FAIL"}
         else:
             return {"success": False, "error": f"Dhan API returned {response.status_code}: {response.text}", "type": "AUTH_FAIL"}
     except Exception as e:
