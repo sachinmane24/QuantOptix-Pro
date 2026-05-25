@@ -21,8 +21,13 @@ def main():
     sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
     try:
-        import sourcedefender
-        from dhan_token_automate import GetAccessToken
+        # Try direct import first (bypassing sourcedefender and .pye restrictions)
+        try:
+            from dhan_token_automate import GetAccessToken
+        except ImportError as direct_ie:
+            print(f"Direct import of dhan_token_automate failed, trying with sourcedefender: {direct_ie}", file=sys.stderr)
+            import sourcedefender
+            from dhan_token_automate import GetAccessToken
         
         print("Executing token generation via dhan_token_automate...", file=sys.stderr)
         

@@ -10,6 +10,12 @@ window.addEventListener('error', (event) => {
 
 window.addEventListener('unhandledrejection', (event) => {
   console.error('[Unhandled Rejection]', event.reason);
+  if (event.reason && event.reason.message) {
+    console.error('Rejection Message:', event.reason.message);
+  }
+  if (event.reason && event.reason.stack) {
+    console.error('Rejection Stack:', event.reason.stack);
+  }
 });
 
 const rootElement = document.getElementById('root');

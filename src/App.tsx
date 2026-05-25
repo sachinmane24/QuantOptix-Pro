@@ -700,7 +700,7 @@ export default function App() {
         setDhanClientId(dhanForm.clientId || "Personal Token");
         setShowDhanSetupModal(false);
         addLog('SYSTEM', 'DHAN_READY', 'SUCCESS', "Successfully authorized with Dhan Live API!");
-        loadMarketData();
+        loadMarketData().catch(e => console.error("Dhan manual login data load error:", e));
       } else {
         const errorMsg = data.message || "Authorization rejected.";
         setDhanError(errorMsg);
@@ -716,14 +716,14 @@ export default function App() {
 
   const triggerDhanAutomateLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!dhanAutomateForm.mobileNo || !dhanAutomateForm.clientId || !dhanAutomateForm.apiKey || !dhanAutomateForm.apiSecret || !dhanAutomateForm.totpKey || !dhanAutomateForm.userPin) {
-      setDhanError("All 6 automation parameters are required.");
+    if (!dhanAutomateForm.clientId || !dhanAutomateForm.totpKey || !dhanAutomateForm.userPin) {
+      setDhanError("Client ID, TOTP Key, and PIN are required.");
       return;
     }
 
     setIsLoggingInDhan(true);
     setDhanError('');
-    addLog('SYSTEM', 'DHAN_AUTO_LOGIN', 'INFO', `Invoking Dhan automation engine for Client ID: ${dhanAutomateForm.clientId}...`);
+    addLog('SYSTEM', 'DHAN_LOGIN', 'INFO', `Generating access token via TOTP auto-login for Client ID: ${dhanAutomateForm.clientId}...`);
 
     try {
       const res = await fetch('/api/auth/dhan/automate-login', {
@@ -737,16 +737,16 @@ export default function App() {
         setIsDhanConnected(true);
         setDhanClientId(dhanAutomateForm.clientId);
         setShowDhanSetupModal(false);
-        addLog('SYSTEM', 'DHAN_AUTO_READY', 'SUCCESS', "Successfully authorized with Dhan Auto Login!");
-        loadMarketData(true);
+        addLog('SYSTEM', 'DHAN_READY', 'SUCCESS', "Successfully authorized with Dhan Auto Login!");
+        loadMarketData(true).catch(e => console.error("Auto login data load error:", e));
       } else {
-        const errorMsg = data.message || "Automation execution rejected.";
+        const errorMsg = data.message || "Token generation rejected.";
         setDhanError(errorMsg);
-        addLog('SYSTEM', 'DHAN_AUTO_FAIL', 'ERROR', `Dhan Auto-Login rejected: ${errorMsg}`);
+        addLog('SYSTEM', 'DHAN_FAIL', 'ERROR', `Dhan Token generation rejected: ${errorMsg}`);
       }
     } catch (err: any) {
-      setDhanError(err.message || "Network exception invoking automation.");
-      addLog('SYSTEM', 'DHAN_AUTO_ERR', 'ERROR', `Dhan Auto-Login call error: ${err.message}`);
+      setDhanError(err.message || "Network exception during token generation.");
+      addLog('SYSTEM', 'DHAN_ERR', 'ERROR', `Dhan Token validation call error: ${err.message}`);
     } finally {
       setIsLoggingInDhan(false);
     }
@@ -768,7 +768,7 @@ export default function App() {
         setDhanClientId(dhanEnvStatus?.DHAN_CLIENT_ID || "Cloud Secrets Client");
         setShowDhanSetupModal(false);
         addLog('SYSTEM', 'DHAN_AUTO_SECRET_OK', 'SUCCESS', "Dhan Access Token successfully generated from Cloud Secrets!");
-        loadMarketData(true);
+        loadMarketData(true).catch(e => console.error("Env login data load error:", e));
       } else {
         const errorMsg = data.message || "Failed to generate token.";
         setDhanError(errorMsg);
@@ -1444,8 +1444,8 @@ export default function App() {
       const timeValue = hours * 100 + minutes;
 
       if (timeValue < 930) {
-        addLog(stock.symbol, 'TIMING_BLOCK', 'WARNING', 'Market Watch Period (9:15-9:30). No trades allowed until 9:30 AM.');
-        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] REJECTED: Wait for 9:30 AM institutional confirmation`, ...prev]);
+        addLog(stock.symbol, 'TIMING_BLOCK', 'WARNING', 'Market Watch Period. No initial trades allowed until clear momentum sets up.');
+        setTradeLogs(prev => [`[${new Date().toLocaleTimeString()}] REJECTED: Wait for clear institutional confirmation`, ...prev]);
         tradingLock.current[lockKey] = false;
         return;
       }
@@ -1737,7 +1737,7 @@ export default function App() {
   });
 
   return (
-    <div className="h-screen bg-tech-bg text-tech-text flex flex-col font-sans overflow-hidden selection:bg-neon-green selection:text-black">
+    <div className="min-h-screen min-w-[1280px] bg-tech-bg text-tech-text flex flex-col font-sans overflow-auto selection:bg-neon-green selection:text-black">
       {/* Header */}
       <header className="h-14 border-b border-tech-border px-6 flex items-center justify-between shrink-0 bg-tech-bg">
         <div className="flex items-center gap-10">
@@ -1893,10 +1893,10 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex-1 flex overflow-hidden">
+      <main className="flex-1 flex overflow-auto">
         {/* Dynamic Content Area */}
-        <div className="flex-1 flex flex-col overflow-hidden bg-[#0a0c10]">
-          <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 flex flex-col overflow-auto bg-[#0a0c10]">
+          <div className="flex-1 overflow-auto p-6">
             <AnimatePresence mode="wait">
               {activeView === 'dashboard' && (
                 <motion.div 
@@ -1994,7 +1994,7 @@ export default function App() {
                             onClick={handleBreakoutTriggerScan}
                             className="bg-neon-green text-black px-4 py-1.5 text-[9px] font-black uppercase tracking-widest hover:bg-[#00e082] transition-colors shadow-[0_0_10px_rgba(0,255,148,0.3)] animate-pulse"
                           >
-                            TRIGGER 9:30 AM SCAN
+                            RUN SETUP SCAN
                           </button>
                         )}
                       </div>
@@ -2005,7 +2005,7 @@ export default function App() {
                         <Target className="mx-auto text-neutral-700 mb-4 animate-pulse" size={36} />
                         <h3 className="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-2">Institutional Scan Standby</h3>
                         <p className="text-[11px] text-neutral-500 font-mono max-w-xl mx-auto mb-6">
-                          No active targets tracked. Our algorithmic scanner selects 4 high-beta F&O stocks with strong momentum at 9:30 AM to trade post-pullback breakouts. Trigger a live scan below to begin tracking.
+                          No active targets tracked. Our algorithmic scanner selects up to 10 high-beta F&O stocks with strong morning momentum to trade post-pullback breakouts. Trigger a live scan below to begin tracking.
                         </p>
                         <button
                           onClick={handleBreakoutTriggerScan}
@@ -2015,7 +2015,7 @@ export default function App() {
                         </button>
                       </div>
                     ) : (
-                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-6">
                         {breakoutState.targets.map((target: any) => {
                           const isBullish = target.type === 'BULLISH_BREAKOUT';
                           
@@ -2132,7 +2132,7 @@ export default function App() {
                                     </div>
                                     <div className="flex justify-between text-[8px] text-neutral-500 font-mono uppercase">
                                       <span>Day Low: ₹{(target.dayLow || target.morningLow).toFixed(1)}</span>
-                                      <span>9:30 AM Open: ₹{target.initialSpotPrice.toFixed(1)}</span>
+                                      <span>Initial Focus Price: ₹{target.initialSpotPrice.toFixed(1)}</span>
                                       <span>Day High: ₹{(target.dayHigh || target.morningHigh).toFixed(1)}</span>
                                     </div>
                                   </div>
@@ -3805,23 +3805,11 @@ export default function App() {
             ) : (
               <>
                 <p className="text-[10px] text-neutral-400 mb-6 leading-relaxed bg-black/40 p-3 border border-tech-border/30">
-                  Dhan API V2.0 requires dynamic daily token renew. Fill out your credentials below to enable your background Python integration (<code className="text-white">dhan_token_automate</code>) to automatically solve login, generate, and refresh access tokens daily.
+                  Enter your Dhan Client ID, API credentials, and TOTP key to automatically generate a fresh daily Dhan Access Token.
                 </p>
 
                 <form onSubmit={triggerDhanAutomateLogin} className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Mobile Number</label>
-                      <input 
-                        type="text"
-                        required
-                        placeholder="e.g. 9876543210"
-                        value={dhanAutomateForm.mobileNo}
-                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, mobileNo: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
-                      />
-                    </div>
-
+                  <div className="space-y-4">
                     <div className="space-y-1">
                       <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Dhan Client ID</label>
                       <input 
@@ -3833,55 +3821,27 @@ export default function App() {
                         className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
                       />
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">API Key</label>
-                      <input 
-                        type="password"
-                        required
-                        placeholder="Paste your Dhan API Key"
-                        value={dhanAutomateForm.apiKey}
-                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, apiKey: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">API Secret</label>
-                      <input 
-                        type="password"
-                        required
-                        placeholder="Paste your Dhan API Secret"
-                        value={dhanAutomateForm.apiSecret}
-                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, apiSecret: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">TOTP Secret Key</label>
-                      <input 
-                        type="password"
-                        required
-                        placeholder="Google Authenticator Seed Key"
-                        value={dhanAutomateForm.totpKey}
-                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, totpKey: e.target.value }))}
-                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
-                      />
-                    </div>
 
                     <div className="space-y-1">
                       <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">Dhan PIN / Mobile Passcode</label>
                       <input 
                         type="password"
                         required
-                        placeholder="4 or 6-digit Dhan login PIN"
+                        placeholder="6-digit Dhan login PIN"
                         value={dhanAutomateForm.userPin}
                         onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, userPin: e.target.value }))}
+                        className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[9px] uppercase tracking-wider text-neutral-400 block font-bold">TOTP Secret Key</label>
+                      <input 
+                        type="password"
+                        required
+                        placeholder="Authenticator App TOTP Seed Key"
+                        value={dhanAutomateForm.totpKey}
+                        onChange={(e) => setDhanAutomateForm(prev => ({ ...prev, totpKey: e.target.value }))}
                         className="w-full bg-tech-bg border border-tech-border text-white px-3 py-2 text-[11px] focus:outline-none focus:border-neon-green font-sans"
                       />
                     </div>

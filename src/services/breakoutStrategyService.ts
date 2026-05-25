@@ -108,10 +108,10 @@ export class BreakoutStrategyService {
   }
 
   /**
-   * Run the 9:30 AM scan to select top 2 gainers and top 2 losers
+   * Run the Breakout Scan to select top gainers and top losers
    */
   public async runBreakoutScan(allStocks: StockData[]) {
-    console.log("[BreakoutStrategy] Running 9:30 AM Breakout Scan...");
+    console.log("[BreakoutStrategy] Running Breakout Scan...");
     this.scanTimestamp = Date.now();
     this.targets = [];
 
@@ -126,10 +126,11 @@ export class BreakoutStrategyService {
     // Sort by % change to isolate top gainers and top losers
     const sorted = [...equityStocks].sort((a, b) => b.pChange - a.pChange);
 
-    const topGainers = sorted.slice(0, 2);
-    const topLosers = sorted.slice(-2);
-
+    const topGainers = sorted.slice(0, 5);
+    const topLosers = sorted.slice(-5);
+    
     const now = new Date();
+    const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
     const year = now.getFullYear().toString().slice(-2);
     const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
     const monthName = months[now.getMonth()];
@@ -168,7 +169,7 @@ export class BreakoutStrategyService {
         optionOIPeak: 150000,
         optionOIBuiltupPercentage: 0,
         historicalOI: [
-          { time: '09:30', oi: 150000, price: initialOptVal }
+          { time: timeStr, oi: 150000, price: initialOptVal }
         ],
         optionDayHigh: initialOptVal * 1.1,
         optionDayLow: initialOptVal * 0.95,
@@ -212,7 +213,7 @@ export class BreakoutStrategyService {
         optionOIPeak: 120000,
         optionOIBuiltupPercentage: 0,
         historicalOI: [
-          { time: '09:30', oi: 120000, price: initialOptVal }
+          { time: timeStr, oi: 120000, price: initialOptVal }
         ],
         optionDayHigh: initialOptVal * 1.1,
         optionDayLow: initialOptVal * 0.95,
@@ -226,7 +227,7 @@ export class BreakoutStrategyService {
 
     console.log(`[BreakoutStrategy] Initialized targeted stocks:`, this.targets.map(t => `${t.symbol} (${t.type})`));
     this.emitStatus();
-    this.io.emit("bot-log", `SYSTEM: Run 9:30 AM Breakout Strategy Scan completed. Isolated ${this.targets.length} targets.`);
+    this.io.emit("bot-log", `SYSTEM: Breakout Strategy Scan completed. Isolated ${this.targets.length} targets.`);
   }
 
   private getStrikeInterval(price: number): number {
@@ -262,24 +263,29 @@ export class BreakoutStrategyService {
       const timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 
       if (target.type === 'BULLISH_BREAKOUT') {
-        // Bullish stock: Ideally pulls back to EMA20 / VWAP or below 9:30 AM initial price
-        // Target pullback is below EMA20 / vwap or 1% below morning high
-        const pullbackThreshold = target.morningHigh * 0.988; // pull down 1.2% from high
-        if (!target.pullbackActive && target.spotPrice <= pullbackThreshold) {
+        // Bullish stock: Must pull back to thoroughly test VWAP (within 0.1% or below)
+        const vwapTestThreshold = target.vwap * 1.001;
+        const hasRallied = target.dayHigh > (target.initialSpotPrice * 1.005); // Must have at least rallied 0.5% to count
+        if (!target.pullbackActive && hasRallied && target.spotPrice <= vwapTestThreshold) {
           target.pullbackActive = true;
           target.pullbackPrice = target.spotPrice;
-          this.io.emit("bot-log", `STRATEGY: Pullback ACTIVE for bullish breakout ${target.symbol}! Price: ₹${target.spotPrice.toFixed(2)} vs High: ₹${target.morningHigh.toFixed(2)}`);
+          this.io.emit("bot-log", `STRATEGY: VWAP Test ACTIVE for bullish candidate ${target.symbol}! Price: ₹${target.spotPrice.toFixed(2)} vs VWAP: ₹${target.vwap.toFixed(2)}`);
           updated = true;
         }
 
-        // Simulating the option premium and OI.
-        // In real/mock mode, option pricing drifts relative to underlying spot price
-        const dist = target.spotPrice - target.strike;
-        const bsmSim = Math.max(1.5, dist + (target.initialSpotPrice * 0.02));
-        
-        // Minor realistic noise + drift
         const prevPrice = target.optionPrice;
-        target.optionPrice = Number(bsmSim.toFixed(2));
+        const optSymbolMap = typeof realQuotes === 'object' ? realQuotes[`NSE:${target.optionSymbol}`] || realQuotes[target.optionSymbol] : null;
+
+        // Use real Option Quotes if available, otherwise fallback to rough correlation simulation
+        if (optSymbolMap && optSymbolMap.lp) {
+          target.optionPrice = optSymbolMap.lp;
+          if (optSymbolMap.oi) target.optionOI = optSymbolMap.oi;
+        } else {
+          // BSM Simulation Fallback
+          const dist = target.spotPrice - target.strike;
+          const bsmSim = Math.max(1.5, dist + (target.initialSpotPrice * 0.02));
+          target.optionPrice = Number(bsmSim.toFixed(2));
+        }
         if (target.optionPrice > target.optionPriceHigh) {
           target.optionPriceHigh = target.optionPrice;
         }
@@ -303,10 +309,10 @@ export class BreakoutStrategyService {
           }
 
           // Trigger Opportunity Check:
-          // Stock rebounded and crossing back above EMA20, AND option OI buildup > 2.5%
-          if (target.spotPrice > target.ema20 && target.optionOIBuiltupPercentage > 2.0 && target.optionPrice > prevPrice) {
+          // Stock rebounded crossing back above actual VWAP + buffer with Option premium increasing
+          if (target.spotPrice > (target.vwap * 1.003) && target.optionOIBuiltupPercentage > 2.0 && target.optionPrice > prevPrice) {
             target.setupTriggered = true;
-            target.triggerReason = `Bullish Pullback Rebound Confirmed. Option Premium crossing ema20 with +${target.optionOIBuiltupPercentage.toFixed(1)}% Open Interest long buildup.`;
+            target.triggerReason = `Bullish VWAP Bounce Confirmed. Stock bounced explicitly above VWAP (₹${target.vwap.toFixed(2)}) with +${target.optionOIBuiltupPercentage.toFixed(1)}% OI long buildup on CE.`;
             this.io.emit("bot-log", `STRATEGY TRIGGERED: ${target.symbol} BUY Call Setup! Reason: ${target.triggerReason}`);
             
             // Auto Trade execution check
@@ -330,20 +336,28 @@ export class BreakoutStrategyService {
           }
         }
       } else {
-        // Bearish stock: Pulls back (recovers/rallies slightly) towards EMA20/VWAP upper bounds
-        const pullbackThreshold = target.morningLow * 1.012; // pull up 1.2% from low
-        if (!target.pullbackActive && target.spotPrice >= pullbackThreshold) {
+        // Bearish stock: Must rally to thoroughly test VWAP (within 0.1% or above)
+        const vwapTestThreshold = target.vwap * 0.999;
+        const hasFallen = target.dayLow < (target.initialSpotPrice * 0.995); // Must have dropped at least 0.5%
+        if (!target.pullbackActive && hasFallen && target.spotPrice >= vwapTestThreshold) {
           target.pullbackActive = true;
           target.pullbackPrice = target.spotPrice;
-          this.io.emit("bot-log", `STRATEGY: Pullback ACTIVE for bearish breakout ${target.symbol}! Price: ₹${target.spotPrice.toFixed(2)} vs Low: ₹${target.morningLow.toFixed(2)}`);
+          this.io.emit("bot-log", `STRATEGY: VWAP Test ACTIVE for bearish candidate ${target.symbol}! Price: ₹${target.spotPrice.toFixed(2)} vs VWAP: ₹${target.vwap.toFixed(2)}`);
           updated = true;
         }
 
-        const dist = target.strike - target.spotPrice;
-        const bsmSim = Math.max(1.5, dist + (target.initialSpotPrice * 0.02));
-
         const prevPrice = target.optionPrice;
-        target.optionPrice = Number(bsmSim.toFixed(2));
+        const optSymbolMap = typeof realQuotes === 'object' ? realQuotes[`NSE:${target.optionSymbol}`] || realQuotes[target.optionSymbol] : null;
+
+        if (optSymbolMap && optSymbolMap.lp) {
+          target.optionPrice = optSymbolMap.lp;
+          if (optSymbolMap.oi) target.optionOI = optSymbolMap.oi;
+        } else {
+          // BSM Simulation Fallback
+          const dist = target.strike - target.spotPrice;
+          const bsmSim = Math.max(1.5, dist + (target.initialSpotPrice * 0.02));
+          target.optionPrice = Number(bsmSim.toFixed(2));
+        }
         if (target.optionPrice > target.optionPriceHigh) {
           target.optionPriceHigh = target.optionPrice;
         }
@@ -364,10 +378,10 @@ export class BreakoutStrategyService {
             if (target.historicalOI.length > 20) target.historicalOI.shift();
           }
 
-          // Bearish Rebreakout Trigger: Price slides below EMA20 (spot) while PE Option rises with Open Interest buildup > 2%
-          if (target.spotPrice < target.ema20 && target.optionOIBuiltupPercentage > 2.0 && target.optionPrice > prevPrice) {
+          // Bearish Rejection Trigger: Price slides below VWAP (with buffer) while PE Option rises with Open Interest buildup > 2%
+          if (target.spotPrice < (target.vwap * 0.997) && target.optionOIBuiltupPercentage > 2.0 && target.optionPrice > prevPrice) {
             target.setupTriggered = true;
-            target.triggerReason = `Bearish Pullback Rebound Confirmed. Option Premium rallying as spot breaks below ema20 with +${target.optionOIBuiltupPercentage.toFixed(1)}% Open Interest Put buying block.`;
+            target.triggerReason = `Bearish VWAP Rejection Confirmed. Slicing explicitly below VWAP (₹${target.vwap.toFixed(2)}) with +${target.optionOIBuiltupPercentage.toFixed(1)}% OI Put buying on PE.`;
             this.io.emit("bot-log", `STRATEGY TRIGGERED: ${target.symbol} BUY Put Setup! Reason: ${target.triggerReason}`);
 
             if (this.autoTrigger && !target.tradeExecuted && this.dailyTradesCount < this.maxTradesPerDay) {
