@@ -111,6 +111,46 @@ let currentRegime: any = { regime: MarketRegime.SIDEWAYS, description: "Initiali
 let advances = 0;
 let declines = 0;
 
+function generateTOTP(secretBase32: string): string {
+  const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (let i = 0; i < secretBase32.length; i++) {
+    const val = base32chars.indexOf(secretBase32.charAt(i).toUpperCase());
+    if (val === -1) continue;
+    bits += val.toString(2).padStart(5, '0');
+  }
+  let hex = '';
+  for (let i = 0; i < bits.length - 7; i += 8) {
+    hex += parseInt(bits.substr(i, 8), 2).toString(16).padStart(2, '0');
+  }
+  const key = Buffer.from(hex, 'hex');
+  const epoch = Math.floor(Date.now() / 1000);
+  const time = Buffer.alloc(8);
+  time.writeUInt32BE(Math.floor(epoch / 30), 4);
+  const hmac = crypto.createHmac('sha1', key);
+  hmac.update(time);
+  const result = hmac.digest();
+  const offset = result[result.length - 1] & 0xf;
+  const code = (((result[offset] & 0x7f) << 24) | ((result[offset + 1] & 0xff) << 16) | ((result[offset + 2] & 0xff) << 8) | (result[offset + 3] & 0xff)) % 1000000;
+  return code.toString().padStart(6, '0');
+}
+
+async function generateDhanToken(clientId: string, userPin: string, totpKey: string) {
+  try {
+    const totp = generateTOTP(totpKey);
+    const url = `https://auth.dhan.co/app/generateAccessToken?dhanClientId=${clientId}&pin=${userPin}&totp=${totp}`;
+    console.log(`[Dhan] Sending POST to generate Token. CLI: ${clientId}, TOTP: ${totp}`);
+    const response = await axios.post(url, {}, { headers: { "Content-Type": "application/json", "Accept": "application/json" }, timeout: 15000 });
+    const data = response.data;
+    const token = data.accessToken || data.access_token || data.token || data.Token;
+    return token ? { success: true, token } : { success: false, error: data.message || data.error || "No token in response" };
+  } catch (err: any) {
+    const msg = err.response?.data?.message || err.response?.data?.errorValue || err.response?.data?.error || err.message;
+    console.error("[Dhan] generateDhanToken hit error:", err.response?.data || err.message);
+    return { success: false, error: msg };
+  }
+}
+
 // Auto-run Dhan login on startup or scheduler if credentials exist in process.env or saved file (e.g. from the Secrets / Settings Tab in AI Studio)
 async function attemptDhanAutoLoginFromEnv(): Promise<{ success: boolean; token?: string; error?: string }> {
   let clientId = process.env.DHAN_CLIENT_ID;
@@ -148,56 +188,36 @@ async function attemptDhanAutoLoginFromEnv(): Promise<{ success: boolean; token?
   }
 
   if (clientId && totpKey && userPin) {
-    console.log(`[Dhan Auto-Login] Found Dhan automation credentials for Client ID: ${clientId}. Launching token generator script...`);
-    return new Promise((resolve) => {
-      import("child_process").then(({ exec }) => {
-        const args = [clientId, userPin, totpKey].map(arg => `"${arg?.replace(/"/g, '\\"')}"`);
-        exec(`python3 dhan_token_automate.py ${args.join(" ")}`, async (err: any, stdout: string, stderr: string) => {
-          if (stderr) console.warn("[Dhan Auto-Login bg stderr]", stderr);
-          try {
-            const outStr = stdout.trim();
-            if (!outStr) {
-              console.error("[Dhan Auto-Login Error] Script returned empty output.");
-              return resolve({ success: false, error: "Empty output from script" });
-            }
-            
-            const result = JSON.parse(outStr.split('\n').pop() || outStr);
-            if (result.success && result.token) {
-              console.log(`[Dhan Auto-Login] Automated login succeeded! Generated new Access Token.`);
-              process.env.DHAN_ACCESS_TOKEN = result.token;
-              process.env.DHAN_CLIENT_ID = clientId;
-              isDhanConnected = true;
-              
-              // Persist generated token so we do not hit rate limit on rapid restarts
-              try {
-                const fs = await import("fs/promises");
-                const path = await import("path");
-                const credsPath = path.join(process.cwd(), "dhan-credentials.json");
-                const creds = await fs.readFile(credsPath, "utf8").then(r => JSON.parse(r)).catch(() => ({}));
-                creds.clientId = clientId;
-                creds.userPin = userPin;
-                creds.totpKey = totpKey;
-                creds.accessToken = result.token;
-                creds.tokenDate = Date.now();
-                await fs.writeFile(credsPath, JSON.stringify(creds, null, 2), "utf8");
-              } catch (saveErr) {
-                console.warn("[Dhan Auto-Login] Could not persist token to cache:", saveErr);
-              }
-              
-              return resolve({ success: true, token: result.token });
-            } else {
-              console.error(`[Dhan Auto-Login Error] Script returned unsuccessful: ${result.error || "unknown"}`);
-              return resolve({ success: false, error: result.error || "Script failed" });
-            }
-          } catch (e: any) {
-            console.error(`[Dhan Auto-Login Error] Failed to parse script output:`, stdout);
-            return resolve({ success: false, error: "JSON parse failed on script output" });
-          }
-        });
-      }).catch(err => {
-        resolve({ success: false, error: err.message });
-      });
-    });
+    console.log(`[Dhan Auto-Login] Found Dhan automation credentials for Client ID: ${clientId}. Generating token internally...`);
+    const result = await generateDhanToken(clientId, userPin, totpKey);
+    
+    if (result.success && result.token) {
+      console.log(`[Dhan Auto-Login] Automated login succeeded! Generated new Access Token.`);
+      process.env.DHAN_ACCESS_TOKEN = result.token;
+      process.env.DHAN_CLIENT_ID = clientId;
+      isDhanConnected = true;
+      
+      // Persist generated token so we do not hit rate limit on rapid restarts
+      try {
+        const fs = await import("fs/promises");
+        const path = await import("path");
+        const credsPath = path.join(process.cwd(), "dhan-credentials.json");
+        const creds = await fs.readFile(credsPath, "utf8").then(r => JSON.parse(r)).catch(() => ({}));
+        creds.clientId = clientId;
+        creds.userPin = userPin;
+        creds.totpKey = totpKey;
+        creds.accessToken = result.token;
+        creds.tokenDate = Date.now();
+        await fs.writeFile(credsPath, JSON.stringify(creds, null, 2), "utf8");
+      } catch (saveErr) {
+        console.warn("[Dhan Auto-Login] Could not persist token to cache:", saveErr);
+      }
+      
+      return { success: true, token: result.token };
+    } else {
+      console.error(`[Dhan Auto-Login Error] Token generator returned unsuccessful: ${result.error || "unknown"}`);
+      return { success: false, error: result.error || "Token generation failed" };
+    }
   }
 
   // Fallback to manual 30-day API key if automation fields don't exist
@@ -475,93 +495,64 @@ async function startServer() {
 
     try {
       console.log(`[Dhan] Initiating automated login for Client ID: ${clientId}...`);
-      const { exec } = await import("child_process");
       const fs = await import("fs/promises");
+      const result = await generateDhanToken(clientId, userPin, totpKey);
 
-      // Shell escape parameters safely for Python process execution (using the new GetAccessToken logic)
-      const args = [clientId, userPin, totpKey].map(arg => `"${arg.replace(/"/g, '\\"')}"`);
-      
-      exec(`python3 dhan_token_automate.py ${args.join(" ")}`, async (err: any, stdout: string, stderr: string) => {
+      if (result.success && result.token) {
+        console.log("[Dhan] Automatic API token retrieval succeeded! Status validating...");
+        
+        // Validate the generated token independently to ensure it functions across standard endpoints
         try {
-          if (stderr) {
-            console.warn("[Dhan Auto-Login stderr]", stderr);
-          }
+          const testCheck = await axios.get("https://api.dhan.co/v2/fundlimit", {
+            headers: {
+              "access-token": result.token,
+              "Content-Type": "application/json"
+            },
+            timeout: 4000
+          });
 
-          const outStr = stdout.trim();
-          if (!outStr) {
-            return res.status(500).json({
-              success: false,
-              message: "No output received from Dhan login automation script. Check if python3 is installed and executable."
-            });
-          }
+          if (testCheck.status === 200) {
+            process.env.DHAN_ACCESS_TOKEN = result.token;
+            process.env.DHAN_CLIENT_ID = clientId;
+            isDhanConnected = true;
 
-          const result = JSON.parse(outStr.split('\n').pop() || outStr); // Handle potential debug logs before JSON
-          if (result.success && result.token) {
-            console.log("[Dhan] Automatic API token retrieval succeeded! Status validating...");
-            
-            // Validate the generated token independently to ensure it functions across standard endpoints
-            try {
-              const testCheck = await axios.get("https://api.dhan.co/v2/fundlimit", {
-                headers: {
-                  "access-token": result.token,
-                  "Content-Type": "application/json"
-                },
-                timeout: 4000
-              });
-
-              if (testCheck.status === 200) {
-                process.env.DHAN_ACCESS_TOKEN = result.token;
-                process.env.DHAN_CLIENT_ID = clientId;
-                isDhanConnected = true;
-
-                // Load scrips Master index
-                if (dhanScripMap.size < 20) {
-                  loadDhanScripMaster().catch(e => console.warn("Background scrip reload failed:", e.message));
-                }
-
-                // Persist automation config if requested
-                if (saveCredentials) {
-                  // Only store API config, usually you wouldn't store TOTP in plaintext, but for UI usage:
-                  const creds = { clientId, userPin, totpKey, accessToken: result.token, tokenDate: Date.now() };
-                  await fs.writeFile(path.join(process.cwd(), "dhan-credentials.json"), JSON.stringify(creds, null, 2), "utf8");
-                }
-
-                return res.json({
-                  success: true,
-                  message: "Logged in & verified with Dhan successfully! Daily Access Token generated.",
-                  token: result.token,
-                  funds: testCheck.data
-                });
-              } else {
-                throw new Error("Validation handshake failed.");
-              }
-            } catch (validateErr: any) {
-              const errMsg = validateErr.response?.data?.errorValue || validateErr.response?.data?.message || validateErr.message;
-              console.warn(`[Dhan Verification Warning] auto-token was generated but verification failed: ${errMsg}`);
-              
-              return res.status(400).json({
-                success: false,
-                message: `Token generation succeeded but validation failed: ${errMsg}`,
-                token: result.token
-              });
+            // Load scrips Master index
+            if (dhanScripMap.size < 20) {
+              loadDhanScripMaster().catch(e => console.warn("Background scrip reload failed:", e.message));
             }
-          } else {
-            return res.status(400).json({
-              success: false,
-              message: result.error || "Token generation unsuccessful.",
-              type: result.type
+
+            // Persist automation config if requested
+            if (saveCredentials) {
+              // Only store API config, usually you wouldn't store TOTP in plaintext, but for UI usage:
+              const creds = { clientId, userPin, totpKey, accessToken: result.token, tokenDate: Date.now() };
+              await fs.writeFile(path.join(process.cwd(), "dhan-credentials.json"), JSON.stringify(creds, null, 2), "utf8");
+            }
+
+            return res.json({
+              success: true,
+              message: "Logged in & verified with Dhan successfully! Daily Access Token generated.",
+              token: result.token,
+              funds: testCheck.data
             });
+          } else {
+            throw new Error("Validation handshake failed.");
           }
-        } catch (parseErr: any) {
-          console.error("[Dhan] Failed to parse python output:", stdout, parseErr);
-          return res.status(500).json({
+        } catch (validateErr: any) {
+          const errMsg = validateErr.response?.data?.errorValue || validateErr.response?.data?.message || validateErr.message;
+          console.warn(`[Dhan Verification Warning] auto-token was generated but verification failed: ${errMsg}`);
+          
+          return res.status(400).json({
             success: false,
-            message: "Failed to parse automation script output. Dependencies like 'pyotp' or 'requests' might be missing.",
-            details: parseErr.message,
-            raw: stdout || stderr
+            message: `Token generation succeeded but validation failed: ${errMsg}`,
+            token: result.token
           });
         }
-      });
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: result.error || "Token generation unsuccessful."
+        });
+      }
     } catch (e: any) {
       return res.status(500).json({ success: false, message: e.message });
     }
@@ -628,6 +619,7 @@ async function startServer() {
   });  // Cache map for Fyers quotes to prevent 429 Rate Limits
   const quotesCache = new Map<string, { timestamp: number; data: any }>();
   const CACHE_TTL = 3000; // 3 seconds
+  let rateLimitBackoffUntil = 0;
 
   function getStockBasePrice(symbol: string): number {
     const cleanSym = symbol.toUpperCase().replace("NSE:", "").replace("-EQ", "").trim();
@@ -900,16 +892,22 @@ async function startServer() {
             securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
           }
 
-          if (!payload[segment]) payload[segment] = [];
-          payload[segment].push(String(securityId));
-          hasInstruments = true;
+          // Do NOT query Dhan LTP API over HTTP for IDX_I segments as it fails with a 400 Bad Request error.
+          // Spot Index feeds are only supported via Dhan WebSockets. We filter them and compute them beautifully
+          // from successful stock returns!
+          if (segment !== "IDX_I") {
+            if (!payload[segment]) payload[segment] = [];
+            payload[segment].push(Number(securityId));
+            hasInstruments = true;
+          }
         });
 
         const fetchedStockDataMap = new Map<string, any>();
+        const now = Date.now();
 
         // Query Dhan API
-        if (hasInstruments) {
-          const response = await axios.post("https://api.dhan.co/v2/marketfeed/ltp", payload, {
+        if (hasInstruments && now > rateLimitBackoffUntil) {
+          const response = await axios.post("https://api.dhan.co/v2/marketfeed/quote", payload, {
             headers: {
               "access-token": token,
               "client-id": process.env.DHAN_CLIENT_ID || "1000000000",
@@ -918,15 +916,21 @@ async function startServer() {
             timeout: 4000
           });
 
-          if (response.data && (response.data.status === "success" || response.data.status === "SUCCESS") && Array.isArray(response.data.data)) {
-            response.data.data.forEach((item: any) => {
-              if (item) {
-                const itemId = String(item.securityId || item.security_id || item.securityId || "");
-                if (itemId) {
-                  fetchedStockDataMap.set(itemId, item);
+          if (response.data && (response.data.status === "success" || response.data.status === "SUCCESS")) {
+            const returnedData = response.data.data;
+            if (returnedData) {
+              Object.keys(returnedData).forEach(seg => {
+                const segData = returnedData[seg];
+                if (segData && typeof segData === "object" && !Array.isArray(segData)) {
+                  Object.keys(segData).forEach(itemId => {
+                    const itemQuote = segData[itemId];
+                    if (itemQuote) {
+                      fetchedStockDataMap.set(String(itemId), itemQuote);
+                    }
+                  });
                 }
-              }
-            });
+              });
+            }
           }
         }
 
@@ -974,18 +978,45 @@ async function startServer() {
             securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
           }
 
-          // Case A & B: Both treated as standard fetches now
+          // Case A: Index Spot Item (simulated in perfect correlation with successfully loaded stocks)
+          if (iMap && iMap.segment === "IDX_I") {
+            const basePrice = getStockBasePrice(sym);
+            const lp = basePrice * (1 + avgChangePct / 100);
+            const ch = lp - basePrice;
+            const chp = avgChangePct;
+
+            const resItem = {
+              n: sym,
+              s: "ok",
+              v: {
+                lp: Number(lp.toFixed(2)),
+                ch: Number(ch.toFixed(2)),
+                chp: Number(chp.toFixed(2)),
+                vol: Math.floor(5000000 + Math.random() * 2000000),
+                oi: 0,
+                oic: 0,
+                avg_price: lp,
+                high: Number((lp * 1.005).toFixed(2)),
+                low: Number((lp * 0.995).toFixed(2)),
+                open: basePrice,
+                prev_close: basePrice
+              }
+            };
+
+            quotesCache.set(sym, { timestamp: now, data: resItem });
+            return resItem;
+          }
+
+          // Case B: Regular stocks
           const match = fetchedStockDataMap.get(String(securityId));
           let lp = 0;
           if (match) {
             lp = Number(match.lastPrice || match.last_price || match.ltp || match.lp || 0);
-          } else {
-             console.log("[Dhan Quotes] Missing match for", sym, securityId);
           }
 
           if (!lp || isNaN(lp)) {
             const cached = quotesCache.get(sym);
-            if (cached && (now - cached.timestamp < 10000)) {
+            if (cached && (now - cached.timestamp < 15000)) {
               return cached.data;
             }
             const fallbackItem = generateMockQuoteItem(sym);
@@ -994,8 +1025,10 @@ async function startServer() {
           }
 
           const basePrice = getStockBasePrice(sym);
-          const ch = lp - basePrice;
-          const chp = basePrice > 0 ? (ch / basePrice) * 100 : 0;
+          const ohlc = match.ohlc || {};
+          const prevClosePrice = Number(ohlc.close || basePrice);
+          const ch = (match.net_change !== undefined && match.net_change !== 0) ? Number(match.net_change) : (lp - prevClosePrice);
+          const chp = prevClosePrice > 0 ? (ch / prevClosePrice) * 100 : 0;
 
           const resItem = {
             n: sym,
@@ -1004,14 +1037,14 @@ async function startServer() {
               lp: Number(lp.toFixed(2)),
               ch: Number(ch.toFixed(2)),
               chp: Number(chp.toFixed(2)),
-              vol: Math.floor(500000 + Math.random() * 1000000),
-              oi: sym.includes('INDEX') ? 0 : Math.floor(10000 + Math.random() * 50000),
+              vol: Number(match.volume || Math.floor(500000 + Math.random() * 1000000)),
+              oi: Number(match.oi || (sym.includes('INDEX') ? 0 : Math.floor(10000 + Math.random() * 50000))),
               oic: 0,
-              avg_price: lp,
-              high: Number((lp * 1.005).toFixed(2)),
-              low: Number((lp * 0.995).toFixed(2)),
-              open: basePrice,
-              prev_close: basePrice
+              avg_price: Number(match.average_price || lp),
+              high: Number(ohlc.high || (lp * 1.005).toFixed(2)),
+              low: Number(ohlc.low || (lp * 0.995).toFixed(2)),
+              open: Number(ohlc.open || basePrice),
+              prev_close: Number(ohlc.close || basePrice)
             }
           };
 
@@ -1020,7 +1053,12 @@ async function startServer() {
         });
 
       } catch (err: any) {
-        console.warn("[Dhan Quotes Fetch Failed]", err.message, err.response?.data);
+        if (err.response && err.response.status === 429) {
+           console.warn("[Dhan Quotes Fetch] Rate Limit Hit (429). Backing off for 10 seconds.");
+           rateLimitBackoffUntil = Date.now() + 10000;
+        } else {
+           console.warn("[Dhan Quotes Fetch Failed]", err.message, err.response?.data);
+        }
       }
     } else {
       console.warn("[Dhan Quotes Fetch] Token is missing from process.env.DHAN_ACCESS_TOKEN. Please manually connect Dhan!");
@@ -1028,11 +1066,11 @@ async function startServer() {
 
     return requestedSymbols.map(sym => {
       const cached = quotesCache.get(sym);
-      if (cached && (now - cached.timestamp < CACHE_TTL)) {
+      if (cached && (Date.now() - cached.timestamp < 15000)) {
         return cached.data;
       }
       const mockItem = generateMockQuoteItem(sym);
-      quotesCache.set(sym, { timestamp: now, data: mockItem });
+      quotesCache.set(sym, { timestamp: Date.now(), data: mockItem });
       return mockItem;
     });
   }
