@@ -76,8 +76,8 @@ async function loadDhanScripMaster() {
         row[h] = parts[idx]?.trim() || "";
       });
 
-      const symbol = row["SEM_TRADING_SYMBOL"] || row["SEM_SYMBOL_NAME"];
-      const id = row["SEM_EXCH_INSTRUMENT_ID"] || row["SEM_SM_ID"];
+      const symbol = row["SEM_TRADING_SYMBOL"] || row["SEM_CUSTOM_SYMBOL"] || row["SM_SYMBOL_NAME"];
+      const id = row["SEM_EXCH_INSTRUMENT_ID"] || row["SEM_SM_ID"] || row["SEM_SMST_SECURITY_ID"];
 
       if (symbol && id) {
         dhanScripMap.set(symbol.toUpperCase(), id);
@@ -896,6 +896,7 @@ async function startServer() {
         requestedSymbols.forEach(sym => {
           let segment = "NSE_EQ";
           let clean = sym.replace("NSE:", "").toUpperCase();
+          if (clean.endsWith("-EQ")) clean = clean.replace("-EQ", "");
           
           let securityId = "";
           const iMap = INDEX_MAPPINGS[clean] || INDEX_MAPPINGS[sym.toUpperCase()];
@@ -988,6 +989,7 @@ async function startServer() {
 
         return requestedSymbols.map(sym => {
           let clean = sym.replace("NSE:", "").toUpperCase();
+          if (clean.endsWith("-EQ")) clean = clean.replace("-EQ", "");
           
           let securityId = "";
           const iMap = INDEX_MAPPINGS[clean] || INDEX_MAPPINGS[sym.toUpperCase()];
@@ -1045,8 +1047,16 @@ async function startServer() {
 
           const basePrice = getStockBasePrice(sym);
           const ohlc = match.ohlc || {};
-          const prevClosePrice = Number(ohlc.close || basePrice);
-          const ch = (match.net_change !== undefined && match.net_change !== 0) ? Number(match.net_change) : (lp - prevClosePrice);
+          let prevClosePrice = Number(ohlc.close || basePrice);
+          let ch = (match.net_change !== undefined && match.net_change !== 0) ? Number(match.net_change) : (lp - prevClosePrice);
+
+          // If ch is 0 (likely after market close where close == lp and net_change resets),
+          // fallback to intraday movement from open to provide realistic gainers/losers variation
+          if (ch === 0 && ohlc.open) {
+            ch = lp - Number(ohlc.open);
+            prevClosePrice = Number(ohlc.open);
+          }
+
           const chp = prevClosePrice > 0 ? (ch / prevClosePrice) * 100 : 0;
 
           const resItem = {
