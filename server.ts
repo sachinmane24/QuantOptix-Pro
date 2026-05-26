@@ -829,13 +829,18 @@ async function startServer() {
     } else {
       basePrice = getStockBasePrice(symbolStr);
       if (!closed) {
-        basePrice = basePrice * (1 + (Math.random() * 0.02 - 0.01));
+        // Use a slow deterministic sine drift instead of wild random jumping to prevent toggling UI
+        const minutes = new Date().getMinutes();
+        const deterministicDrift = Math.sin(minutes / 10) * 0.005; // max 0.5% drift over hours
+        basePrice = basePrice * (1 + deterministicDrift);
       }
     }
     
-    const ch = closed ? 0 : ((Math.random() * basePrice * 0.02) - (basePrice * 0.01));
+    // Stable small changes, NOT random jumping
+    const driftOffset = closed ? 0 : (Math.sin('seed'.charCodeAt(0) + new Date().getMinutes()) * basePrice * 0.001);
+    const ch = driftOffset;
     const chp = closed ? 0 : ((ch / basePrice) * 100);
-    const lp = closed ? basePrice : (basePrice + ch);
+    const lp = basePrice + ch;
     
     return {
       n: symbolStr,
@@ -895,14 +900,9 @@ async function startServer() {
             securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
           }
 
-          // Do NOT query Dhan LTP API over HTTP for IDX_I segments as it fails with a 400 Bad Request error.
-          // Spot Index feeds are only supported via Dhan WebSockets. We filter them and compute them beautifully
-          // from successful stock returns!
-          if (segment !== "IDX_I") {
-            if (!payload[segment]) payload[segment] = [];
-            payload[segment].push(String(securityId));
-            hasInstruments = true;
-          }
+          if (!payload[segment]) payload[segment] = [];
+          payload[segment].push(String(securityId));
+          hasInstruments = true;
         });
 
         const fetchedStockDataMap = new Map<string, any>();
@@ -974,40 +974,13 @@ async function startServer() {
             securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
           }
 
-          // Case A: Index Spot Item (simulated in perfect correlation with successfully loaded stocks)
-          if (iMap && iMap.segment === "IDX_I") {
-            const basePrice = getStockBasePrice(sym);
-            const lp = basePrice * (1 + avgChangePct / 100);
-            const ch = lp - basePrice;
-            const chp = avgChangePct;
-
-            const resItem = {
-              n: sym,
-              s: "ok",
-              v: {
-                lp: Number(lp.toFixed(2)),
-                ch: Number(ch.toFixed(2)),
-                chp: Number(chp.toFixed(2)),
-                vol: Math.floor(5000000 + Math.random() * 2000000),
-                oi: 0,
-                oic: 0,
-                avg_price: lp,
-                high: Number((lp * 1.005).toFixed(2)),
-                low: Number((lp * 0.995).toFixed(2)),
-                open: basePrice,
-                prev_close: basePrice
-              }
-            };
-
-            quotesCache.set(sym, { timestamp: now, data: resItem });
-            return resItem;
-          }
-
-          // Case B: Regular stocks
+          // Case A & B: Both treated as standard fetches now
           const match = fetchedStockDataMap.get(String(securityId));
           let lp = 0;
           if (match) {
             lp = Number(match.lastPrice || match.last_price || match.ltp || match.lp || 0);
+          } else {
+             console.log("[Dhan Quotes] Missing match for", sym, securityId);
           }
 
           if (!lp || isNaN(lp)) {

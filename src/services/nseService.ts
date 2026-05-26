@@ -139,18 +139,20 @@ export function getStockBasePrice(symbol: string): number {
   return basePrice;
 }
 
-// Simulate live data
+// Simulate live data deterministically
 export function getLiveStockData(): StockData[] {
   return FNO_STOCKS.slice(0, 100).map(symbol => {
-    const info = FNO_DATA[symbol];
+    const min = new Date().getMinutes();
+    const seed = symbol.charCodeAt(0) + symbol.length;
     
     // Improved Mock Spot Pricing: Get unified realistic base price
     const basePrice = getStockBasePrice(symbol);
     
-    const lastPrice = basePrice * (1 + (Math.random() * 0.04 - 0.02));
-    const pChange = (Math.random() * 6) - 3;
-    const oiChange = (Math.random() * 20) - 10;
-    const relVolume = 0.5 + Math.random() * 3;
+    const deterministicNoise = Math.sin((min + seed) / 10) * 0.02;
+    const lastPrice = basePrice * (1 + deterministicNoise);
+    const pChange = deterministicNoise * 100;
+    const oiChange = Math.sin(seed + min) * 10;
+    const relVolume = 1.0 + Math.abs(Math.cos(seed));
     
     let trend = Trend.SIDEWAYS;
     if (pChange > 1.5 && oiChange > 5) trend = Trend.BULLISH;
@@ -581,16 +583,17 @@ export async function fetchQuotes(symbols: string[]): Promise<Record<string, any
 export function getMarketOverview() {
   if (dynamicMarketOverview) return dynamicMarketOverview;
   
-  // Dynamic mock data that changes every time it's called if real data missing
-  const drift = (Math.random() * 10) - 5;
+  // Dynamic mock data that changes deterministically if real data missing
+  const minutes = new Date().getMinutes();
+  const drift = Math.sin(minutes / 10) * 5;
   return {
-    nifty: { price: 24210.50 + drift, change: 120.5 + drift, pChange: 0.54 + (drift/1000) },
-    bankNifty: { price: 52300.15 + drift*5, change: -45.2 + drift*5, pChange: -0.09 + (drift/500) },
-    indiaVix: { price: 13.4 + (drift/20), change: 0.2, pChange: 1.5 },
+    nifty: { price: 24210.50 + drift, change: 120.5 + Math.sin(minutes)*5, pChange: 0.54 },
+    bankNifty: { price: 52300.15 + drift*2, change: -45.2, pChange: -0.09 },
+    indiaVix: { price: 13.4, change: 0.2, pChange: 1.5 },
     topGainer: 'RELIANCE',
     topLoser: 'TCS',
-    advances: 104 + Math.floor(drift),
-    declines: 78 - Math.floor(drift)
+    advances: 104,
+    declines: 78
   };
 }
 
