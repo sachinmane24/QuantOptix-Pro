@@ -117,23 +117,34 @@ async function attemptDhanAutoLoginFromEnv(): Promise<{ success: boolean; token?
   let totpKey = process.env.DHAN_TOTP_KEY;
   let userPin = process.env.DHAN_USER_PIN;
 
-  // Check JSON file if env vars are missing
-  if (!clientId || !totpKey || !userPin) {
-    try {
-      const fs = await import("fs/promises");
-      const path = await import("path");
-      const credsPath = path.join(process.cwd(), "dhan-credentials.json");
-      const fileExists = await fs.access(credsPath).then(() => true).catch(() => false);
-      if (fileExists) {
-        const raw = await fs.readFile(credsPath, "utf8");
-        const creds = JSON.parse(raw);
-        clientId = clientId || creds.clientId;
-        totpKey = totpKey || creds.totpKey;
-        userPin = userPin || creds.userPin;
+  // Check JSON file if env vars are missing or if it has a valid token
+  try {
+    const fs = await import("fs/promises");
+    const path = await import("path");
+    const credsPath = path.join(process.cwd(), "dhan-credentials.json");
+    const fileExists = await fs.access(credsPath).then(() => true).catch(() => false);
+    if (fileExists) {
+      const raw = await fs.readFile(credsPath, "utf8");
+      const creds = JSON.parse(raw);
+      
+      // If we have a recently cached token (within 12 hours), use it directly instead of re-generating
+      if (creds.accessToken && creds.tokenDate) {
+        const ageHrs = (Date.now() - creds.tokenDate) / (1000 * 60 * 60);
+        if (ageHrs < 12) {
+          console.log(`[Dhan Auto-Login] Using valid cached token from json (Age: ${ageHrs.toFixed(2)} hrs).`);
+          process.env.DHAN_ACCESS_TOKEN = creds.accessToken;
+          process.env.DHAN_CLIENT_ID = creds.clientId || clientId;
+          isDhanConnected = true;
+          return { success: true, token: creds.accessToken };
+        }
       }
-    } catch (e: any) {
-      console.warn("[Dhan Auto-Login] Could not read credentials file:", e.message);
+      
+      clientId = clientId || creds.clientId;
+      totpKey = totpKey || creds.totpKey;
+      userPin = userPin || creds.userPin;
     }
+  } catch (e: any) {
+    console.warn("[Dhan Auto-Login] Could not read credentials file:", e.message);
   }
 
   if (clientId && totpKey && userPin) {
@@ -156,6 +167,23 @@ async function attemptDhanAutoLoginFromEnv(): Promise<{ success: boolean; token?
               process.env.DHAN_ACCESS_TOKEN = result.token;
               process.env.DHAN_CLIENT_ID = clientId;
               isDhanConnected = true;
+              
+              // Persist generated token so we do not hit rate limit on rapid restarts
+              try {
+                const fs = await import("fs/promises");
+                const path = await import("path");
+                const credsPath = path.join(process.cwd(), "dhan-credentials.json");
+                const creds = await fs.readFile(credsPath, "utf8").then(r => JSON.parse(r)).catch(() => ({}));
+                creds.clientId = clientId;
+                creds.userPin = userPin;
+                creds.totpKey = totpKey;
+                creds.accessToken = result.token;
+                creds.tokenDate = Date.now();
+                await fs.writeFile(credsPath, JSON.stringify(creds, null, 2), "utf8");
+              } catch (saveErr) {
+                console.warn("[Dhan Auto-Login] Could not persist token to cache:", saveErr);
+              }
+              
               return resolve({ success: true, token: result.token });
             } else {
               console.error(`[Dhan Auto-Login Error] Script returned unsuccessful: ${result.error || "unknown"}`);
@@ -494,7 +522,7 @@ async function startServer() {
                 // Persist automation config if requested
                 if (saveCredentials) {
                   // Only store API config, usually you wouldn't store TOTP in plaintext, but for UI usage:
-                  const creds = { clientId, userPin, totpKey };
+                  const creds = { clientId, userPin, totpKey, accessToken: result.token, tokenDate: Date.now() };
                   await fs.writeFile(path.join(process.cwd(), "dhan-credentials.json"), JSON.stringify(creds, null, 2), "utf8");
                 }
 

@@ -9,12 +9,17 @@ window.addEventListener('error', (event) => {
 });
 
 window.addEventListener('unhandledrejection', (event) => {
-  console.error('[Unhandled Rejection]', event.reason);
-  if (event.reason && event.reason.message) {
-    console.error('Rejection Message:', event.reason.message);
-  }
-  if (event.reason && event.reason.stack) {
-    console.error('Rejection Stack:', event.reason.stack);
+  console.error('[Unhandled Rejection]');
+  if (event.reason instanceof Error) {
+    console.error('Rejection Message:', event.reason.message || String(event.reason) || 'No message provided');
+    console.error('Rejection Stack:', event.reason.stack || 'No stack provided');
+    console.log('Full Error Object:', event.reason);
+  } else {
+    try {
+      console.error('Rejection Data:', JSON.stringify(event.reason));
+    } catch (e) {
+      console.error('Rejection Data (raw):', event.reason);
+    }
   }
 });
 

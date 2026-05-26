@@ -28,10 +28,14 @@ def GetAccessToken(client_id, user_pin, totp_key):
         response = requests.post(url, headers=headers, timeout=15)
         if response.status_code == 200:
             data = response.json()
-            if "accessToken" in data:
-                return {"success": True, "token": data["accessToken"]}
+            token = data.get("accessToken") or data.get("access_token") or data.get("token") or data.get("Token")
+            if token:
+                return {"success": True, "token": token}
             else:
-                return {"success": False, "error": f"API returned 200 but no accessToken in response. Data: {json.dumps(data)}", "type": "AUTH_FAIL"}
+                message = data.get("message") or data.get("error")
+                if message:
+                    return {"success": False, "error": message, "type": "RATE_LIMIT" if "2 minutes" in message else "AUTH_FAIL"}
+                return {"success": False, "error": f"API returned 200 but no token in response. Data: {json.dumps(data)}", "type": "AUTH_FAIL"}
         else:
             return {"success": False, "error": f"Dhan API returned {response.status_code}: {response.text}", "type": "AUTH_FAIL"}
     except Exception as e:

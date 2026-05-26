@@ -3862,7 +3862,7 @@ export default function App() {
 
                   {dhanError && (
                     <div className="p-3 bg-red-950/25 border border-red-900/50 text-red-400 text-[10px] leading-relaxed">
-                      ⚠️ AUTO_AUTH_FAILURE: {dhanError}
+                      ⚠️ {dhanError.includes("Token can be generated") ? "DHAN API MSG:" : "AUTH_FAILURE:"} {dhanError}
                     </div>
                   )}
 
