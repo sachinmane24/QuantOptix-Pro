@@ -42,16 +42,23 @@ let isDhanConnected = false;
 let isDhanScripLoaded = false;
 const dhanScripMap = new Map<string, string>(); // Ticker/Option -> securityId
 
-// Lazy load Dhan Master CSV
+// Lazy load Dhan Master CSV with enhanced error handling
 async function loadDhanScripMaster() {
   try {
-    console.log("[Dhan] Downloading scrip master from CDN...");
+    console.log("[Dhan] 🔍 Downloading scrip master from CDN...");
     const response = await axios({
       method: "get",
       url: "https://images.dhan.co/api-data/api-scrip-master.csv",
       responseType: "stream",
-      timeout: 30000
+      timeout: 30000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
     });
+
+    if (!response.data) {
+      throw new Error("Empty CSV response from Dhan CDN");
+    }
 
     const rl = readline.createInterface({
       input: response.data,
@@ -60,49 +67,89 @@ async function loadDhanScripMaster() {
 
     let index = 0;
     let headers: string[] = [];
+    let parseErrors = 0;
+    let successCount = 0;
 
     for await (const line of rl) {
-      if (index === 0) {
-        headers = line.split(",").map(h => h.trim());
+      try {
+        if (index === 0) {
+          headers = line.split(",").map(h => h.trim());
+          console.log(`[Dhan] CSV Headers: ${headers.slice(0, 5).join(", ")}...`);
+          index++;
+          continue;
+        }
+
+        const parts = line.split(",");
+        if (parts.length < 2) continue;
+
+        const row: Record<string, string> = {};
+        headers.forEach((h, idx) => {
+          row[h] = parts[idx]?.trim() || "";
+        });
+
+        // Try multiple field combinations for symbol & ID
+        const symbol = row["SEM_TRADING_SYMBOL"]
+          || row["SEM_CUSTOM_SYMBOL"]
+          || row["SM_SYMBOL_NAME"]
+          || row["SYMBOL"]
+          || row["Trading Symbol"];
+
+        const id = row["SEM_EXCH_INSTRUMENT_ID"]
+          || row["SEM_SM_ID"]
+          || row["SEM_SMST_SECURITY_ID"]
+          || row["Security ID"]
+          || row["Instrument ID"];
+
+        if (symbol && id) {
+          const cleanId = id.trim();
+          const cleanSymbol = symbol.toUpperCase().trim();
+
+          dhanScripMap.set(cleanSymbol, cleanId);
+          let compact = cleanSymbol.replace(/\s+/g, "");
+          dhanScripMap.set(compact, cleanId);
+          dhanScripMap.set(`NSE:${compact}`, cleanId);
+          dhanScripMap.set(`NSE:${compact}-EQ`, cleanId);
+
+          successCount++;
+        }
         index++;
-        continue;
+      } catch (lineErr: any) {
+        parseErrors++;
+        if (parseErrors < 5) console.warn(`[Dhan] Line ${index} parse error:`, lineErr.message);
       }
-      
-      const parts = line.split(",");
-      if (parts.length < 3) continue;
-
-      const row: Record<string, string> = {};
-      headers.forEach((h, idx) => {
-        row[h] = parts[idx]?.trim() || "";
-      });
-
-      const symbol = row["SEM_TRADING_SYMBOL"] || row["SEM_CUSTOM_SYMBOL"] || row["SM_SYMBOL_NAME"];
-      const id = row["SEM_EXCH_INSTRUMENT_ID"] || row["SEM_SM_ID"] || row["SEM_SMST_SECURITY_ID"];
-
-      if (symbol && id) {
-        dhanScripMap.set(symbol.toUpperCase(), id);
-        let compact = symbol.replace(/\s+/g, "").toUpperCase();
-        dhanScripMap.set(compact, id);
-        dhanScripMap.set(`NSE:${compact}`, id);
-      }
-      index++;
     }
+
     isDhanScripLoaded = true;
-    console.log(`[Dhan] Scrip Master successfully loaded. Registered ${dhanScripMap.size} symbols.`);
+    console.log(`[Dhan] ✅ Scrip Master loaded: ${successCount} symbols registered (${parseErrors} errors skipped)`);
+
   } catch (err: any) {
-    console.error("[Dhan Warning] Failed to stream scrip master from CDN. Sourcing manual backup index:", err.message);
+    console.error("[Dhan] ⚠️  CSV Download Failed:", err.message);
+
+    // EXPANDED: Fallback with comprehensive scrip list
     const fallbackScrips: Record<string, string> = {
+      // Indices
       "NIFTY50": "13", "NIFTY": "13", "BANKNIFTY": "25", "NIFTYBANK": "25", "INDIAVIX": "37",
+
+      // Large Cap
       "RELIANCE": "11536", "HDFCBANK": "1333", "ICICIBANK": "4963", "SBIN": "3045",
-      "INFY": "1594", "TCS": "11532", "AXISBANK": "5900", "KOTAKBANK": "1922"
+      "INFY": "1594", "TCS": "11532", "AXISBANK": "5900", "KOTAKBANK": "1922", "SUNPHARMA": "7263",
+      "WIPRO": "5885", "LT": "5991",
+
+      // Mid/Small Cap
+      "ASIANPAINT": "875", "MARUTI": "2675", "M&M": "2030",
+      "TATAMOTORS": "8718", "HEROMOTOCO": "5787", "TITAN": "7315", "CHOLAFIN": "3262",
+      "BAJAJ-AUTO": "8401", "EICHERMOT": "5356", "JINDALSTEL": "6280"
     };
+
     Object.entries(fallbackScrips).forEach(([k, v]) => {
       dhanScripMap.set(k, v);
       dhanScripMap.set(`NSE:${k}`, v);
       dhanScripMap.set(`${k}-EQ`, v);
       dhanScripMap.set(`NSE:${k}-EQ`, v);
     });
+
     isDhanScripLoaded = true;
+    console.log(`[Dhan] 📦 Using fallback scrip index (${Object.keys(fallbackScrips).length} symbols)`);
   }
 }
 
@@ -120,19 +167,19 @@ async function generateDhanToken(clientId: string, userPin: string, totpKey: str
   try {
     const totp = generateTOTP(totpKey);
     const url = `https://auth.dhan.co/app/generateAccessToken?dhanClientId=${clientId}&pin=${userPin}&totp=${totp}`;
-    console.log(`[Dhan] Sending POST to generate Token. CLI: ${clientId}, TOTP: ${totp}`);
+    console.log(`[Dhan] 🔐 Generating token for Client ID: ${clientId}`);
     const response = await axios.post(url, {}, { headers: { "Content-Type": "application/json", "Accept": "application/json" }, timeout: 15000 });
     const data = response.data;
     const token = data.accessToken || data.access_token || data.token || data.Token;
     return token ? { success: true, token } : { success: false, error: data.message || data.error || "No token in response" };
   } catch (err: any) {
     const msg = err.response?.data?.message || err.response?.data?.errorValue || err.response?.data?.error || err.message;
-    console.error("[Dhan] generateDhanToken hit error:", err.response?.data || err.message);
+    console.error("[Dhan] ❌ Token generation error:", msg);
     return { success: false, error: msg };
   }
 }
 
-// Auto-run Dhan login on startup or scheduler if credentials exist in process.env or saved file (e.g. from the Secrets / Settings Tab in AI Studio)
+// Auto-run Dhan login on startup
 async function attemptDhanAutoLoginFromEnv(): Promise<{ success: boolean; token?: string; error?: string }> {
   let clientId = process.env.DHAN_CLIENT_ID;
   let totpKey = process.env.DHAN_TOTP_KEY;
@@ -147,105 +194,147 @@ async function attemptDhanAutoLoginFromEnv(): Promise<{ success: boolean; token?
     if (fileExists) {
       const raw = await fs.readFile(credsPath, "utf8");
       const creds = JSON.parse(raw);
-      
-      // If we have a recently cached token (within 12 hours), use it directly instead of re-generating
+
+      // If we have a recently cached token (within 12 hours), use it directly
       if (creds.accessToken && creds.tokenDate) {
         const ageHrs = (Date.now() - creds.tokenDate) / (1000 * 60 * 60);
         if (ageHrs < 12) {
-          console.log(`[Dhan Auto-Login] Using valid cached token from json (Age: ${ageHrs.toFixed(2)} hrs).`);
+          console.log(`[Dhan] ♻️  Using valid cached token (Age: ${ageHrs.toFixed(2)} hrs)`);
           process.env.DHAN_ACCESS_TOKEN = creds.accessToken;
           process.env.DHAN_CLIENT_ID = creds.clientId || clientId;
           isDhanConnected = true;
           return { success: true, token: creds.accessToken };
         }
       }
-      
+
       clientId = clientId || creds.clientId;
       totpKey = totpKey || creds.totpKey;
       userPin = userPin || creds.userPin;
     }
   } catch (e: any) {
-    console.warn("[Dhan Auto-Login] Could not read credentials file:", e.message);
+    console.warn("[Dhan] Could not read credentials file:", e.message);
   }
 
   if (clientId && totpKey && userPin) {
-    console.log(`[Dhan Auto-Login] Found Dhan automation credentials for Client ID: ${clientId}. Generating token internally...`);
+    console.log(`[Dhan] 🔄 Generating automated token for Client ID: ${clientId}`);
     const result = await generateDhanToken(clientId, userPin, totpKey);
-    
+
     if (result.success && result.token) {
-      console.log(`[Dhan Auto-Login] Automated login succeeded! Generated new Access Token.`);
+      console.log(`[Dhan] ✅ Automated login succeeded!`);
       process.env.DHAN_ACCESS_TOKEN = result.token;
       process.env.DHAN_CLIENT_ID = clientId;
       isDhanConnected = true;
-      
-      // Persist generated token so we do not hit rate limit on rapid restarts
+
+      // Persist token to cache file
       try {
         const fs = await import("fs/promises");
         const path = await import("path");
         const credsPath = path.join(process.cwd(), "dhan-credentials.json");
-        const creds = await fs.readFile(credsPath, "utf8").then(r => JSON.parse(r)).catch(() => ({}));
-        creds.clientId = clientId;
-        creds.userPin = userPin;
-        creds.totpKey = totpKey;
-        creds.accessToken = result.token;
-        creds.tokenDate = Date.now();
+        const creds = { clientId, userPin, totpKey, accessToken: result.token, tokenDate: Date.now() };
         await fs.writeFile(credsPath, JSON.stringify(creds, null, 2), "utf8");
       } catch (saveErr) {
-        console.warn("[Dhan Auto-Login] Could not persist token to cache:", saveErr);
+        console.warn("[Dhan] Could not persist token to cache:", saveErr);
       }
-      
+
       return { success: true, token: result.token };
     } else {
-      console.error(`[Dhan Auto-Login Error] Token generator returned unsuccessful: ${result.error || "unknown"}`);
+      console.error(`[Dhan] ❌ Token generation failed: ${result.error}`);
       return { success: false, error: result.error || "Token generation failed" };
     }
   }
 
-  // Fallback to manual 30-day API key if automation fields don't exist
+  // Fallback to manual API key
   if (process.env.DHAN_ACCESS_TOKEN) {
-    console.log(`[Dhan Auto-Login] Manual DHAN_ACCESS_TOKEN found in process.env. Connected directly.`);
+    console.log(`[Dhan] 🔑 Using manual DHAN_ACCESS_TOKEN from environment`);
     isDhanConnected = true;
     return { success: true, token: process.env.DHAN_ACCESS_TOKEN };
   }
-  
-  return { success: false, error: "No valid Dhan automation credentials (Client ID, TOTP, PIN) found in environment or file." };
+
+  return { success: false, error: "No valid Dhan credentials found in environment or file" };
 }
 
 let lastValidationTime = 0;
 async function validateAndRefreshToken(): Promise<boolean> {
   const token = process.env.DHAN_ACCESS_TOKEN;
-  if (!token) return false;
-  
+  if (!token) {
+    console.error("[Dhan] ❌ No token in environment");
+    return false;
+  }
+
   // Throttle validation to prevent spamming
   if (Date.now() - lastValidationTime < 60000) return true;
 
   try {
-    await axios.get("https://api.dhan.co/v2/fundlimit", {
-      headers: { "access-token": token, "client-id": process.env.DHAN_CLIENT_ID || "" },
-      timeout: 3000
+    const response = await axios.get("https://api.dhan.co/v2/fundlimit", {
+      headers: { 
+        "access-token": token, 
+        "client-id": process.env.DHAN_CLIENT_ID || "",
+        "Content-Type": "application/json"
+      },
+      timeout: 5000
     });
+    
+    console.log("[Dhan] ✅ Token validated. Available margin:", response.data?.availableMargin || response.data?.margin);
     lastValidationTime = Date.now();
     return true;
   } catch (err: any) {
-    if (err.response?.status === 401 || err.response?.status === 403) {
-      console.log("[Dhan] Token expired or invalid (401/403). Attempting auto-refresh...");
+    const status = err.response?.status;
+    const errData = err.response?.data;
+
+    console.error(`[Dhan] ❌ Token validation failed (${status}):`, errData?.message || err.message);
+
+    if (status === 401 || status === 403) {
+      console.log("[Dhan] 🔄 Token expired. Attempting refresh...");
       const result = await attemptDhanAutoLoginFromEnv();
-      if (result.success) lastValidationTime = Date.now();
       return result.success;
     }
+
+    if (status === 429) {
+      console.warn("[Dhan] 🚫 Rate limited (429). Will retry later...");
+      return false;
+    }
+
     return false;
   }
 }
 
 async function startServer() {
-  console.log("[Server] Starting server initialization...");
+  console.log("\n" + "━".repeat(70));
+  console.log("[SERVER] Initializing QuantOptix Trading Engine");
+  console.log("━".repeat(70));
+
   const app = express();
   const httpServer = http.createServer(app);
-  
-  // Try background login on server startup
-  attemptDhanAutoLoginFromEnv().catch(e => console.error("[Dhan Auto-Login Startup Error]", e));
 
-  
+  // STARTUP CHECK: Validate Dhan Configuration
+  console.log("\n[STARTUP] Dhan Configuration Check:");
+  console.log("━".repeat(70));
+
+  const hasToken = !!process.env.DHAN_ACCESS_TOKEN;
+  const hasAutoLogin = !!(process.env.DHAN_CLIENT_ID && process.env.DHAN_TOTP_KEY && process.env.DHAN_USER_PIN);
+
+  console.log(`  Token Present: ${hasToken ? "✅ YES" : "❌ NO"}`);
+  console.log(`  Auto-login Config: ${hasAutoLogin ? "✅ YES" : "❌ NO"}`);
+
+  if (!hasToken && !hasAutoLogin) {
+    console.error("\n⚠️  WARNING: No Dhan authentication configured!");
+    console.error("   Please set either:");
+    console.error("   - DHAN_ACCESS_TOKEN (manual 30-day token)");
+    console.error("   - DHAN_CLIENT_ID + DHAN_TOTP_KEY + DHAN_USER_PIN (auto-login)");
+    console.error("\n   The app will run in SIMULATION MODE only.\n");
+  } else {
+    console.log("\n[STARTUP] Attempting Dhan connection...");
+    const loginResult = await attemptDhanAutoLoginFromEnv();
+    if (loginResult.success) {
+      console.log("✅ Dhan connection verified!");
+      isDhanConnected = true;
+    } else {
+      console.error("❌ Dhan connection failed:", loginResult.error);
+    }
+  }
+
+  console.log("━".repeat(70) + "\n");
+
   // Initialize Socket.io
   const io = new Server(httpServer, {
     cors: {
@@ -260,7 +349,7 @@ async function startServer() {
   breakoutStrategyService = new BreakoutStrategyService(io);
 
   // Trigger lazy download of Dhan master CSV in background
-  loadDhanScripMaster().catch(e => console.error("Dhan master download error:", e));
+  loadDhanScripMaster().catch(e => console.error("[Dhan] Master download error:", e));
 
   // Hook Telegram Notifications
   tradingService.onTradeNotify = async (message: string) => {
@@ -274,7 +363,7 @@ async function startServer() {
           parse_mode: 'HTML',
         });
       } catch (e: any) {
-        console.error("[Telegram Notification Error]", e.message);
+        console.error("[Telegram] Failed to send notification:", e.message);
       }
     }
   };
@@ -351,10 +440,10 @@ async function startServer() {
 
           if (scannerService && scannerService.isRunning) {
             scannerService.handleTick(
-              msg.symbol, 
-              msg.ltp, 
-              msg.high_price, 
-              msg.low_price, 
+              msg.symbol,
+              msg.ltp,
+              msg.high_price,
+              msg.low_price,
               msg.v
             );
           }
@@ -373,21 +462,21 @@ async function startServer() {
         }
       });
     } catch (err: any) {
-      console.error("[Broadcaster] Tick stream broadcast failure:", err.message);
+      console.error("[Broadcaster] Tick stream error:", err.message);
     }
   }, 1000);
 
   // Auto-start Scanner Service immediately on startup
   if (scannerService) {
-    scannerService.start().catch(e => console.error("[Scanner Auto-Start Error]", e));
+    scannerService.start().catch(e => console.error("[Scanner] Auto-start error:", e));
   }
 
   app.use(express.json());
-  
+
   // Logging middleware
   app.use((req, res, next) => {
     if (req.path.startsWith('/api')) {
-      console.log(`[API Request] ${req.method} ${req.path}`);
+      console.log(`[API] ${req.method} ${req.path}`);
     }
     next();
   });
@@ -396,7 +485,7 @@ async function startServer() {
   app.get("/api/health", async (req, res) => {
     const allEnvKeys = Object.keys(process.env);
     const dhanKeys = allEnvKeys.filter(k => k.toUpperCase().includes('DHAN'));
-    
+
     let publicIp = "unknown";
     try {
       const ipRes = await axios.get('https://api.ipify.org?format=json', { timeout: 2000 });
@@ -404,13 +493,15 @@ async function startServer() {
     } catch (e: any) {
       console.warn("[Health] Could not fetch public IP:", e.message);
     }
-    
-    res.json({ 
-      status: "alive", 
-      time: new Date().toISOString(), 
+
+    res.json({
+      status: "alive",
+      time: new Date().toISOString(),
       publicIp,
       tokenPresent: !!process.env.DHAN_ACCESS_TOKEN,
-      dhanConfigured: !!process.env.DHAN_ACCESS_TOKEN,
+      dhanConnected: isDhanConnected,
+      dhanScripLoaded: isDhanScripLoaded,
+      dhanScripCount: dhanScripMap.size,
       clientIdPresent: !!process.env.DHAN_CLIENT_ID,
       dhanKeysFound: dhanKeys,
       appUrl: process.env.APP_URL || "NOT_SET",
@@ -427,8 +518,7 @@ async function startServer() {
     }
 
     try {
-      console.log(`[Dhan] Validating connection with Client ID: ${clientId || "Personal Token"}...`);
-      // Validate token using standard fundlimit endpoint
+      console.log(`[Dhan] 🔍 Validating connection with Client ID: ${clientId || "Personal Token"}...`);
       const check = await axios.get("https://api.dhan.co/v2/fundlimit", {
         headers: {
           "access-token": token,
@@ -442,15 +532,15 @@ async function startServer() {
         process.env.DHAN_ACCESS_TOKEN = token;
         if (clientId) process.env.DHAN_CLIENT_ID = clientId;
         isDhanConnected = true;
-        console.log("[Dhan] Authorized successfully. Margins / funds verified.");
-        
+        console.log("[Dhan] ✅ Token validated successfully!");
+
         // Load scrips Master index if not yet loaded
         if (dhanScripMap.size < 20) {
-          loadDhanScripMaster().catch(e => console.warn("Background scrip reload failed:", e.message));
+          loadDhanScripMaster().catch(e => console.warn("[Dhan] Background scrip reload failed:", e.message));
         }
 
-        return res.json({ 
-          success: true, 
+        return res.json({
+          success: true,
           message: "Authorized with Dhan API successfully!",
           funds: check.data
         });
@@ -459,16 +549,16 @@ async function startServer() {
       }
     } catch (error: any) {
       const msg = error.response?.data?.errorValue || error.response?.data?.message || error.message;
-      console.error("[Dhan Live Validation Error]", msg);
-      
-      // Setup connection parameters locally in safe fallback fallback
+      console.error("[Dhan] ❌ Validation Error:", msg);
+
+      // Setup connection parameters locally
       process.env.DHAN_ACCESS_TOKEN = token;
       if (clientId) process.env.DHAN_CLIENT_ID = clientId;
       isDhanConnected = true;
-      
+
       return res.json({
         success: true,
-        message: "Dhan connection accepted under Fallback Mode.",
+        message: "Dhan connection accepted (Fallback Mode)",
         details: msg
       });
     }
@@ -476,48 +566,48 @@ async function startServer() {
 
   app.post("/api/auth/dhan/trigger-env-login", async (req, res) => {
     try {
-      console.log("[Dhan Endpoint] UI triggered manual execution of token generator via Cloud Secrets.");
+      console.log("[Dhan] 🔑 Triggering token generation from environment credentials...");
       const result = await attemptDhanAutoLoginFromEnv();
       if (result.success) {
-        // Load scrips Master index if not yet loaded
         if (dhanScripMap.size < 20) {
-          loadDhanScripMaster().catch(e => console.warn("Background scrip reload failed:", e.message));
+          loadDhanScripMaster().catch(e => console.warn("[Dhan] Background scrip reload failed:", e.message));
         }
         return res.json({
           success: true,
-          message: "Dhan Token successfully generated from Cloud Secrets!",
+          message: "✅ Dhan Token successfully generated!",
           token: result.token
         });
       } else {
         return res.status(400).json({
           success: false,
-          message: result.error || "Auto-generation failed."
+          message: result.error || "Auto-generation failed"
         });
       }
     } catch (err: any) {
       return res.status(500).json({
         success: false,
-        message: err.message || "Server error generating token."
+        message: err.message || "Server error generating token"
       });
     }
   });
 
   app.post("/api/auth/dhan/automate-login", express.json(), async (req, res) => {
     const { clientId, totpKey, userPin, saveCredentials } = req.body;
-    
+
     if (!clientId || !totpKey || !userPin) {
-      return res.status(400).json({ success: false, message: "Client ID, TOTP Key, and PIN are mandatory for automatic token generation." });
+      return res.status(400).json({ 
+        success: false, 
+        message: "Client ID, TOTP Key, and PIN are mandatory" 
+      });
     }
 
     try {
-      console.log(`[Dhan] Initiating automated login for Client ID: ${clientId}...`);
+      console.log(`[Dhan] 🔐 Initiating automated login for Client ID: ${clientId}...`);
       const fs = await import("fs/promises");
       const result = await generateDhanToken(clientId, userPin, totpKey);
 
       if (result.success && result.token) {
-        console.log("[Dhan] Automatic API token retrieval succeeded! Status validating...");
-        
-        // Validate the generated token independently to ensure it functions across standard endpoints
+        // Validate the generated token
         try {
           const testCheck = await axios.get("https://api.dhan.co/v2/fundlimit", {
             headers: {
@@ -533,31 +623,29 @@ async function startServer() {
             process.env.DHAN_CLIENT_ID = clientId;
             isDhanConnected = true;
 
-            // Load scrips Master index
             if (dhanScripMap.size < 20) {
-              loadDhanScripMaster().catch(e => console.warn("Background scrip reload failed:", e.message));
+              loadDhanScripMaster().catch(e => console.warn("[Dhan] Background scrip reload failed:", e.message));
             }
 
             // Persist automation config if requested
             if (saveCredentials) {
-              // Only store API config, usually you wouldn't store TOTP in plaintext, but for UI usage:
               const creds = { clientId, userPin, totpKey, accessToken: result.token, tokenDate: Date.now() };
               await fs.writeFile(path.join(process.cwd(), "dhan-credentials.json"), JSON.stringify(creds, null, 2), "utf8");
             }
 
             return res.json({
               success: true,
-              message: "Logged in & verified with Dhan successfully! Daily Access Token generated.",
+              message: "✅ Logged in & verified with Dhan!",
               token: result.token,
               funds: testCheck.data
             });
           } else {
-            throw new Error("Validation handshake failed.");
+            throw new Error("Validation handshake failed");
           }
         } catch (validateErr: any) {
           const errMsg = validateErr.response?.data?.errorValue || validateErr.response?.data?.message || validateErr.message;
-          console.warn(`[Dhan Verification Warning] auto-token was generated but verification failed: ${errMsg}`);
-          
+          console.warn(`[Dhan] ⚠️  Token generated but verification failed:`, errMsg);
+
           return res.status(400).json({
             success: false,
             message: `Token generation succeeded but validation failed: ${errMsg}`,
@@ -567,7 +655,7 @@ async function startServer() {
       } else {
         return res.status(400).json({
           success: false,
-          message: result.error || "Token generation unsuccessful."
+          message: result.error || "Token generation unsuccessful"
         });
       }
     } catch (e: any) {
@@ -579,10 +667,10 @@ async function startServer() {
     try {
       const fs = await import("fs/promises");
       const credsPath = path.join(process.cwd(), "dhan-credentials.json");
-      
+
       let creds: any = {};
       let configuredFile = false;
-      
+
       const fileExists = await fs.access(credsPath).then(() => true).catch(() => false);
       if (fileExists) {
         const raw = await fs.readFile(credsPath, "utf8");
@@ -590,7 +678,6 @@ async function startServer() {
         configuredFile = true;
       }
 
-      // If credentials are in environment variables from the Secrets tab, prioritize/merge them
       const envCreds = {
         mobileNo: process.env.DHAN_MOBILE || creds.mobileNo || "",
         clientId: process.env.DHAN_CLIENT_ID || creds.clientId || "",
@@ -608,9 +695,9 @@ async function startServer() {
         isUsingEnv: configuredEnv || configuredToken,
         mobileNo: envCreds.mobileNo ? `${envCreds.mobileNo.slice(0, 3)}******${envCreds.mobileNo.slice(-2)}` : "",
         clientId: envCreds.clientId || "",
-        apiKey: envCreds.apiKey ? `${envCreds.apiKey.slice(0, 4)}****************` : "",
-        apiSecret: envCreds.apiSecret ? "********************************" : "",
-        totpKey: envCreds.totpKey ? "****************" : "",
+        apiKey: envCreds.apiKey ? `${envCreds.apiKey.slice(0, 4)}****...` : "",
+        apiSecret: envCreds.apiSecret ? "****...****" : "",
+        totpKey: envCreds.totpKey ? "****...****" : "",
         userPin: "****"
       });
     } catch (e: any) {
@@ -624,6 +711,8 @@ async function startServer() {
       mode: isDhanConnected ? "live" : "disconnected",
       clientId: process.env.DHAN_CLIENT_ID || "Personal Token",
       tokenPresent: !!process.env.DHAN_ACCESS_TOKEN,
+      scripLoaded: isDhanScripLoaded,
+      scripCount: dhanScripMap.size,
       envStatus: {
         DHAN_CLIENT_ID: !!process.env.DHAN_CLIENT_ID,
         DHAN_MOBILE: !!process.env.DHAN_MOBILE,
@@ -633,151 +722,67 @@ async function startServer() {
         DHAN_USER_PIN: !!process.env.DHAN_USER_PIN
       }
     });
-  });  // Cache map for Fyers quotes to prevent 429 Rate Limits
+  });
+
+  // Cache map for quotes to prevent rate limits
   const quotesCache = new Map<string, { timestamp: number; data: any }>();
-  const CACHE_TTL = 3000; // 3 seconds
+  const CACHE_TTL = 3000;
   let rateLimitBackoffUntil = 0;
 
   function getStockBasePrice(symbol: string): number {
     const cleanSym = symbol.toUpperCase().replace("NSE:", "").replace("-EQ", "").trim();
-    
+
     // Indices
     if (cleanSym.includes('NIFTY50') || cleanSym === 'NIFTY') return 24200;
     if (cleanSym.includes('NIFTYBANK') || cleanSym === 'BANKNIFTY') return 52300;
     if (cleanSym.includes('INDIAVIX') || cleanSym === 'VIX') return 13.4;
 
-    // Manual mappings for well-known stock tickers to provide extreme realism
     const prices: Record<string, number> = {
-      'HYUNDAI': 1800,
-      'RELIANCE': 2950,
-      'TCS': 3850,
-      'INFY': 1560,
-      'HDFCBANK': 1650,
-      'ICICIBANK': 1150,
-      'SBIN': 820,
-      'AXISBANK': 1120,
-      'KOTAKBANK': 1780,
-      'COFORGE': 5200,
-      'PERSISTENT': 3600,
-      'UNOMINDA': 1040,
-      'ASTRAL': 2150,
-      'JUBLFOOD': 465,
-      'BEL': 270,
-      'HAL': 3800,
-      'KPITTECH': 1400,
-      'ABB': 5400,
-      'APOLLOHOSP': 6100,
-      'CIPLA': 1420,
-      'DIVISLAB': 3800,
-      'GLENMARK': 980,
-      'AUROPHARMA': 1250,
-      'WIPRO': 480,
-      'COALINDIA': 470,
-      'ITC': 430,
-      'BHARTIARTL': 1380,
-      'TATASTEEL': 160,
-      'MARUTI': 12200,
-      'M&M': 2700,
-      'L&T': 3550,
-      'JSWSTEEL': 890,
-      'ADANIENT': 3100,
-      'ADANIPORTS': 1350,
-      'ULTRACEMCO': 9800,
-      'GRASIM': 2400,
-      'SUNPHARMA': 1550,
-      'VEDL': 450,
-      'ONGC': 270,
-      'NTPC': 360,
-      'POWERGRID': 310,
-      'HINDALCO': 630,
-      'HEROMOTOCO': 4800,
-      'TITAN': 3300,
-      'BAJAJ-AUTO': 9200,
-      'ASIANPAINT': 2900,
-      'EICHERMOT': 4600,
-      'APOLLOTYRE': 480,
-      'TATAMOTORS': 950,
-      'IDFCFIRSTB': 80,
-      'GMRAIRPORT': 85,
-      'PNB': 120,
-      'SAIL': 150,
-      'IRFC': 170,
-      'RECLTD': 520,
-      'PFC': 480,
-      'BHEL': 280,
-      'GAIL': 200,
-      'NATIONALUM': 190,
-      'NMDC': 240,
-      'CANBK': 120,
-      'BANKBARODA': 270,
-      'TATACOMM': 1850,
-      'TATACONSUM': 1100,
-      'TATAPOWER': 430,
-      'MUTHOOTFIN': 1700,
-      'HINDUNILVR': 2450,
-      'LTTS': 4800,
-      'MOTHERSUMI': 250,
-      'SAMVARDHANA': 250,
-      'ADANIPOWER': 650,
-      'DLF': 850,
-      'GODREJPROP': 2500,
-      'ASHOKLEY': 220,
-      'BALKRISIND': 3100,
-      'CHOLAFIN': 1400,
-      'CONCOR': 950,
-      'CUMMINSIND': 3300,
-      'DIXON': 9800,
-      'HAVELLS': 1600,
-      'HDFCLIFE': 580,
-      'ICICIGI': 1650,
-      'IND HOTELS': 620,
-      'INDUSINDBK': 1480,
-      'IPCALAB': 1250,
-      'JINDALSTEL': 950,
-      'LICHSGFIN': 680,
-      'LTIM': 4850,
-      'MPHASIS': 2400,
-      'MRF': 125000,
-      'OFSS': 9800,
-      'PIDILITIND': 3100,
-      'POLYCAB': 6500,
-      'SHREECEM': 26000,
-      'SIEMENS': 6500,
-      'SRF': 2300,
-      'TATACHEM': 1050,
-      'TRENT': 4800,
-      'VOLTAS': 1400
+      'HYUNDAI': 1800, 'RELIANCE': 2950, 'TCS': 3850, 'INFY': 1560,
+      'HDFCBANK': 1650, 'ICICIBANK': 1150, 'SBIN': 820, 'AXISBANK': 1120,
+      'KOTAKBANK': 1780, 'COFORGE': 5200, 'PERSISTENT': 3600, 'UNOMINDA': 1040,
+      'ASTRAL': 2150, 'JUBLFOOD': 465, 'BEL': 270, 'HAL': 3800, 'KPITTECH': 1400,
+      'ABB': 5400, 'APOLLOHOSP': 6100, 'CIPLA': 1420, 'DIVISLAB': 3800,
+      'GLENMARK': 980, 'AUROPHARMA': 1250, 'WIPRO': 480, 'COALINDIA': 470,
+      'ITC': 430, 'BHARTIARTL': 1380, 'TATASTEEL': 160, 'MARUTI': 12200,
+      'M&M': 2700, 'L&T': 3550, 'JSWSTEEL': 890, 'ADANIENT': 3100,
+      'ADANIPORTS': 1350, 'ULTRACEMCO': 9800, 'GRASIM': 2400, 'SUNPHARMA': 1550,
+      'VEDL': 450, 'ONGC': 270, 'NTPC': 360, 'POWERGRID': 310, 'HINDALCO': 630,
+      'HEROMOTOCO': 4800, 'TITAN': 3300, 'BAJAJ-AUTO': 9200, 'ASIANPAINT': 2900,
+      'EICHERMOT': 4600, 'APOLLOTYRE': 480, 'TATAMOTORS': 950, 'IDFCFIRSTB': 80,
+      'GMRAIRPORT': 85, 'PNB': 120, 'SAIL': 150, 'IRFC': 170, 'RECLTD': 520,
+      'PFC': 480, 'BHEL': 280, 'GAIL': 200, 'NATIONALUM': 190, 'NMDC': 240,
+      'CANBK': 120, 'BANKBARODA': 270, 'TATACOMM': 1850, 'TATACONSUM': 1100,
+      'TATAPOWER': 430, 'MUTHOOTFIN': 1700, 'HINDUNILVR': 2450, 'LTTS': 4800,
+      'MOTHERSUMI': 250, 'SAMVARDHANA': 250, 'ADANIPOWER': 650, 'DLF': 850,
+      'GODREJPROP': 2500, 'ASHOKLEY': 220, 'BALKRISIND': 3100, 'CHOLAFIN': 1400,
+      'CONCOR': 950, 'CUMMINSIND': 3300, 'DIXON': 9800, 'HAVELLS': 1600,
+      'HDFCLIFE': 580, 'ICICIGI': 1650, 'IND HOTELS': 620, 'INDUSINDBK': 1480,
+      'IPCALAB': 1250, 'JINDALSTEL': 950, 'LICHSGFIN': 680, 'LTIM': 4850,
+      'MPHASIS': 2400, 'MRF': 125000, 'OFSS': 9800, 'PIDILITIND': 3100,
+      'POLYCAB': 6500, 'SHREECEM': 26000, 'SIEMENS': 6500, 'SRF': 2300,
+      'TATACHEM': 1050, 'TRENT': 4800, 'VOLTAS': 1400
     };
 
-    if (prices[cleanSym] !== undefined) {
-      return prices[cleanSym];
-    }
+    if (prices[cleanSym] !== undefined) return prices[cleanSym];
 
-    // Fallback: Deterministic dynamic base price if not explicitly in the list
-    // Hash characters to assign standard realistic price range between 150 and 4500
+    // Fallback: Deterministic base price
     const hash = cleanSym.split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0);
     const ranges = [150, 350, 750, 1250, 2200, 3200, 4500];
-    const basePrice = ranges[hash % ranges.length] + (hash % 100);
-    return basePrice;
+    return ranges[hash % ranges.length] + (hash % 100);
   }
 
   function parseOptionSymbol(symbolStr: string) {
     const cleanSym = symbolStr.replace("NSE:", "");
-    // Handles formats like "BEL26MAY425PE" or "NIFTY26MAY24200CE"
     const match = cleanSym.match(/^([A-Z0-9\-]+?)(?:\d{2}[A-Z]{3}|\d{2}[0-9A-Z]{3})?(\d+)(CE|PE|PUT)$/i);
     if (match) {
       let type = match[3].toUpperCase();
       if (type === "PE") type = "PUT";
-      return {
-        stock: match[1].toUpperCase(),
-        strike: parseInt(match[2], 10),
-        type
-      };
+      return { stock: match[1].toUpperCase(), strike: parseInt(match[2], 10), type };
     }
     return null;
   }
 
-  // Helper to check if Indian market (NSE) is open in IST
   function isMarketOpenIST(date: Date = new Date()): boolean {
     const istFormatter = new Intl.DateTimeFormat('en-US', {
       timeZone: 'Asia/Kolkata',
@@ -796,25 +801,18 @@ async function startServer() {
     const minutes = parseInt(getPart('minute'), 10);
     const dayOfWeek = date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
 
-    if (dayOfWeek === 'Sat' || dayOfWeek === 'Sun') {
-      return false;
-    }
+    if (dayOfWeek === 'Sat' || dayOfWeek === 'Sun') return false;
 
     const currentTime = hours * 100 + minutes;
-    if (currentTime < 915 || currentTime >= 1530) {
-      return false;
-    }
-
-    return true;
+    return currentTime >= 915 && currentTime < 1530;
   }
 
-  // Helper to generate mock quotes if API completely fails or is limiting
   function generateMockQuoteItem(symbolStr: string): any {
     const closed = !isMarketOpenIST();
     let basePrice = 500;
     const isIndex = symbolStr.includes('-INDEX');
-    
     const isOption = /CE|PE|PUT/.test(symbolStr) && !isIndex && !symbolStr.endsWith('-EQ');
+
     if (isOption) {
       const parsedOption = parseOptionSymbol(symbolStr);
       if (parsedOption) {
@@ -823,13 +821,13 @@ async function startServer() {
 
         const ceIntrinsic = Math.max(0, stockPrice - strike);
         const peIntrinsic = Math.max(0, strike - stockPrice);
-        
+
         const seed = (stock.split('').reduce((a: number, b: string) => a + b.charCodeAt(0), 0) + strike) % 100;
         const stableNoise = (seed / 20);
         const distance = Math.abs(stockPrice - strike);
         const decayFactor = Math.exp(-distance / (stockPrice * 0.12));
         const timeValue = (stockPrice * 0.025) * decayFactor;
-        
+
         basePrice = type === 'CE' ? (ceIntrinsic + timeValue + stableNoise) : (peIntrinsic + timeValue + stableNoise);
         if (basePrice < 1.5) basePrice = 1.5;
       } else {
@@ -838,19 +836,17 @@ async function startServer() {
     } else {
       basePrice = getStockBasePrice(symbolStr);
       if (!closed) {
-        // Use a slow deterministic sine drift instead of wild random jumping to prevent toggling UI
         const minutes = new Date().getMinutes();
-        const deterministicDrift = Math.sin(minutes / 10) * 0.005; // max 0.5% drift over hours
+        const deterministicDrift = Math.sin(minutes / 10) * 0.005;
         basePrice = basePrice * (1 + deterministicDrift);
       }
     }
-    
-    // Stable small changes, NOT random jumping
+
     const driftOffset = closed ? 0 : (Math.sin('seed'.charCodeAt(0) + new Date().getMinutes()) * basePrice * 0.001);
     const ch = driftOffset;
     const chp = closed ? 0 : ((ch / basePrice) * 100);
     const lp = basePrice + ch;
-    
+
     return {
       n: symbolStr,
       s: "ok",
@@ -870,7 +866,7 @@ async function startServer() {
     };
   }
 
-  // Helper to fetch quotes directly from Dhan API (with backup caching and simulation fallback)
+  // Enhanced quote fetching with better diagnostics
   async function getDirectQuotes(requestedSymbols: string[]): Promise<any[]> {
     const INDEX_MAPPINGS: Record<string, { securityId: string; segment: string }> = {
       "NIFTY50-INDEX": { securityId: "13", segment: "IDX_I" },
@@ -883,181 +879,144 @@ async function startServer() {
       "VIX": { securityId: "37", segment: "IDX_I" }
     };
 
-    const now = Date.now();
     const token = process.env.DHAN_ACCESS_TOKEN;
 
-    if (token) {
-      try {
-        await validateAndRefreshToken();
-        
-        const payload: Record<string, any[]> = {};
-        let hasInstruments = false;
-        
-        requestedSymbols.forEach(sym => {
-          let segment = "NSE_EQ";
-          let clean = sym.replace("NSE:", "").toUpperCase();
-          if (clean.endsWith("-EQ")) clean = clean.replace("-EQ", "");
-          
-          let securityId = "";
-          const iMap = INDEX_MAPPINGS[clean] || INDEX_MAPPINGS[sym.toUpperCase()];
-          if (iMap) {
-            segment = iMap.segment;
-            securityId = iMap.securityId;
-          } else {
-            if (sym.includes("NIFTY") || sym.includes("BANKNIFTY") || /CE|PE|PUT/.test(sym)) {
-              segment = "NSE_FNO";
-            } else {
-              segment = "NSE_EQ";
-            }
-            securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
-          }
+    if (!token) {
+      console.warn("[Quotes] ❌ No token available. Using mock data.");
+      return requestedSymbols.map(sym => generateMockQuoteItem(sym));
+    }
 
-          // Do NOT query Dhan LTP API over HTTP for IDX_I segments as it fails with a 400 Bad Request error.
-          // Spot Index feeds are only supported via Dhan WebSockets. We filter them and compute them beautifully
-          // from successful stock returns!
-          if (segment !== "IDX_I") {
-            if (!payload[segment]) payload[segment] = [];
-            payload[segment].push(Number(securityId));
-            hasInstruments = true;
+    if (!isDhanScripLoaded) {
+      console.warn("[Quotes] ⚠️  Scrip master not loaded. Awaiting load...");
+      await loadDhanScripMaster();
+    }
+
+    try {
+      const isValid = await validateAndRefreshToken();
+      if (!isValid) {
+        console.error("[Quotes] ❌ Token validation failed. Using cached/mock data.");
+        return requestedSymbols.map(sym => {
+          const cached = quotesCache.get(sym);
+          if (cached && (Date.now() - cached.timestamp < 30000)) {
+            return cached.data;
           }
+          return generateMockQuoteItem(sym);
         });
+      }
 
-        const fetchedStockDataMap = new Map<string, any>();
-        const now = Date.now();
+      const payload: Record<string, any[]> = {};
+      const symbolMap = new Map<number, string>();
 
-        // Query Dhan API
-        if (hasInstruments && now > rateLimitBackoffUntil) {
-          const response = await axios.post("https://api.dhan.co/v2/marketfeed/quote", payload, {
-            headers: {
-              "access-token": token,
-              "client-id": process.env.DHAN_CLIENT_ID || "1000000000",
-              "Content-Type": "application/json"
-            },
-            timeout: 4000
-          });
+      requestedSymbols.forEach(sym => {
+        let clean = sym.replace("NSE:", "").toUpperCase();
+        if (clean.endsWith("-EQ")) clean = clean.replace("-EQ", "");
 
-          if (response.data && (response.data.status === "success" || response.data.status === "SUCCESS")) {
-            const returnedData = response.data.data;
-            if (returnedData) {
-              Object.keys(returnedData).forEach(seg => {
-                const segData = returnedData[seg];
-                if (segData && typeof segData === "object" && !Array.isArray(segData)) {
-                  Object.keys(segData).forEach(itemId => {
-                    const itemQuote = segData[itemId];
-                    if (itemQuote) {
-                      fetchedStockDataMap.set(String(itemId), itemQuote);
-                    }
-                  });
+        let securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase());
+
+        if (!securityId) {
+          console.warn(`[Quotes] ⚠️  No securityId for: ${sym}`);
+          securityId = "11536";
+        }
+
+        const segment = sym.includes("INDEX") || sym.includes("NIFTY") ? "NSE_FNO" : "NSE_EQ";
+        if (segment !== "IDX_I") {
+          if (!payload[segment]) payload[segment] = [];
+          const idNum = Number(securityId);
+          payload[segment].push(idNum);
+          symbolMap.set(idNum, sym);
+        }
+      });
+
+      console.log(`[Quotes] 🔍 Fetching ${requestedSymbols.length} symbols...`);
+
+      if (Object.keys(payload).length === 0) {
+        console.warn("[Quotes] ⚠️  No valid instruments to fetch");
+        return requestedSymbols.map(sym => generateMockQuoteItem(sym));
+      }
+
+      if (Date.now() < rateLimitBackoffUntil) {
+        console.warn(`[Quotes] ⏸️  Rate limit backoff active. Using cached data.`);
+        return requestedSymbols.map(sym => {
+          const cached = quotesCache.get(sym);
+          return cached ? cached.data : generateMockQuoteItem(sym);
+        });
+      }
+
+      const response = await axios.post("https://api.dhan.co/v2/marketfeed/quote", payload, {
+        headers: {
+          "access-token": token,
+          "client-id": process.env.DHAN_CLIENT_ID || "1000000000",
+          "Content-Type": "application/json"
+        },
+        timeout: 6000
+      });
+
+      if (!response.data) {
+        throw new Error("Empty response from Dhan API");
+      }
+
+      console.log(`[Quotes] ✅ Response received. Status: ${response.data.status}`);
+
+      const fetchedStockDataMap = new Map<string, any>();
+
+      if (response.data.status === "success" || response.data.status === "SUCCESS") {
+        const returnedData = response.data.data;
+        if (returnedData) {
+          Object.keys(returnedData).forEach(seg => {
+            const segData = returnedData[seg];
+            if (segData && typeof segData === "object" && !Array.isArray(segData)) {
+              Object.keys(segData).forEach(itemId => {
+                const itemQuote = segData[itemId];
+                if (itemQuote) {
+                  fetchedStockDataMap.set(String(itemId), itemQuote);
                 }
               });
             }
+          });
+        }
+      }
+
+      let sumPChange = 0;
+      let validStockCount = 0;
+
+      fetchedStockDataMap.forEach((item) => {
+        const lp = Number(item.lastPrice || item.last_price || item.ltp || item.lp || 0);
+        if (lp > 0) {
+          const prevClose = item.ohlc?.close || 0;
+          if (prevClose > 0) {
+            const pChange = ((lp - prevClose) / prevClose) * 100;
+            sumPChange += pChange;
+            validStockCount++;
           }
         }
+      });
 
-        // Calculate average performance percentage change of successfully fetched stocks
-        let sumPChange = 0;
-        let validStockCount = 0;
+      let avgChangePct = 0;
+      if (validStockCount > 0) {
+        avgChangePct = sumPChange / validStockCount;
+      } else {
+        const minutes = new Date().getMinutes();
+        avgChangePct = 0.24 + Math.sin(minutes / 10) * 0.15;
+      }
 
-        fetchedStockDataMap.forEach((item, id) => {
-          const lp = Number(item.lastPrice || item.last_price || item.ltp || item.lp || 0);
-          if (lp > 0) {
-            // Locate corresponding symbol in requestedSymbols
-            const matchingSym = requestedSymbols.find(s => {
-              let clean = s.replace("NSE:", "").toUpperCase();
-              let targetId = dhanScripMap.get(clean) || dhanScripMap.get(s.toUpperCase()) || "11536";
-              return String(targetId) === id;
-            });
-            if (matchingSym) {
-              const prevClose = item.ohlc?.close || getStockBasePrice(matchingSym);
-              if (prevClose > 0) {
-                const pChange = ((lp - prevClose) / prevClose) * 100;
-                sumPChange += pChange;
-                validStockCount++;
-              }
-            }
-          }
-        });
+      return requestedSymbols.map(sym => {
+        let clean = sym.replace("NSE:", "").toUpperCase();
+        if (clean.endsWith("-EQ")) clean = clean.replace("-EQ", "");
 
-        // Use standard drift or synchronous returns
-        let avgChangePct = 0;
-        if (validStockCount > 0) {
-          avgChangePct = sumPChange / validStockCount;
+        let securityId = "";
+        const iMap = INDEX_MAPPINGS[clean] || INDEX_MAPPINGS[sym.toUpperCase()];
+        if (iMap) {
+          securityId = iMap.securityId;
         } else {
-          const minutes = new Date().getMinutes();
-          avgChangePct = 0.24 + Math.sin(minutes / 10) * 0.15;
+          securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
         }
 
-        return requestedSymbols.map(sym => {
-          let clean = sym.replace("NSE:", "").toUpperCase();
-          if (clean.endsWith("-EQ")) clean = clean.replace("-EQ", "");
-          
-          let securityId = "";
-          const iMap = INDEX_MAPPINGS[clean] || INDEX_MAPPINGS[sym.toUpperCase()];
-          if (iMap) {
-            securityId = iMap.securityId;
-          } else {
-            securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
-          }
-
-          // Case A: Index Spot Item (simulated in perfect correlation with successfully loaded stocks)
-          if (iMap && iMap.segment === "IDX_I") {
-            const basePrice = getStockBasePrice(sym);
-            const lp = basePrice * (1 + avgChangePct / 100);
-            const ch = lp - basePrice;
-            const chp = avgChangePct;
-
-            const resItem = {
-              n: sym,
-              s: "ok",
-              v: {
-                lp: Number(lp.toFixed(2)),
-                ch: Number(ch.toFixed(2)),
-                chp: Number(chp.toFixed(2)),
-                vol: Math.floor(5000000 + Math.random() * 2000000),
-                oi: 0,
-                oic: 0,
-                avg_price: lp,
-                high: Number((lp * 1.005).toFixed(2)),
-                low: Number((lp * 0.995).toFixed(2)),
-                open: basePrice,
-                prev_close: basePrice
-              }
-            };
-
-            quotesCache.set(sym, { timestamp: now, data: resItem });
-            return resItem;
-          }
-
-          // Case B: Regular stocks
-          const match = fetchedStockDataMap.get(String(securityId));
-          let lp = 0;
-          if (match) {
-            lp = Number(match.lastPrice || match.last_price || match.ltp || match.lp || 0);
-          }
-
-          if (!lp || isNaN(lp)) {
-            const cached = quotesCache.get(sym);
-            if (cached && (now - cached.timestamp < 15000)) {
-              return cached.data;
-            }
-            const fallbackItem = generateMockQuoteItem(sym);
-            quotesCache.set(sym, { timestamp: now, data: fallbackItem });
-            return fallbackItem;
-          }
-
+        // Index simulation
+        if (iMap && iMap.segment === "IDX_I") {
           const basePrice = getStockBasePrice(sym);
-          const ohlc = match.ohlc || {};
-          let prevClosePrice = Number(ohlc.close || basePrice);
-          let ch = (match.net_change !== undefined && match.net_change !== 0) ? Number(match.net_change) : (lp - prevClosePrice);
-
-          // If ch is 0 (likely after market close where close == lp and net_change resets),
-          // fallback to intraday movement from open to provide realistic gainers/losers variation
-          if (ch === 0 && ohlc.open) {
-            ch = lp - Number(ohlc.open);
-            prevClosePrice = Number(ohlc.open);
-          }
-
-          const chp = prevClosePrice > 0 ? (ch / prevClosePrice) * 100 : 0;
+          const lp = basePrice * (1 + avgChangePct / 100);
+          const ch = lp - basePrice;
+          const chp = avgChangePct;
 
           const resItem = {
             n: sym,
@@ -1066,45 +1025,91 @@ async function startServer() {
               lp: Number(lp.toFixed(2)),
               ch: Number(ch.toFixed(2)),
               chp: Number(chp.toFixed(2)),
-              vol: Number(match.volume || Math.floor(500000 + Math.random() * 1000000)),
-              oi: Number(match.oi || (sym.includes('INDEX') ? 0 : Math.floor(10000 + Math.random() * 50000))),
+              vol: Math.floor(5000000 + Math.random() * 2000000),
+              oi: 0,
               oic: 0,
-              avg_price: Number(match.average_price || lp),
-              high: Number(ohlc.high || (lp * 1.005).toFixed(2)),
-              low: Number(ohlc.low || (lp * 0.995).toFixed(2)),
-              open: Number(ohlc.open || basePrice),
-              prev_close: Number(ohlc.close || basePrice)
+              avg_price: lp,
+              high: Number((lp * 1.005).toFixed(2)),
+              low: Number((lp * 0.995).toFixed(2)),
+              open: basePrice,
+              prev_close: basePrice
             }
           };
 
-          quotesCache.set(sym, { timestamp: now, data: resItem });
+          quotesCache.set(sym, { timestamp: Date.now(), data: resItem });
           return resItem;
-        });
-
-      } catch (err: any) {
-        if (err.response && err.response.status === 429) {
-           console.warn("[Dhan Quotes Fetch] Rate Limit Hit (429). Backing off for 10 seconds.");
-           rateLimitBackoffUntil = Date.now() + 10000;
-        } else {
-           console.warn("[Dhan Quotes Fetch Failed]", err.message, err.response?.data);
         }
-      }
-    } else {
-      console.warn("[Dhan Quotes Fetch] Token is missing from process.env.DHAN_ACCESS_TOKEN. Please manually connect Dhan!");
-    }
 
-    return requestedSymbols.map(sym => {
-      const cached = quotesCache.get(sym);
-      if (cached && (Date.now() - cached.timestamp < 15000)) {
-        return cached.data;
+        // Regular stocks
+        const match = fetchedStockDataMap.get(String(securityId));
+        let lp = 0;
+        if (match) {
+          lp = Number(match.lastPrice || match.last_price || match.ltp || match.lp || 0);
+        }
+
+        if (!lp || isNaN(lp)) {
+          const cached = quotesCache.get(sym);
+          if (cached && (Date.now() - cached.timestamp < 15000)) {
+            return cached.data;
+          }
+          const fallbackItem = generateMockQuoteItem(sym);
+          quotesCache.set(sym, { timestamp: Date.now(), data: fallbackItem });
+          return fallbackItem;
+        }
+
+        const basePrice = getStockBasePrice(sym);
+        const ohlc = match.ohlc || {};
+        let prevClosePrice = Number(ohlc.close || basePrice);
+        let ch = (match.net_change !== undefined && match.net_change !== 0) ? Number(match.net_change) : (lp - prevClosePrice);
+
+        if (ch === 0 && ohlc.open) {
+          ch = lp - Number(ohlc.open);
+          prevClosePrice = Number(ohlc.open);
+        }
+
+        const chp = prevClosePrice > 0 ? (ch / prevClosePrice) * 100 : 0;
+
+        const resItem = {
+          n: sym,
+          s: "ok",
+          v: {
+            lp: Number(lp.toFixed(2)),
+            ch: Number(ch.toFixed(2)),
+            chp: Number(chp.toFixed(2)),
+            vol: Number(match.volume || Math.floor(500000 + Math.random() * 1000000)),
+            oi: Number(match.oi || (sym.includes('INDEX') ? 0 : Math.floor(10000 + Math.random() * 50000))),
+            oic: 0,
+            avg_price: Number(match.average_price || lp),
+            high: Number(ohlc.high || (lp * 1.005).toFixed(2)),
+            low: Number(ohlc.low || (lp * 0.995).toFixed(2)),
+            open: Number(ohlc.open || basePrice),
+            prev_close: Number(ohlc.close || basePrice)
+          }
+        };
+
+        quotesCache.set(sym, { timestamp: Date.now(), data: resItem });
+        return resItem;
+      });
+
+    } catch (err: any) {
+      if (err.response?.status === 429) {
+        console.warn("[Quotes] 🚫 Rate limit hit (429). Backing off 15s...");
+        rateLimitBackoffUntil = Date.now() + 15000;
+      } else {
+        console.error(`[Quotes] ❌ API Error (${err.response?.status}):`, err.response?.data?.message || err.message);
       }
-      const mockItem = generateMockQuoteItem(sym);
-      quotesCache.set(sym, { timestamp: Date.now(), data: mockItem });
-      return mockItem;
-    });
+
+      return requestedSymbols.map(sym => {
+        const cached = quotesCache.get(sym);
+        if (cached && (Date.now() - cached.timestamp < 30000)) {
+          return cached.data;
+        }
+        return generateMockQuoteItem(sym);
+      });
+    }
   }
 
-  // Proxy for DHAN / Market Data with Caching and Fallbacks
+  // Proxy for market data
   app.get("/api/market/quotes", async (req, res) => {
     const { symbols } = req.query;
 
@@ -1115,8 +1120,6 @@ async function startServer() {
     const symbolsStr = Array.isArray(symbols) ? symbols.join(",") : String(symbols);
     const requestedSymbols = symbolsStr.split(",").map(s => s.trim()).filter(Boolean);
 
-    console.log(`[Proxy] Fetching quotes via Dhan stream router for ${requestedSymbols.length} items`);
-
     try {
       const data = await getDirectQuotes(requestedSymbols);
       return res.json({ s: "ok", d: data });
@@ -1125,25 +1128,25 @@ async function startServer() {
     }
   });
 
-  // ORDER PLACEMENT ENDPOINT FOR DHAN
+  // ORDER PLACEMENT ENDPOINT
   app.post("/api/trade/place", async (req, res) => {
     const { symbol, qty, type, side, price } = req.body;
     const token = process.env.DHAN_ACCESS_TOKEN;
     const clientId = process.env.DHAN_CLIENT_ID || "1000000000";
 
     if (!token) {
-      return res.status(401).json({ 
-        success: false, 
-        message: "Dhan is not connected. Please save your Access Token via the Dhan Authorization card." 
+      return res.status(401).json({
+        success: false,
+        message: "Dhan is not connected. Please configure Dhan credentials."
       });
     }
 
     try {
-      console.log(`[Dhan Live Order] Placing real ${side} order for ${symbol}...`);
+      console.log(`[Order] Placing ${side} order for ${symbol}...`);
 
       let cleanSymbol = symbol.replace("NSE:", "").trim();
       let securityId = dhanScripMap.get(cleanSymbol.toUpperCase()) || dhanScripMap.get(symbol.toUpperCase());
-      
+
       let segment = "NSE_EQ";
       if (cleanSymbol.includes("-INDEX") || cleanSymbol.includes("NIFTY")) {
         segment = "NSE_FNO";
@@ -1169,8 +1172,6 @@ async function startServer() {
         price: type === "2" || !type ? 0 : Number(price || 0)
       };
 
-      console.log("[Dhan Order Payload]:", JSON.stringify(orderPayload));
-
       const response = await axios.post("https://api.dhan.co/v2/orders", orderPayload, {
         headers: {
           "access-token": token,
@@ -1179,23 +1180,23 @@ async function startServer() {
         timeout: 6000
       });
 
-      if (response.data && (response.data.status === "success" || response.data.orderId || response.data.data)) {
+      if (response.data && (response.data.status === "success" || response.data.orderId)) {
         res.json({
           success: true,
-          orderId: response.data.orderId || (response.data.data && response.data.data.orderId) || `DHAN_${Math.floor(Math.random() * 899999 + 100000)}`,
-          message: "Order executed successfully via Dhan Live API!"
+          orderId: response.data.orderId || `DHAN_${Math.floor(Math.random() * 899999 + 100000)}`,
+          message: "✅ Order executed successfully!"
         });
       } else {
-        throw new Error(response.data?.remarks || response.data?.message || "Order rejected by Dhan.");
+        throw new Error(response.data?.remarks || "Order rejected");
       }
     } catch (error: any) {
       const errorMsg = error.response?.data?.errorValue || error.response?.data?.message || error.message;
-      console.error("[Dhan Order Failed]", errorMsg);
-      
+      console.error("[Order] ❌ Failed:", errorMsg);
+
       res.json({
         success: true,
-        orderId: `SIM_DHAN_${Math.floor(Math.random() * 899999 + 100000)}`,
-        message: "Order processed successfully on Dhan (Simulation Fallback active).",
+        orderId: `SIM_${Math.floor(Math.random() * 899999 + 100000)}`,
+        message: "Order processed (Simulation Mode)",
         details: errorMsg
       });
     }
@@ -1208,10 +1209,10 @@ async function startServer() {
     const chatId = process.env.TELEGRAM_CHAT_ID;
 
     if (!botToken || !chatId) {
-      console.error("[Telegram] ERR: Configuration missing. Token:", !!botToken, "ChatId:", !!chatId);
-      return res.status(400).json({ 
-        error: "Telegram configuration missing", 
-        details: "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not found in environment." 
+      console.error("[Telegram] Configuration missing");
+      return res.status(400).json({
+        error: "Telegram configuration missing",
+        details: "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not found"
       });
     }
 
@@ -1223,15 +1224,15 @@ async function startServer() {
       });
       res.json({ success: true, api_response: response.data });
     } catch (error: any) {
-      console.error("[Telegram] ERR: Failed to send message.", error.response?.data || error.message);
-      res.status(500).json({ 
-        error: "Failed to send Telegram message", 
-        details: error.response?.data || error.message 
+      console.error("[Telegram] ❌ Failed to send message:", error.message);
+      res.status(500).json({
+        error: "Failed to send Telegram message",
+        details: error.message
       });
     }
   });
 
-  // BREAKOUT STRATEGY API ENDPOINTS
+  // BREAKOUT STRATEGY ENDPOINTS
   app.get("/api/breakout/status", (req, res) => {
     if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
     res.json({
@@ -1261,8 +1262,8 @@ async function startServer() {
   app.post("/api/breakout/trigger-scan", express.json(), async (req, res) => {
     if (!breakoutStrategyService) return res.status(500).json({ error: "Breakout service not initialized" });
     try {
-      console.log(`[BreakoutStrategy] Triggering active F&O live scan for ${FNO_SYMBOLS.length} stocks...`);
-      
+      console.log(`[Breakout] Triggering scan for ${FNO_SYMBOLS.length} stocks...`);
+
       const allQuotes: any[] = [];
       const chunks = [];
       for (let i = 0; i < FNO_SYMBOLS.length; i += 50) {
@@ -1288,12 +1289,11 @@ async function startServer() {
           };
         });
       } else {
-        console.warn("[BreakoutStrategy] Active quotes fetch yielded 0 items. Falling back to simulated cluster.");
+        console.warn("[Breakout] Using simulated data");
         currentStocks = getLiveStockData();
       }
 
       await breakoutStrategyService.runBreakoutScan(currentStocks);
-
       res.json({ success: true, targets: breakoutStrategyService.targets });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1314,7 +1314,7 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Background drift simulation timer (every 3 seconds) for responsive front-end visualization & offline testing
+  // Background drift simulation
   setInterval(() => {
     if (breakoutStrategyService && breakoutStrategyService.isEnabled) {
       breakoutStrategyService.injectSimulatedMarketMove();
@@ -1323,7 +1323,7 @@ async function startServer() {
 
   // Vite / Static Serving
   if (process.env.NODE_ENV !== "production") {
-    console.log("[Server] Running in DEVELOPMENT mode with Vite Middleware");
+    console.log("[Server] Running in DEVELOPMENT mode");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -1333,7 +1333,7 @@ async function startServer() {
     console.log("[Server] Running in PRODUCTION mode");
     const distPath = path.resolve(process.cwd(), "dist");
     const indexPath = path.join(distPath, "index.html");
-    
+
     app.use(express.static(distPath, { index: false }));
 
     app.get("*", (req, res) => {
@@ -1346,8 +1346,7 @@ async function startServer() {
 
   io.on("connection", (socket) => {
     console.log("[Socket] Client connected:", socket.id);
-    
-    // Send initial status
+
     if (tradingService) {
       const status = tradingService.getStatus();
       socket.emit("auto-trade-status", status.autoTradeEnabled);
@@ -1383,12 +1382,11 @@ async function startServer() {
   setInterval(async () => {
     try {
       const now = new Date();
-      
-      // Calculate Regime if we have data
+
       if (niftyHistory.length > 5) {
-        const niftyPlaceholder: StockData = { symbol: "NIFTY50", lastPrice: niftyHistory[niftyHistory.length-1], vwap: niftyHistory[niftyHistory.length-1] } as any;
+        const niftyPlaceholder: StockData = { symbol: "NIFTY50", lastPrice: niftyHistory[niftyHistory.length - 1], vwap: niftyHistory[niftyHistory.length - 1] } as any;
         const vixPlaceholder: StockData = { symbol: "VIX", lastPrice: 15 } as any;
-        
+
         const regime = MarketRegimeService.calculateRegime(
           niftyPlaceholder,
           vixPlaceholder,
@@ -1397,38 +1395,36 @@ async function startServer() {
           niftyHistory
         );
         currentRegime = regime;
-        console.log(`[Scheduler] Regime Updated: ${regime.regime} (${regime.description})`);
+        console.log(`[Scheduler] Regime: ${regime.regime}`);
         io.emit("market-regime-update", regime);
       }
-  
-      // 2. Check Market Status & Optimize Services
+
       const marketStatus = isMarketOpen(now);
 
-      // Format current date and time in Asia/Kolkata timezone
       const kolkataDateStr = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
-      const istTime = now.toLocaleTimeString('en-US', { 
-        timeZone: 'Asia/Kolkata', 
-        hour12: false, 
-        hour: '2-digit', 
-        minute: '2-digit' 
+      const istTime = now.toLocaleTimeString('en-US', {
+        timeZone: 'Asia/Kolkata',
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit'
       });
       const isWorkingDay = marketStatus.reason !== 'Weekend' && marketStatus.reason !== 'Market Holiday';
 
-      // Scheduled Daily Automatic Dhan Login (08:50 AM IST on working days)
+      // Scheduled Daily Automatic Dhan Login (08:50 AM IST)
       if (istTime === '08:50' && isWorkingDay && lastDhanAutoLoginDate !== kolkataDateStr) {
         lastDhanAutoLoginDate = kolkataDateStr;
-        console.log(`[Scheduler] 08:50 AM IST reached on a working day (${kolkataDateStr}). Running scheduled daily automated Dhan login...`);
-        io.emit("bot-log", `SYSTEM: Running 08:50 AM scheduled daily automated login to Dhan...`);
-        attemptDhanAutoLoginFromEnv().catch(e => console.error("[Scheduler Error] Daily auto-login failed:", e));
+        console.log(`[Scheduler] Running scheduled daily Dhan login...`);
+        io.emit("bot-log", `SYSTEM: 08:50 AM IST scheduled login running...`);
+        attemptDhanAutoLoginFromEnv().catch(e => console.error("[Scheduler] Daily login failed:", e));
       }
 
-      // Scheduled Daily First Breakout Scan (10:00 AM IST on working days)
+      // Scheduled Daily Breakout Scan (10:00 AM IST)
       if (istTime === '10:00' && isWorkingDay && lastBreakoutScanDate !== kolkataDateStr) {
         if (breakoutStrategyService && breakoutStrategyService.isEnabled) {
           lastBreakoutScanDate = kolkataDateStr;
-          console.log(`[Scheduler] 10:00 AM IST reached on a working day (${kolkataDateStr}). Triggering automatic Morning Breakout Scan...`);
-          io.emit("bot-log", `SYSTEM: 10:00 AM IST reached. Triggering automatic Breakout Momentum scan...`);
-          
+          console.log(`[Scheduler] Running scheduled morning breakout scan...`);
+          io.emit("bot-log", `SYSTEM: 10:00 AM IST scheduled scan running...`);
+
           try {
             const allQuotes: any[] = [];
             const chunks = [];
@@ -1455,40 +1451,38 @@ async function startServer() {
                 };
               });
             } else {
-              console.warn("[BreakoutStrategy Scheduled AutoScan] Active quotes fetch yielded 0 items. Falling back to simulated cluster.");
               currentStocks = getLiveStockData();
             }
 
             await breakoutStrategyService.runBreakoutScan(currentStocks);
-            io.emit("bot-log", `SYSTEM: Automatic Morning Breakout Scan completed! ${breakoutStrategyService.targets.length} targets identified.`);
+            io.emit("bot-log", `SYSTEM: Scan completed! ${breakoutStrategyService.targets.length} targets identified.`);
           } catch (err: any) {
-            console.error("[Scheduler Error] Automatic breakout scan failed:", err.message);
+            console.error("[Scheduler] Breakout scan failed:", err.message);
           }
-        } else {
-          console.log(`[Scheduler] 10:00 AM IST reached, but Breakout Strategy is NOT enabled. Skipping daily automatic scan.`);
         }
       }
 
       if (marketStatus.open) {
         if (scannerService && !scannerService.isRunning) {
-          console.log(`[Scheduler] Market is OPEN. Starting scanner...`);
-          scannerService.start().catch(e => console.error("[Scheduler] Scanner start failed:", e));
-          io.emit("bot-log", `SYSTEM: Scanner resumed (Reason: Market open)`);
+          console.log(`[Scheduler] Market OPEN. Starting scanner...`);
+          scannerService.start().catch(e => console.error("[Scanner] Start failed:", e));
+          io.emit("bot-log", `SYSTEM: Scanner resumed (Market open)`);
         }
       } else {
         if (scannerService && scannerService.isRunning) {
-          console.log(`[Scheduler] Market is CLOSED (${marketStatus.reason}). Suspending scanner...`);
+          console.log(`[Scheduler] Market CLOSED (${marketStatus.reason}). Stopping scanner...`);
           scannerService.stop();
         }
       }
     } catch (e: any) {
-      console.error("[Scheduler] Scheduler error:", e.message);
+      console.error("[Scheduler] Error:", e.message);
     }
   }, 60000);
 
   httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`🚀 [Server] Quantitative Trading Engine running on http://0.0.0.0:${PORT}`);
-    console.log(`[Dhan Engine] Connected status: ${isDhanConnected || !!process.env.DHAN_ACCESS_TOKEN}`);
+    console.log(`\n🚀 [Server] Trading Engine running on http://0.0.0.0:${PORT}`);
+    console.log(`[Dhan] Connected: ${isDhanConnected ? "✅ YES" : "⏸️  NO (Simulation Mode)"}`);
+    console.log("━".repeat(70) + "\n");
   });
 }
 
