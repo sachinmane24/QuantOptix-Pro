@@ -1757,7 +1757,7 @@ export default function App() {
                     {dailyPnL >= 0 ? "+" : ""}{formatCurrency(dailyPnL)}
                   </span>
                 </div>
-                <div>F&O UNIVERSE <span className="text-white font-bold ml-1">{stocks.length} ACTIVE</span></div>
+                <div>F&O UNIVERSE <span className="text-white font-bold ml-1">{stocks.filter(s => !s.symbol.includes('INDEX')).length} ACTIVE</span></div>
                 
                 <div className="flex items-center gap-2 border-l border-tech-border pl-8 ml-4">
                   <div className={cn(

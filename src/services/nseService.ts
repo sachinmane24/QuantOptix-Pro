@@ -141,7 +141,7 @@ export function getStockBasePrice(symbol: string): number {
 
 // Simulate live data deterministically
 export function getLiveStockData(): StockData[] {
-  return FNO_STOCKS.slice(0, 100).map(symbol => {
+  return FNO_STOCKS.slice(0, 10).map(symbol => {
     const min = new Date().getMinutes();
     const seed = symbol.charCodeAt(0) + symbol.length;
     
@@ -428,13 +428,14 @@ export async function getActiveInstitutionalUniverse(): Promise<string[]> {
     if (allQuotes.length === 0) return activeUniverseSymbols.length > 0 ? activeUniverseSymbols : FNO_STOCKS.slice(0, 10);
 
     const sorted = [...allQuotes].sort((a, b) => b.pChange - a.pChange);
-    const topGainersArr = sorted.slice(0, 20);
-    const topLosersArr = sorted.slice(-20);
+    const topGainersArr = sorted.slice(0, 5);
+    const topLosersArr = sorted.slice(-5);
     
-    const top20Gainers = topGainersArr.map(s => s.symbol);
-    const top20Losers = topLosersArr.map(s => s.symbol);
+    const top5Gainers = topGainersArr.map(s => s.symbol);
+    const top5Losers = topLosersArr.map(s => s.symbol);
     
-    activeUniverseSymbols = [...new Set([...top20Gainers, ...top20Losers])];
+    const combined = [...new Set([...top5Gainers, ...top5Losers])].slice(0, 10);
+    activeUniverseSymbols = combined;
     lastUniverseRefresh = now;
     
     if (dynamicMarketOverview) {
