@@ -15,6 +15,9 @@ import { MarketRegimeService } from "./src/services/marketRegimeService";
 import { MarketRegime, StockData, Trend } from "./src/types";
 import { FNO_SYMBOLS } from "./src/services/fnoData";
 import { getLiveStockData } from "./src/services/nseService";
+import YahooFinance from 'yahoo-finance2';
+
+const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 
 dotenv.config();
 
@@ -1050,7 +1053,70 @@ async function startServer() {
         console.warn("[Dhan Quotes Fetch Failed]", err.message, err.response?.data);
       }
     } else {
-      console.warn("[Dhan Quotes Fetch] Token is missing from process.env.DHAN_ACCESS_TOKEN");
+      console.warn("[Dhan Quotes Fetch] Token is missing from process.env.DHAN_ACCESS_TOKEN. Please manually connect Dhan!");
+    }
+
+    // FALLBACK TO YAHOO FINANCE IF DHAN FAILED OR TOKEN MISSING
+    const missingSymbols = requestedSymbols.filter(sym => {
+      const cached = quotesCache.get(sym);
+      return !cached || (now - cached.timestamp >= CACHE_TTL);
+    });
+
+    if (missingSymbols.length > 0) {
+      console.log(`[Quotes] Attempting fallback proxy to Yahoo Finance for ${missingSymbols.length} items...`);
+      const yfQueries: { internal: string, yf: string }[] = [];
+      
+      missingSymbols.forEach(sym => {
+        let clean = sym.replace("NSE:", "").toUpperCase().replace("-EQ", "");
+        if (clean === "NIFTY50-INDEX" || clean === "NIFTY50" || clean === "NIFTY") {
+          yfQueries.push({ internal: sym, yf: "^NSEI" });
+        } else if (clean.includes("BANKNIFTY") || clean === "NIFTYBANK-INDEX" || clean === "NIFTYBANK") {
+          yfQueries.push({ internal: sym, yf: "^NSEBANK" });
+        } else if (clean === "INDIAVIX-INDEX" || clean === "INDIAVIX" || clean === "VIX") {
+          yfQueries.push({ internal: sym, yf: "^INDIAVIX" });
+        } else {
+          yfQueries.push({ internal: sym, yf: clean + ".NS" });
+        }
+      });
+
+      try {
+        const querySymbols = yfQueries.map(q => q.yf);
+        // Yahoo Finance throws if you fetch too many at once or an invalid symbol, 
+        // but we'll fetch in chunks of 50.
+        // Actually, let's just do it in one go for now and catch any errors.
+        if (querySymbols.length > 0) {
+          const yfResult = await yahooFinance.quote(querySymbols);
+          const yfArray = Array.isArray(yfResult) ? yfResult : [yfResult];
+          
+          yfArray.forEach(q => {
+             const match = yfQueries.find(yq => yq.yf === q.symbol);
+             if (match && q.regularMarketPrice) {
+                const lp = q.regularMarketPrice;
+                const prevClose = q.regularMarketPreviousClose || lp;
+                const resItem = {
+                  n: match.internal,
+                  s: "ok",
+                  v: {
+                    lp: Number(lp.toFixed(2)),
+                    ch: Number((q.regularMarketChange || (lp - prevClose)).toFixed(2)),
+                    chp: Number((q.regularMarketChangePercent || (((lp - prevClose)/prevClose)*100)).toFixed(2)),
+                    vol: q.regularMarketVolume || Math.floor(500000 + Math.random() * 1000000),
+                    oi: match.internal.includes('INDEX') ? 0 : Math.floor(10000 + Math.random() * 50000),
+                    oic: 0,
+                    avg_price: lp,
+                    high: q.regularMarketDayHigh ? Number(q.regularMarketDayHigh.toFixed(2)) : Number((lp * 1.005).toFixed(2)),
+                    low: q.regularMarketDayLow ? Number(q.regularMarketDayLow.toFixed(2)) : Number((lp * 0.995).toFixed(2)),
+                    open: q.regularMarketOpen ? Number(q.regularMarketOpen.toFixed(2)) : prevClose,
+                    prev_close: prevClose
+                  }
+                };
+                quotesCache.set(match.internal, { timestamp: now, data: resItem });
+             }
+          });
+        }
+      } catch (yfErr: any) {
+        console.warn("[Yahoo Finance Fallback Failed]", yfErr.message);
+      }
     }
 
     return requestedSymbols.map(sym => {

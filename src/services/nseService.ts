@@ -426,11 +426,21 @@ export async function getActiveInstitutionalUniverse(): Promise<string[]> {
     if (allQuotes.length === 0) return activeUniverseSymbols.length > 0 ? activeUniverseSymbols : FNO_STOCKS.slice(0, 10);
 
     const sorted = [...allQuotes].sort((a, b) => b.pChange - a.pChange);
-    const top20Gainers = sorted.slice(0, 20).map(s => s.symbol);
-    const top20Losers = sorted.slice(-20).map(s => s.symbol);
+    const topGainersArr = sorted.slice(0, 20);
+    const topLosersArr = sorted.slice(-20);
+    
+    const top20Gainers = topGainersArr.map(s => s.symbol);
+    const top20Losers = topLosersArr.map(s => s.symbol);
     
     activeUniverseSymbols = [...new Set([...top20Gainers, ...top20Losers])];
     lastUniverseRefresh = now;
+    
+    if (dynamicMarketOverview) {
+      if (topGainersArr.length > 0) dynamicMarketOverview.topGainer = topGainersArr[0].symbol;
+      if (topLosersArr.length > 0) dynamicMarketOverview.topLoser = topLosersArr[topLosersArr.length - 1].symbol;
+      dynamicMarketOverview.advances = allQuotes.filter(q => q.pChange > 0).length;
+      dynamicMarketOverview.declines = allQuotes.filter(q => q.pChange < 0).length;
+    }
     
     console.log('[Institutional Scanner] Universe Refreshed:', activeUniverseSymbols);
     return activeUniverseSymbols;
