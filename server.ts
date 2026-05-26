@@ -874,7 +874,8 @@ async function startServer() {
 
     if (token) {
       try {
-        const instruments: any[] = [];
+        const payload: Record<string, string[]> = {};
+        let hasInstruments = false;
         
         requestedSymbols.forEach(sym => {
           let segment = "NSE_EQ";
@@ -898,22 +899,20 @@ async function startServer() {
           // Spot Index feeds are only supported via Dhan WebSockets. We filter them and compute them beautifully
           // from successful stock returns!
           if (segment !== "IDX_I") {
-            instruments.push({
-              exchangeSegment: segment,
-              securityId: String(securityId)
-            });
+            if (!payload[segment]) payload[segment] = [];
+            payload[segment].push(String(securityId));
+            hasInstruments = true;
           }
         });
 
         const fetchedStockDataMap = new Map<string, any>();
 
         // Query Dhan API
-        if (instruments.length > 0) {
-          const response = await axios.post("https://api.dhan.co/v2/marketfeed/ltp", {
-            instruments
-          }, {
+        if (hasInstruments) {
+          const response = await axios.post("https://api.dhan.co/v2/marketfeed/ltp", payload, {
             headers: {
               "access-token": token,
+              "client-id": process.env.DHAN_CLIENT_ID || "1000000000",
               "Content-Type": "application/json"
             },
             timeout: 4000
@@ -1048,8 +1047,10 @@ async function startServer() {
         });
 
       } catch (err: any) {
-        console.warn("[Dhan Quotes Fetch Failed]", err.message);
+        console.warn("[Dhan Quotes Fetch Failed]", err.message, err.response?.data);
       }
+    } else {
+      console.warn("[Dhan Quotes Fetch] Token is missing from process.env.DHAN_ACCESS_TOKEN");
     }
 
     return requestedSymbols.map(sym => {
