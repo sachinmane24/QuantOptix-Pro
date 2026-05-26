@@ -31,7 +31,7 @@ def main():
         
         print("Executing token generation via dhan_token_automate...", file=sys.stderr)
         
-        access_token = GetAccessToken(mobile_no, client_id, apikey, apisecret, totp_key, user_pin)
+        access_token = GetAccessToken(client_id, user_pin, totp_key)
         
         if access_token:
             print(json.dumps({

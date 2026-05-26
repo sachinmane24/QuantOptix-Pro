@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import { Server } from "socket.io";
 import http from "http";
 import crypto from "crypto";
+import speakeasy from "speakeasy";
 import readline from "readline";
 import { ScannerService, TradeSignal } from "./src/services/scannerService";
 import { PaperTradingService } from "./src/services/paperTradingService";
@@ -112,27 +113,7 @@ let advances = 0;
 let declines = 0;
 
 function generateTOTP(secretBase32: string): string {
-  const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  let bits = '';
-  for (let i = 0; i < secretBase32.length; i++) {
-    const val = base32chars.indexOf(secretBase32.charAt(i).toUpperCase());
-    if (val === -1) continue;
-    bits += val.toString(2).padStart(5, '0');
-  }
-  let hex = '';
-  for (let i = 0; i < bits.length - 7; i += 8) {
-    hex += parseInt(bits.substr(i, 8), 2).toString(16).padStart(2, '0');
-  }
-  const key = Buffer.from(hex, 'hex');
-  const epoch = Math.floor(Date.now() / 1000);
-  const time = Buffer.alloc(8);
-  time.writeUInt32BE(Math.floor(epoch / 30), 4);
-  const hmac = crypto.createHmac('sha1', key);
-  hmac.update(time);
-  const result = hmac.digest();
-  const offset = result[result.length - 1] & 0xf;
-  const code = (((result[offset] & 0x7f) << 24) | ((result[offset + 1] & 0xff) << 16) | ((result[offset + 2] & 0xff) << 8) | (result[offset + 3] & 0xff)) % 1000000;
-  return code.toString().padStart(6, '0');
+  return speakeasy.totp({ secret: secretBase32, encoding: "base32" });
 }
 
 async function generateDhanToken(clientId: string, userPin: string, totpKey: string) {
@@ -228,6 +209,32 @@ async function attemptDhanAutoLoginFromEnv(): Promise<{ success: boolean; token?
   }
   
   return { success: false, error: "No valid Dhan automation credentials (Client ID, TOTP, PIN) found in environment or file." };
+}
+
+let lastValidationTime = 0;
+async function validateAndRefreshToken(): Promise<boolean> {
+  const token = process.env.DHAN_ACCESS_TOKEN;
+  if (!token) return false;
+  
+  // Throttle validation to prevent spamming
+  if (Date.now() - lastValidationTime < 60000) return true;
+
+  try {
+    await axios.get("https://api.dhan.co/v2/fundlimit", {
+      headers: { "access-token": token, "client-id": process.env.DHAN_CLIENT_ID || "" },
+      timeout: 3000
+    });
+    lastValidationTime = Date.now();
+    return true;
+  } catch (err: any) {
+    if (err.response?.status === 401 || err.response?.status === 403) {
+      console.log("[Dhan] Token expired or invalid (401/403). Attempting auto-refresh...");
+      const result = await attemptDhanAutoLoginFromEnv();
+      if (result.success) lastValidationTime = Date.now();
+      return result.success;
+    }
+    return false;
+  }
 }
 
 async function startServer() {
@@ -386,14 +393,22 @@ async function startServer() {
   });
 
   // Health check
-  app.get("/api/health", (req, res) => {
+  app.get("/api/health", async (req, res) => {
     const allEnvKeys = Object.keys(process.env);
-    
     const dhanKeys = allEnvKeys.filter(k => k.toUpperCase().includes('DHAN'));
+    
+    let publicIp = "unknown";
+    try {
+      const ipRes = await axios.get('https://api.ipify.org?format=json', { timeout: 2000 });
+      publicIp = ipRes.data.ip;
+    } catch (e: any) {
+      console.warn("[Health] Could not fetch public IP:", e.message);
+    }
     
     res.json({ 
       status: "alive", 
       time: new Date().toISOString(), 
+      publicIp,
       tokenPresent: !!process.env.DHAN_ACCESS_TOKEN,
       dhanConfigured: !!process.env.DHAN_ACCESS_TOKEN,
       clientIdPresent: !!process.env.DHAN_CLIENT_ID,
@@ -417,6 +432,7 @@ async function startServer() {
       const check = await axios.get("https://api.dhan.co/v2/fundlimit", {
         headers: {
           "access-token": token,
+          "client-id": clientId,
           "Content-Type": "application/json"
         },
         timeout: 4000
@@ -506,6 +522,7 @@ async function startServer() {
           const testCheck = await axios.get("https://api.dhan.co/v2/fundlimit", {
             headers: {
               "access-token": result.token,
+              "client-id": clientId,
               "Content-Type": "application/json"
             },
             timeout: 4000
@@ -871,7 +888,9 @@ async function startServer() {
 
     if (token) {
       try {
-        const payload: Record<string, string[]> = {};
+        await validateAndRefreshToken();
+        
+        const payload: Record<string, any[]> = {};
         let hasInstruments = false;
         
         requestedSymbols.forEach(sym => {
@@ -948,9 +967,9 @@ async function startServer() {
               return String(targetId) === id;
             });
             if (matchingSym) {
-              const basePrice = getStockBasePrice(matchingSym);
-              if (basePrice > 0) {
-                const pChange = ((lp - basePrice) / basePrice) * 100;
+              const prevClose = item.ohlc?.close || getStockBasePrice(matchingSym);
+              if (prevClose > 0) {
+                const pChange = ((lp - prevClose) / prevClose) * 100;
                 sumPChange += pChange;
                 validStockCount++;
               }
