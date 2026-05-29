@@ -177,47 +177,32 @@ export class BreakoutStrategyService {
     const topGainers = sorted.slice(0, 5);
     const topLosers = sorted.slice(-5).reverse();
 
-    for (const stock of topGainers) await this.addTarget(stock, 'BULLISH_BREAKOUT');
-    for (const stock of topLosers) await this.addTarget(stock, 'BEARISH_BREAKOUT');
+    for (const stock of topGainers) this.addTarget(stock, 'BULLISH_BREAKOUT');
+    for (const stock of topLosers) this.addTarget(stock, 'BEARISH_BREAKOUT');
 
-    console.log('[BreakoutStrategy] Targets:', this.targets.map(t => `${t.symbol}/${t.optionType}${t.liveData ? '(live)' : '(sim)'}`).join(', '));
+    console.log('[BreakoutStrategy] Targets:', this.targets.map(t => `${t.symbol}/${t.optionType}`).join(', '));
     this.emitStatus();
-    this.io.emit('bot-log', `SYSTEM: Scan complete. ${this.targets.length} stock-option targets (${this.targets.filter(t => t.liveData).length} live).`);
+    this.io.emit('bot-log', `SYSTEM: Scan complete. ${this.targets.length} stock-option targets. Resolving live option chains...`);
   }
 
-  private async addTarget(stock: StockData, type: 'BULLISH_BREAKOUT' | 'BEARISH_BREAKOUT') {
+  private addTarget(stock: StockData, type: 'BULLISH_BREAKOUT' | 'BEARISH_BREAKOUT') {
     const basePri = stock.lastPrice || 1000;
     const optionType: 'CE' | 'PE' = type === 'BULLISH_BREAKOUT' ? 'CE' : 'PE';
     const now = new Date();
     const timeStr = this.istHHMM(now);
     const isBull = type === 'BULLISH_BREAKOUT';
 
-    // Try live Dhan option leg (ATM). Falls back to synthetic if unavailable.
-    let leg = null as Awaited<ReturnType<OptionResolver>> | null;
-    if (this.optionResolver) {
-      try { leg = await this.optionResolver(stock.symbol, optionType, 0); }
-      catch (e: any) { console.warn(`[BreakoutStrategy] leg resolve failed for ${stock.symbol}:`, e.message); }
-    }
-
+    // Create a synthetic placeholder immediately so the scan returns fast.
+    // The real Dhan option leg is resolved asynchronously (rate-limited globally
+    // in the server resolver) and upgrades this target to live when it arrives.
     const strikeInterval = this.getStrikeInterval(basePri);
     const synthStrike = Math.round(basePri / strikeInterval) * strikeInterval;
     const synthPremium = Math.max(5, Math.round(basePri * 0.02 * 100) / 100);
-
-    const live = !!leg;
-    if (live) this.isMockData = false;
-
-    const optionPrice = live ? leg!.ltp || synthPremium : synthPremium;
-    const strike = live ? leg!.strike : synthStrike;
-    const oi = live ? leg!.oi : (isBull ? 150000 : 120000);
-    const lotSize = stock.lotSize && stock.lotSize > 0 ? stock.lotSize : 0; // 0 => resolved at order time
-    const spread = live && leg!.ask > 0 ? ((leg!.ask - leg!.bid) / leg!.ask) * 100 : 0;
-
+    const oi = isBull ? 150000 : 120000;
+    const lotSize = stock.lotSize && stock.lotSize > 0 ? stock.lotSize : 0;
     const vwap = isBull ? basePri * 0.995 : basePri * 1.005;
-    const optionSymbol = live
-      ? `${stock.symbol}-${leg!.expiry}-${strike}-${optionType}`
-      : `${stock.symbol}${synthStrike}${optionType}`;
 
-    this.targets.push({
+    const target: BreakoutTarget = {
       symbol: stock.symbol,
       type,
       spotPrice: basePri,
@@ -232,35 +217,68 @@ export class BreakoutStrategyService {
       dayHigh: basePri * (isBull ? 1.015 : 1.005),
       dayLow: basePri * (isBull ? 0.99 : 0.982),
 
-      optionSymbol,
+      optionSymbol: `${stock.symbol}${synthStrike}${optionType}`,
       optionType,
-      strike,
-      expiry: live ? leg!.expiry : '',
-      securityId: live ? leg!.securityId : '',
+      strike: synthStrike,
+      expiry: '',
+      securityId: '',
       lotSize,
-      optionPrice,
-      optionInitialPrice: optionPrice,
-      optionPriceHigh: optionPrice,
+      optionPrice: synthPremium,
+      optionInitialPrice: synthPremium,
+      optionPriceHigh: synthPremium,
       optionOI: oi,
       optionOIPeak: oi,
       optionOIEntry: oi,
       optionOIBuiltupPercentage: 0,
-      iv: live ? leg!.iv : 0,
-      delta: live ? leg!.greeks.delta : 0,
-      theta: live ? leg!.greeks.theta : 0,
-      bidAskSpreadPct: Number(spread.toFixed(2)),
-      historicalOI: [{ time: timeStr, oi, price: optionPrice }],
-      optionDayHigh: optionPrice,
-      optionDayLow: optionPrice,
+      iv: 0,
+      delta: 0,
+      theta: 0,
+      bidAskSpreadPct: 0,
+      historicalOI: [{ time: timeStr, oi, price: synthPremium }],
+      optionDayHigh: synthPremium,
+      optionDayLow: synthPremium,
 
-      liveData: live,
+      liveData: false,
       pullbackActive: false,
       pullbackPrice: 0,
       underlyingStop: vwap,
       setupTriggered: false,
       tradeExecuted: false,
       triggerReason: ''
-    });
+    };
+    this.targets.push(target);
+
+    // Fire-and-forget live upgrade (does not block the scan).
+    if (this.optionResolver) {
+      this.optionResolver(stock.symbol, optionType, 0)
+        .then(leg => { if (leg) this.applyLiveLeg(target, leg); })
+        .catch(e => console.warn(`[BreakoutStrategy] leg resolve failed for ${stock.symbol}:`, e.message));
+    }
+  }
+
+  // Upgrade a placeholder target in place with real option-chain data.
+  private applyLiveLeg(target: BreakoutTarget, leg: NonNullable<Awaited<ReturnType<OptionResolver>>>) {
+    this.isMockData = false;
+    target.liveData = true;
+    target.strike = leg.strike;
+    target.expiry = leg.expiry;
+    target.securityId = leg.securityId;
+    target.optionSymbol = `${target.symbol}-${leg.expiry}-${leg.strike}-${target.optionType}`;
+    if (leg.ltp > 0) {
+      target.optionPrice = leg.ltp;
+      target.optionInitialPrice = leg.ltp;
+      target.optionPriceHigh = leg.ltp;
+      target.optionDayHigh = leg.ltp;
+      target.optionDayLow = leg.ltp;
+    }
+    target.optionOI = leg.oi;
+    target.optionOIPeak = leg.oi;
+    target.optionOIEntry = leg.oi;
+    target.iv = leg.iv;
+    target.delta = leg.greeks.delta;
+    target.theta = leg.greeks.theta;
+    if (leg.ask > 0) target.bidAskSpreadPct = Number((((leg.ask - leg.bid) / leg.ask) * 100).toFixed(2));
+    this.emitStatus();
   }
 
   /**
