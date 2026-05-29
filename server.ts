@@ -87,14 +87,25 @@ function registerScripRow(row: Record<string, string>): boolean {
   const cleanSymbol = String(symbol).toUpperCase().trim();
   const compact = cleanSymbol.replace(/\s+/g, "");
 
-  dhanScripMap.set(cleanSymbol, cleanId);
-  dhanScripMap.set(compact, cleanId);
-  dhanScripMap.set(`NSE:${compact}`, cleanId);
-  dhanScripMap.set(`NSE:${compact}-EQ`, cleanId);
-
-  // Equity underlyings (for Option Chain lookups). Prefer NSE cash equities.
   const isEquity = instrument.includes("EQUITY") || instrument === "EQ" || instrument === "ES";
-  if (isEquity && (exch === "" || exch === "NSE")) {
+  const isNse = exch === "" || exch === "NSE";
+  const nseEquity = isEquity && isNse;
+
+  // The full trading symbol (e.g. an option's symbol) always maps to its own id.
+  dhanScripMap.set(cleanSymbol, cleanId);
+
+  // For the bare/compact symbol keys, NSE cash equity is authoritative — never
+  // let a BSE row or a derivative overwrite an NSE equity mapping (527k rows
+  // contain many same-named instruments across exchanges).
+  const setBare = (k: string) => {
+    if (nseEquity || !dhanScripMap.has(k)) dhanScripMap.set(k, cleanId);
+  };
+  setBare(compact);
+  setBare(`NSE:${compact}`);
+  setBare(`NSE:${compact}-EQ`);
+
+  // Equity underlyings (for Option Chain lookups), NSE only.
+  if (nseEquity) {
     dhanUnderlyingIdMap.set(compact, cleanId);
   }
   if (lotUnits > 0 && underlying) {
@@ -1043,6 +1054,23 @@ async function startServer() {
       out.checks.option_chain = { ok: false, status: e.response?.status, error: e.response?.data?.errorMessage || e.response?.data?.errorValue || JSON.stringify(e.response?.data) || e.message };
     }
 
+    // 4) Resolve a real stock through the map and fetch its live LTP — proves the
+    // exact path the scanner uses. Works even when closed (returns last close).
+    try {
+      const relId = dhanScripMap.get("RELIANCE");
+      if (!relId) {
+        out.checks.sample_resolved_quote = { ok: false, error: "RELIANCE not in scrip map" };
+      } else {
+        const r = await axios.post("https://api.dhan.co/v2/marketfeed/quote", { NSE_EQ: [Number(relId)] }, { headers: H, timeout: 6000 });
+        const seg = r.data?.data?.NSE_EQ || {};
+        const d = seg[relId] || seg[Number(relId)] || Object.values(seg)[0];
+        const ltp = d?.last_price ?? d?.ltp ?? null;
+        out.checks.sample_resolved_quote = { ok: !!ltp, resolvedId: relId, reliance_ltp: ltp };
+      }
+    } catch (e: any) {
+      out.checks.sample_resolved_quote = { ok: false, error: e.response?.data?.errorMessage || e.message };
+    }
+
     // Verdict
     const auth = out.checks.auth_fundlimit?.ok;
     const quote = out.checks.market_quote?.ok;
@@ -1609,16 +1637,20 @@ async function startServer() {
 
       const allQuotes: any[] = [];
       const chunks = [];
-      for (let i = 0; i < FNO_SYMBOLS.length; i += 50) {
-        chunks.push(FNO_SYMBOLS.slice(i, i + 50));
+      // Quote API accepts up to 1000 instruments/request and is rate-limited to
+      // ~1 req/sec. Use large chunks (one request for the F&O universe) and pause
+      // between chunks so we don't trip 429s and fall back to mock data.
+      for (let i = 0; i < FNO_SYMBOLS.length; i += 200) {
+        chunks.push(FNO_SYMBOLS.slice(i, i + 200));
       }
 
-      for (const chunk of chunks) {
-        const symbolsToFetch = chunk.map((s: string) => `NSE:${s}-EQ`);
+      for (let c = 0; c < chunks.length; c++) {
+        const symbolsToFetch = chunks[c].map((s: string) => `NSE:${s}-EQ`);
         const quotes = await getDirectQuotes(symbolsToFetch).catch(() => []);
         if (quotes && Array.isArray(quotes)) {
           allQuotes.push(...quotes);
         }
+        if (c < chunks.length - 1) await new Promise(r => setTimeout(r, 1200));
       }
 
       let currentStocks = [];
@@ -1771,16 +1803,17 @@ async function startServer() {
           try {
             const allQuotes: any[] = [];
             const chunks = [];
-            for (let i = 0; i < FNO_SYMBOLS.length; i += 50) {
-              chunks.push(FNO_SYMBOLS.slice(i, i + 50));
+            for (let i = 0; i < FNO_SYMBOLS.length; i += 200) {
+              chunks.push(FNO_SYMBOLS.slice(i, i + 200));
             }
 
-            for (const chunk of chunks) {
-              const symbolsToFetch = chunk.map((s: string) => `NSE:${s}-EQ`);
+            for (let c = 0; c < chunks.length; c++) {
+              const symbolsToFetch = chunks[c].map((s: string) => `NSE:${s}-EQ`);
               const quotes = await getDirectQuotes(symbolsToFetch).catch(() => []);
               if (quotes && Array.isArray(quotes)) {
                 allQuotes.push(...quotes);
               }
+              if (c < chunks.length - 1) await new Promise(r => setTimeout(r, 1200));
             }
 
             let currentStocks = [];
