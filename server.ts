@@ -41,14 +41,40 @@ let lastBreakoutScanDate = "";
 let isDhanConnected = false;
 let isDhanScripLoaded = false;
 const dhanScripMap = new Map<string, string>(); // Ticker/Option -> securityId
+const dhanLotSizeMap = new Map<string, number>(); // Underlying symbol -> F&O lot size
+const dhanUnderlyingIdMap = new Map<string, string>(); // Equity underlying -> NSE_EQ securityId (for option chain)
+
+// Robust CSV line splitter: respects double-quoted fields that contain commas.
+// Dhan's scrip master has commas inside SEM_CUSTOM_SYMBOL, which a naive split() corrupts.
+function parseCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQuotes = !inQuotes;
+    } else if (ch === "," && !inQuotes) {
+      out.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
 
 // Lazy load Dhan Master CSV with enhanced error handling
 async function loadDhanScripMaster() {
   try {
-    console.log("[Dhan] 🔍 Downloading scrip master from CDN...");
+    console.log("[Dhan] 🔍 Downloading detailed scrip master from CDN...");
     const response = await axios({
       method: "get",
-      url: "https://images.dhan.co/api-data/api-scrip-master.csv",
+      // Detailed master exposes SEM_SMST_SECURITY_ID (the ID the API expects),
+      // SEM_LOT_UNITS, instrument type and expiry — needed for stock options.
+      url: "https://images.dhan.co/api-data/api-scrip-master-detailed.csv",
       responseType: "stream",
       timeout: 30000,
       headers: {
@@ -73,42 +99,58 @@ async function loadDhanScripMaster() {
     for await (const line of rl) {
       try {
         if (index === 0) {
-          headers = line.split(",").map(h => h.trim());
-          console.log(`[Dhan] CSV Headers: ${headers.slice(0, 5).join(", ")}...`);
+          headers = parseCsvLine(line);
+          console.log(`[Dhan] CSV Headers: ${headers.slice(0, 6).join(", ")}...`);
           index++;
           continue;
         }
 
-        const parts = line.split(",");
+        const parts = parseCsvLine(line);
         if (parts.length < 2) continue;
 
         const row: Record<string, string> = {};
         headers.forEach((h, idx) => {
-          row[h] = parts[idx]?.trim() || "";
+          row[h] = parts[idx] ?? "";
         });
 
-        // Try multiple field combinations for symbol & ID
+        // Symbol: trading symbol for derivatives, plain symbol for equities
         const symbol = row["SEM_TRADING_SYMBOL"]
           || row["SEM_CUSTOM_SYMBOL"]
           || row["SM_SYMBOL_NAME"]
           || row["SYMBOL"]
           || row["Trading Symbol"];
 
-        const id = row["SEM_EXCH_INSTRUMENT_ID"]
+        // SEM_SMST_SECURITY_ID is THE id the Dhan API expects. Prefer it.
+        const id = row["SEM_SMST_SECURITY_ID"]
           || row["SEM_SM_ID"]
-          || row["SEM_SMST_SECURITY_ID"]
+          || row["SEM_EXCH_INSTRUMENT_ID"]
           || row["Security ID"]
           || row["Instrument ID"];
+
+        const segment = (row["SEM_SEGMENT"] || row["SEM_EXM_EXCH_ID"] || "").toUpperCase();
+        const instrument = (row["SEM_INSTRUMENT_NAME"] || row["SEM_EXCH_INSTRUMENT_TYPE"] || "").toUpperCase();
+        const underlying = (row["SEM_UNDERLYING"] || row["SM_SYMBOL_NAME"] || "").toUpperCase().trim();
+        const lotUnits = Number(row["SEM_LOT_UNITS"] || row["Lot Size"] || 0);
 
         if (symbol && id) {
           const cleanId = id.trim();
           const cleanSymbol = symbol.toUpperCase().trim();
 
           dhanScripMap.set(cleanSymbol, cleanId);
-          let compact = cleanSymbol.replace(/\s+/g, "");
+          const compact = cleanSymbol.replace(/\s+/g, "");
           dhanScripMap.set(compact, cleanId);
           dhanScripMap.set(`NSE:${compact}`, cleanId);
           dhanScripMap.set(`NSE:${compact}-EQ`, cleanId);
+
+          // Capture equity underlying security IDs (for Option Chain API lookups)
+          if (instrument.includes("EQUITY") || instrument === "ES" || (segment.includes("NSE") && instrument.includes("EQ"))) {
+            dhanUnderlyingIdMap.set(compact, cleanId);
+          }
+
+          // Capture F&O lot size keyed by underlying
+          if (lotUnits > 0 && underlying) {
+            dhanLotSizeMap.set(underlying.replace(/\s+/g, ""), lotUnits);
+          }
 
           successCount++;
         }
@@ -120,7 +162,7 @@ async function loadDhanScripMaster() {
     }
 
     isDhanScripLoaded = true;
-    console.log(`[Dhan] ✅ Scrip Master loaded: ${successCount} symbols registered (${parseErrors} errors skipped)`);
+    console.log(`[Dhan] ✅ Scrip Master loaded: ${successCount} symbols, ${dhanLotSizeMap.size} lot-sizes, ${dhanUnderlyingIdMap.size} underlyings (${parseErrors} errors skipped)`);
 
   } catch (err: any) {
     console.error("[Dhan] ⚠️  CSV Download Failed:", err.message);
@@ -160,7 +202,10 @@ let advances = 0;
 let declines = 0;
 
 function generateTOTP(secretBase32: string): string {
-  return speakeasy.totp({ secret: secretBase32, encoding: "base32" });
+  // Dhan validates the TOTP server-side with a tight window. The #1 cause of
+  // "TOTP Validation Failed" is host clock drift on cloud containers — keep the
+  // server clock synced (NTP). step:30 is the standard authenticator period.
+  return speakeasy.totp({ secret: secretBase32, encoding: "base32", step: 30 });
 }
 
 async function generateDhanToken(clientId: string, userPin: string, totpKey: string) {
@@ -195,10 +240,11 @@ async function attemptDhanAutoLoginFromEnv(): Promise<{ success: boolean; token?
       const raw = await fs.readFile(credsPath, "utf8");
       const creds = JSON.parse(raw);
 
-      // If we have a recently cached token (within 12 hours), use it directly
+      // Dhan tokens are valid 24h (SEBI rule). Reuse a cached token until it is
+      // close to expiry, then regenerate via TOTP.
       if (creds.accessToken && creds.tokenDate) {
         const ageHrs = (Date.now() - creds.tokenDate) / (1000 * 60 * 60);
-        if (ageHrs < 12) {
+        if (ageHrs < 20) {
           console.log(`[Dhan] ♻️  Using valid cached token (Age: ${ageHrs.toFixed(2)} hrs)`);
           process.env.DHAN_ACCESS_TOKEN = creds.accessToken;
           process.env.DHAN_CLIENT_ID = creds.clientId || clientId;
@@ -298,6 +344,211 @@ async function validateAndRefreshToken(): Promise<boolean> {
   }
 }
 
+// Resolve F&O lot size for an underlying from the loaded scrip master.
+function resolveLotSize(underlying: string): number | null {
+  const key = underlying.toUpperCase().replace(/\s+/g, "");
+  return dhanLotSizeMap.get(key) || null;
+}
+
+export interface DhanOrderRequest {
+  symbol: string;                 // option trading symbol or equity symbol
+  securityId?: string;            // pre-resolved id (preferred for derivatives)
+  side: "BUY" | "SELL";
+  qty: number;
+  orderType?: "MARKET" | "LIMIT";
+  price?: number;
+  productType?: "INTRADAY" | "MARGIN" | "CNC";
+  segment?: string;               // optional override
+  underlying?: string;            // for lot-size validation on options
+}
+
+export interface DhanOrderResult {
+  success: boolean;
+  orderId?: string;
+  message: string;
+  details?: any;
+}
+
+// Single, safe path for placing a REAL order on Dhan.
+// Guarantees: never guesses a securityId, never reports a failed order as success.
+async function placeDhanOrder(o: DhanOrderRequest): Promise<DhanOrderResult> {
+  const token = process.env.DHAN_ACCESS_TOKEN;
+  const clientId = process.env.DHAN_CLIENT_ID;
+  if (!token || !clientId) {
+    return { success: false, message: "Dhan not connected (missing access token or client id)." };
+  }
+
+  const cleanSymbol = String(o.symbol).replace("NSE:", "").trim().toUpperCase();
+  const isDerivative = /(CE|PE)$/.test(cleanSymbol) || /FUT$/.test(cleanSymbol);
+  const segment = o.segment || (isDerivative ? "NSE_FNO" : "NSE_EQ");
+
+  // Resolve security id — NEVER guess. A wrong id means a wrong instrument is traded.
+  const securityId = o.securityId
+    || dhanScripMap.get(cleanSymbol)
+    || dhanScripMap.get(cleanSymbol.replace(/\s+/g, ""));
+  if (!securityId) {
+    return {
+      success: false,
+      message: `Refusing to place order: no Dhan securityId resolved for "${o.symbol}". (Scrip master not loaded, or symbol format mismatch.)`
+    };
+  }
+
+  // Lot-size validation for derivatives (best-effort; only blocks when we are sure)
+  if (isDerivative) {
+    const underlying = o.underlying || cleanSymbol.replace(/[-\s]?\d.*$/, "");
+    const lot = resolveLotSize(underlying);
+    if (lot && Number(o.qty) % lot !== 0) {
+      return {
+        success: false,
+        message: `Quantity ${o.qty} is not a multiple of the ${underlying} lot size (${lot}). Use ${lot}, ${lot * 2}, ${lot * 3}, ...`
+      };
+    }
+  }
+
+  const orderType = o.orderType || "MARKET";
+  const payload = {
+    dhanClientId: clientId,
+    correlationId: `QO${Date.now().toString().slice(-8)}`,
+    transactionType: o.side,
+    exchangeSegment: segment,
+    // Intraday options-buying default. Carry-forward would use MARGIN.
+    productType: o.productType || "INTRADAY",
+    orderType,
+    validity: "DAY",
+    securityId: String(securityId),
+    quantity: Number(o.qty),
+    disclosedQuantity: 0,
+    price: orderType === "LIMIT" ? Number(o.price || 0) : 0,
+    triggerPrice: 0,
+    afterMarketOrder: false
+  };
+
+  try {
+    const resp = await axios.post("https://api.dhan.co/v2/orders", payload, {
+      headers: { "access-token": token, "client-id": clientId, "Content-Type": "application/json" },
+      timeout: 7000
+    });
+    const data = resp.data || {};
+    const orderId = data.orderId || data.orderID;
+    if (orderId && data.orderStatus !== "REJECTED") {
+      return { success: true, orderId: String(orderId), message: `Order accepted by Dhan (status: ${data.orderStatus || "TRANSIT"}).`, details: data };
+    }
+    // Reached Dhan but rejected — this is a FAILURE, surface it.
+    return { success: false, message: data.omsErrorDescription || data.remarks || "Order rejected by Dhan.", details: data };
+  } catch (err: any) {
+    const msg = err.response?.data?.errorMessage || err.response?.data?.errorValue || err.response?.data?.message || err.message;
+    console.error("[Order] ❌ Dhan order failed:", msg);
+    return { success: false, message: `Order failed at Dhan: ${msg}`, details: err.response?.data };
+  }
+}
+
+// ---- Dhan Option Chain (real OI, IV, Greeks, per-strike security IDs) ----
+const optionChainCache = new Map<string, { ts: number; data: any }>();
+const expiryCache = new Map<string, { ts: number; data: string[] }>();
+
+async function getDhanExpiryList(underlyingScrip: number, underlyingSeg: string): Promise<string[]> {
+  const token = process.env.DHAN_ACCESS_TOKEN, clientId = process.env.DHAN_CLIENT_ID;
+  if (!token || !clientId) return [];
+  const key = `${underlyingScrip}:${underlyingSeg}`;
+  const cached = expiryCache.get(key);
+  if (cached && Date.now() - cached.ts < 60000) return cached.data;
+  try {
+    const resp = await axios.post("https://api.dhan.co/v2/optionchain/expirylist",
+      { UnderlyingScrip: underlyingScrip, UnderlyingSeg: underlyingSeg },
+      { headers: { "access-token": token, "client-id": clientId, "Content-Type": "application/json" }, timeout: 7000 });
+    const list: string[] = resp.data?.data || [];
+    expiryCache.set(key, { ts: Date.now(), data: list });
+    return list;
+  } catch (e: any) {
+    console.warn("[OptionChain] expiry list failed:", e.response?.data?.errorMessage || e.message);
+    return [];
+  }
+}
+
+async function getDhanOptionChain(underlyingScrip: number, underlyingSeg: string, expiry: string): Promise<any | null> {
+  const token = process.env.DHAN_ACCESS_TOKEN, clientId = process.env.DHAN_CLIENT_ID;
+  if (!token || !clientId) return null;
+  const key = `${underlyingScrip}:${underlyingSeg}:${expiry}`;
+  const cached = optionChainCache.get(key);
+  // Dhan rate-limits this API to 1 unique request / 3s — serve cached within that window.
+  if (cached && Date.now() - cached.ts < 3500) return cached.data;
+  try {
+    const resp = await axios.post("https://api.dhan.co/v2/optionchain",
+      { UnderlyingScrip: underlyingScrip, UnderlyingSeg: underlyingSeg, Expiry: expiry },
+      { headers: { "access-token": token, "client-id": clientId, "Content-Type": "application/json" }, timeout: 8000 });
+    const data = resp.data?.data || null;
+    if (data) optionChainCache.set(key, { ts: Date.now(), data });
+    return data;
+  } catch (e: any) {
+    console.warn("[OptionChain] fetch failed:", e.response?.data?.errorMessage || e.message);
+    return null;
+  }
+}
+
+export interface ResolvedOptionLeg {
+  underlying: string; expiry: string; strike: number; spot: number;
+  optionType: "CE" | "PE"; securityId: string; ltp: number;
+  oi: number; previousOi: number; iv: number;
+  greeks: { delta: number; theta: number; gamma: number; vega: number };
+  bid: number; ask: number; volume: number;
+}
+
+// Resolve a tradable option leg for a STOCK underlying with live OI/IV/Greeks.
+// strikeOffset: 0 = ATM, +1/-1 = one strike OTM/ITM step (caller's convention).
+async function resolveStockOptionLeg(
+  underlyingSymbol: string,
+  optionType: "CE" | "PE",
+  strikeOffset = 0,
+  preferExpiry?: string
+): Promise<ResolvedOptionLeg | null> {
+  const u = underlyingSymbol.toUpperCase().replace("NSE:", "").replace(/-EQ$/, "").replace(/\s+/g, "");
+  const scrip = Number(dhanUnderlyingIdMap.get(u) || dhanScripMap.get(u) || dhanScripMap.get(`NSE:${u}`));
+  if (!scrip) { console.warn(`[OptionChain] no underlying securityId for ${u}`); return null; }
+
+  const seg = "NSE_EQ"; // stock options: underlying is the cash equity
+  const expiries = await getDhanExpiryList(scrip, seg);
+  if (!expiries.length) return null;
+  const expiry = preferExpiry && expiries.includes(preferExpiry) ? preferExpiry : expiries[0]; // nearest
+
+  const chain = await getDhanOptionChain(scrip, seg, expiry);
+  if (!chain?.oc) return null;
+  const spot = Number(chain.last_price) || 0;
+
+  const strikeKeys = Object.keys(chain.oc);
+  const strikes = strikeKeys.map(Number).filter(n => !isNaN(n)).sort((a, b) => a - b);
+  if (!strikes.length) return null;
+
+  // ATM = nearest strike to spot
+  let atmIdx = 0, bestDiff = Infinity;
+  strikes.forEach((s, i) => { const d = Math.abs(s - spot); if (d < bestDiff) { bestDiff = d; atmIdx = i; } });
+  // Apply offset (CE OTM = higher strike, PE OTM = lower strike)
+  const dir = optionType === "CE" ? 1 : -1;
+  const chosenIdx = Math.min(Math.max(atmIdx + strikeOffset * dir, 0), strikes.length - 1);
+  const strike = strikes[chosenIdx];
+
+  const matchKey = strikeKeys.find(k => Number(k) === strike) || strike.toFixed(6);
+  const leg = chain.oc[matchKey]?.[optionType.toLowerCase()];
+  if (!leg || !leg.security_id) return null;
+
+  return {
+    underlying: u, expiry, strike, spot, optionType,
+    securityId: String(leg.security_id),
+    ltp: Number(leg.last_price) || 0,
+    oi: Number(leg.oi) || 0,
+    previousOi: Number(leg.previous_oi) || 0,
+    iv: Number(leg.implied_volatility) || 0,
+    greeks: {
+      delta: Number(leg.greeks?.delta) || 0,
+      theta: Number(leg.greeks?.theta) || 0,
+      gamma: Number(leg.greeks?.gamma) || 0,
+      vega: Number(leg.greeks?.vega) || 0,
+    },
+    bid: Number(leg.top_bid_price) || 0,
+    ask: Number(leg.top_ask_price) || 0,
+    volume: Number(leg.volume) || 0,
+  };
+}
+
 async function startServer() {
   console.log("\n" + "━".repeat(70));
   console.log("[SERVER] Initializing QuantOptix Trading Engine");
@@ -319,7 +570,7 @@ async function startServer() {
   if (!hasToken && !hasAutoLogin) {
     console.error("\n⚠️  WARNING: No Dhan authentication configured!");
     console.error("   Please set either:");
-    console.error("   - DHAN_ACCESS_TOKEN (manual 30-day token)");
+    console.error("   - DHAN_ACCESS_TOKEN (manual token from web.dhan.co, valid 24 hours)");
     console.error("   - DHAN_CLIENT_ID + DHAN_TOTP_KEY + DHAN_USER_PIN (auto-login)");
     console.error("\n   The app will run in SIMULATION MODE only.\n");
   } else {
@@ -347,6 +598,10 @@ async function startServer() {
   scannerService = new ScannerService(io);
   tradingService = new PaperTradingService(io);
   breakoutStrategyService = new BreakoutStrategyService(io);
+  // Wire the strategy to the single safe Dhan order path + live option-chain resolver.
+  // The strategy itself stays broker-agnostic; all live execution flows through here.
+  breakoutStrategyService.setOrderExecutor(placeDhanOrder);
+  breakoutStrategyService.setOptionResolver(resolveStockOptionLeg);
 
   // Trigger lazy download of Dhan master CSV in background
   loadDhanScripMaster().catch(e => console.error("[Dhan] Master download error:", e));
@@ -374,7 +629,7 @@ async function startServer() {
     }
   };
 
-  const PORT = process.env.PORT || 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Real-time Stock and Option quote background broadcaster
   setInterval(async () => {
@@ -516,6 +771,9 @@ async function startServer() {
     if (!token) {
       return res.status(400).json({ success: false, message: "Access token is mandatory" });
     }
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: "Client ID is mandatory (Dhan data & order APIs require the client-id header)." });
+    }
 
     try {
       console.log(`[Dhan] 🔍 Validating connection with Client ID: ${clientId || "Personal Token"}...`);
@@ -548,18 +806,23 @@ async function startServer() {
         throw new Error("Dhan API rejected the authentication token.");
       }
     } catch (error: any) {
+      const status = error.response?.status;
       const msg = error.response?.data?.errorValue || error.response?.data?.message || error.message;
-      console.error("[Dhan] ❌ Validation Error:", msg);
+      console.error(`[Dhan] ❌ Validation Error (${status}):`, msg);
 
-      // Setup connection parameters locally
-      process.env.DHAN_ACCESS_TOKEN = token;
-      if (clientId) process.env.DHAN_CLIENT_ID = clientId;
-      isDhanConnected = true;
+      // Do NOT mark connected on failure. A bad/expired token must surface clearly,
+      // otherwise the UI shows "connected" while every downstream call fails.
+      isDhanConnected = false;
 
-      return res.json({
-        success: true,
-        message: "Dhan connection accepted (Fallback Mode)",
-        details: msg
+      let hint = msg;
+      if (status === 401 || status === 403) {
+        hint = "Token rejected by Dhan (expired or invalid). Generate a fresh token at web.dhan.co → My Profile → Access DhanHQ APIs. Tokens are valid for 24 hours.";
+      }
+
+      return res.status(401).json({
+        success: false,
+        message: "Dhan authentication failed.",
+        details: hint
       });
     }
   });
@@ -908,23 +1171,33 @@ async function startServer() {
       const symbolMap = new Map<number, string>();
 
       requestedSymbols.forEach(sym => {
-        let clean = sym.replace("NSE:", "").toUpperCase();
-        if (clean.endsWith("-EQ")) clean = clean.replace("-EQ", "");
+        const clean = sym.replace("NSE:", "").toUpperCase().replace(/-EQ$/, "");
 
-        let securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase());
+        // 1) Indices -> IDX_I with their fixed security IDs
+        const idx = INDEX_MAPPINGS[clean] || INDEX_MAPPINGS[sym.toUpperCase()];
+        let segment: string;
+        let securityId: string | undefined;
+
+        if (idx) {
+          segment = idx.segment;          // IDX_I
+          securityId = idx.securityId;
+        } else {
+          securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase());
+          // Option/Future trading symbols live in NSE_FNO, cash equities in NSE_EQ
+          segment = /(CE|PE)$/.test(clean) || /FUT$/.test(clean) ? "NSE_FNO" : "NSE_EQ";
+        }
 
         if (!securityId) {
-          console.warn(`[Quotes] ⚠️  No securityId for: ${sym}`);
-          securityId = "11536";
+          // Never substitute a guessed ID — that returns the wrong instrument's
+          // data. Skip; the response builder will mark it unresolved/mock.
+          console.warn(`[Quotes] ⚠️  No securityId for: ${sym} (skipping)`);
+          return;
         }
 
-        const segment = sym.includes("INDEX") || sym.includes("NIFTY") ? "NSE_FNO" : "NSE_EQ";
-        if (segment !== "IDX_I") {
-          if (!payload[segment]) payload[segment] = [];
-          const idNum = Number(securityId);
-          payload[segment].push(idNum);
-          symbolMap.set(idNum, sym);
-        }
+        if (!payload[segment]) payload[segment] = [];
+        const idNum = Number(securityId);
+        payload[segment].push(idNum);
+        symbolMap.set(idNum, sym);
       });
 
       console.log(`[Quotes] 🔍 Fetching ${requestedSymbols.length} symbols...`);
@@ -1008,7 +1281,7 @@ async function startServer() {
         if (iMap) {
           securityId = iMap.securityId;
         } else {
-          securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "11536";
+          securityId = dhanScripMap.get(clean) || dhanScripMap.get(sym.toUpperCase()) || "";
         }
 
         // Index simulation
@@ -1128,78 +1401,61 @@ async function startServer() {
     }
   });
 
+  // OPTION CHAIN ENDPOINTS (live OI / IV / Greeks for stock options)
+  app.get("/api/optionchain/expirylist", async (req, res) => {
+    const underlying = String(req.query.underlying || "").toUpperCase().replace(/-EQ$/, "").replace(/\s+/g, "");
+    const scrip = Number(dhanUnderlyingIdMap.get(underlying) || dhanScripMap.get(underlying));
+    if (!scrip) return res.status(404).json({ success: false, message: `No underlying securityId for ${underlying}` });
+    const list = await getDhanExpiryList(scrip, "NSE_EQ");
+    res.json({ success: list.length > 0, underlying, expiries: list });
+  });
+
+  app.get("/api/optionchain", async (req, res) => {
+    const underlying = String(req.query.underlying || "");
+    const optionType = (String(req.query.type || "CE").toUpperCase() === "PE" ? "PE" : "CE") as "CE" | "PE";
+    const offset = Number(req.query.offset || 0);
+    const expiry = req.query.expiry ? String(req.query.expiry) : undefined;
+    const leg = await resolveStockOptionLeg(underlying, optionType, offset, expiry);
+    if (!leg) return res.status(404).json({ success: false, message: `Could not resolve ${optionType} leg for ${underlying} (needs live Dhan connection + scrip master).` });
+    res.json({ success: true, leg });
+  });
+
   // ORDER PLACEMENT ENDPOINT
   app.post("/api/trade/place", async (req, res) => {
-    const { symbol, qty, type, side, price } = req.body;
-    const token = process.env.DHAN_ACCESS_TOKEN;
-    const clientId = process.env.DHAN_CLIENT_ID || "1000000000";
+    const { symbol, qty, type, side, price, paper, securityId, productType, underlying } = req.body;
+    const orderType: "MARKET" | "LIMIT" = (type === "2" || !type) ? "MARKET" : "LIMIT";
+    const txnSide: "BUY" | "SELL" = side === "SELL" ? "SELL" : "BUY";
 
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: "Dhan is not connected. Please configure Dhan credentials."
-      });
-    }
-
-    try {
-      console.log(`[Order] Placing ${side} order for ${symbol}...`);
-
-      let cleanSymbol = symbol.replace("NSE:", "").trim();
-      let securityId = dhanScripMap.get(cleanSymbol.toUpperCase()) || dhanScripMap.get(symbol.toUpperCase());
-
-      let segment = "NSE_EQ";
-      if (cleanSymbol.includes("-INDEX") || cleanSymbol.includes("NIFTY")) {
-        segment = "NSE_FNO";
-      } else if (/CE|PE|PUT/.test(cleanSymbol)) {
-        segment = "NSE_FNO";
-      }
-
-      if (!securityId) {
-        securityId = cleanSymbol.includes("NIFTY") ? "2885" : "11536";
-      }
-
-      const orderPayload = {
-        dhanClientId: clientId,
-        correlationId: `QO_${Math.floor(Math.random() * 89999 + 10000)}`,
-        transactionType: side === "BUY" ? "BUY" : "SELL",
-        exchangeSegment: segment,
-        productType: segment === "NSE_FNO" ? "MARGIN" : "INTRADAY",
-        orderType: type === "2" || !type ? "MARKET" : "LIMIT",
-        validity: "DAY",
-        tradingSymbol: cleanSymbol,
-        securityId: String(securityId),
-        quantity: Number(qty),
-        price: type === "2" || !type ? 0 : Number(price || 0)
-      };
-
-      const response = await axios.post("https://api.dhan.co/v2/orders", orderPayload, {
-        headers: {
-          "access-token": token,
-          "Content-Type": "application/json"
-        },
-        timeout: 6000
-      });
-
-      if (response.data && (response.data.status === "success" || response.data.orderId)) {
-        res.json({
-          success: true,
-          orderId: response.data.orderId || `DHAN_${Math.floor(Math.random() * 899999 + 100000)}`,
-          message: "✅ Order executed successfully!"
-        });
-      } else {
-        throw new Error(response.data?.remarks || "Order rejected");
-      }
-    } catch (error: any) {
-      const errorMsg = error.response?.data?.errorValue || error.response?.data?.message || error.message;
-      console.error("[Order] ❌ Failed:", errorMsg);
-
-      res.json({
+    // PAPER MODE: explicit, clearly-labelled simulation. This is the ONLY place
+    // a simulated fill is produced — it is never a silent fallback for a real failure.
+    if (paper === true || process.env.PAPER_TRADING === "true") {
+      console.log(`[Order] 📝 PAPER ${txnSide} ${qty} ${symbol}`);
+      return res.json({
         success: true,
-        orderId: `SIM_${Math.floor(Math.random() * 899999 + 100000)}`,
-        message: "Order processed (Simulation Mode)",
-        details: errorMsg
+        paper: true,
+        orderId: `PAPER_${Date.now().toString().slice(-8)}`,
+        message: `📝 PAPER fill: ${txnSide} ${qty} ${symbol} @ ${orderType === "MARKET" ? "MKT" : price}`
       });
     }
+
+    if (!process.env.DHAN_ACCESS_TOKEN) {
+      return res.status(401).json({ success: false, message: "Dhan is not connected. Configure credentials or enable PAPER_TRADING." });
+    }
+
+    console.log(`[Order] LIVE ${txnSide} ${qty} ${symbol} (${orderType})...`);
+    const result = await placeDhanOrder({
+      symbol,
+      securityId,
+      side: txnSide,
+      qty: Number(qty),
+      orderType,
+      price: Number(price || 0),
+      productType,
+      underlying
+    });
+
+    // Real outcome only. Failed/rejected orders return success:false.
+    return res.status(result.success ? 200 : 422).json(result);
   });
 
   // TELEGRAM NOTIFICATIONS
