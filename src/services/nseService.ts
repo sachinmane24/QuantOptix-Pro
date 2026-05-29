@@ -174,14 +174,14 @@ export function getLiveStockData(): StockData[] {
       vwap: lastPrice * (1 + (Math.random() * 0.02 - 0.01)),
       ema20: lastPrice * (1 - (Math.random() * 0.05)),
       ema50: lastPrice * (1 - (Math.random() * 0.1)),
-      sector: info?.sector || 'Diversified',
+      sector: 'Diversified',
       relativeStrength: (Math.random() * 4) - 2,
       marketRegime: regime,
       trend,
       rsi: 30 + Math.random() * 40,
       pulse: (pChange * 0.8) + (Math.random() * 0.4),
       higherTimeframeBias: Math.random() > 0.5 ? 'BULLISH' : 'BEARISH',
-      lotSize: info?.lotSize || 1,
+      lotSize: 1,
       atr: lastPrice * (0.012 + Math.random() * 0.008), // 1.2% - 2% ATR
       side: 'NSE',
       adr: lastPrice * (0.025 + Math.random() * 0.015) 
