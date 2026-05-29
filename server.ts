@@ -66,133 +66,148 @@ function parseCsvLine(line: string): string[] {
   return out.map(s => s.trim());
 }
 
-// Lazy load Dhan Master CSV with enhanced error handling
-async function loadDhanScripMaster() {
-  try {
-    console.log("[Dhan] 🔍 Downloading detailed scrip master from CDN...");
-    const response = await axios({
-      method: "get",
-      // Detailed master exposes SEM_SMST_SECURITY_ID (the ID the API expects),
-      // SEM_LOT_UNITS, instrument type and expiry — needed for stock options.
-      url: "https://images.dhan.co/api-data/api-scrip-master-detailed.csv",
-      responseType: "stream",
-      timeout: 30000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
+// Parse one CSV row (already split) using BOTH Dhan column schemes:
+//  - Compact CSV (images.dhan.co/.../api-scrip-master.csv): SEM_* headers
+//  - Detailed CSV & /v2/instrument/{segment} API: non-prefixed headers
+// Returns true if a usable symbol+id was registered.
+function registerScripRow(row: Record<string, string>): boolean {
+  const symbol = row["SEM_TRADING_SYMBOL"] || row["SEM_CUSTOM_SYMBOL"]
+    || row["DISPLAY_NAME"] || row["SYMBOL_NAME"] || row["SM_SYMBOL_NAME"]
+    || row["UNDERLYING_SYMBOL"] || row["SYMBOL"];
+  const id = row["SEM_SMST_SECURITY_ID"] || row["SECURITY_ID"]
+    || row["SEM_SM_ID"] || row["SEM_EXCH_INSTRUMENT_ID"] || row["Security ID"];
+  if (!symbol || !id) return false;
 
-    if (!response.data) {
-      throw new Error("Empty CSV response from Dhan CDN");
-    }
+  const exch = (row["SEM_EXM_EXCH_ID"] || row["EXCH_ID"] || "").toUpperCase();
+  const instrument = (row["SEM_INSTRUMENT_NAME"] || row["INSTRUMENT"] || row["SEM_EXCH_INSTRUMENT_TYPE"] || row["INSTRUMENT_TYPE"] || "").toUpperCase();
+  const underlying = (row["SEM_UNDERLYING"] || row["UNDERLYING_SYMBOL"] || row["SM_SYMBOL_NAME"] || row["SYMBOL_NAME"] || "").toUpperCase().trim();
+  const lotUnits = Number(row["SEM_LOT_UNITS"] || row["LOT_SIZE"] || 0);
 
-    const rl = readline.createInterface({
-      input: response.data,
-      crlfDelay: Infinity
-    });
+  const cleanId = String(id).trim();
+  const cleanSymbol = String(symbol).toUpperCase().trim();
+  const compact = cleanSymbol.replace(/\s+/g, "");
 
-    let index = 0;
-    let headers: string[] = [];
-    let parseErrors = 0;
-    let successCount = 0;
+  dhanScripMap.set(cleanSymbol, cleanId);
+  dhanScripMap.set(compact, cleanId);
+  dhanScripMap.set(`NSE:${compact}`, cleanId);
+  dhanScripMap.set(`NSE:${compact}-EQ`, cleanId);
 
-    for await (const line of rl) {
-      try {
-        if (index === 0) {
-          headers = parseCsvLine(line);
-          console.log(`[Dhan] CSV Headers: ${headers.slice(0, 6).join(", ")}...`);
-          index++;
-          continue;
-        }
-
-        const parts = parseCsvLine(line);
-        if (parts.length < 2) continue;
-
-        const row: Record<string, string> = {};
-        headers.forEach((h, idx) => {
-          row[h] = parts[idx] ?? "";
-        });
-
-        // Symbol: trading symbol for derivatives, plain symbol for equities
-        const symbol = row["SEM_TRADING_SYMBOL"]
-          || row["SEM_CUSTOM_SYMBOL"]
-          || row["SM_SYMBOL_NAME"]
-          || row["SYMBOL"]
-          || row["Trading Symbol"];
-
-        // SEM_SMST_SECURITY_ID is THE id the Dhan API expects. Prefer it.
-        const id = row["SEM_SMST_SECURITY_ID"]
-          || row["SEM_SM_ID"]
-          || row["SEM_EXCH_INSTRUMENT_ID"]
-          || row["Security ID"]
-          || row["Instrument ID"];
-
-        const segment = (row["SEM_SEGMENT"] || row["SEM_EXM_EXCH_ID"] || "").toUpperCase();
-        const instrument = (row["SEM_INSTRUMENT_NAME"] || row["SEM_EXCH_INSTRUMENT_TYPE"] || "").toUpperCase();
-        const underlying = (row["SEM_UNDERLYING"] || row["SM_SYMBOL_NAME"] || "").toUpperCase().trim();
-        const lotUnits = Number(row["SEM_LOT_UNITS"] || row["Lot Size"] || 0);
-
-        if (symbol && id) {
-          const cleanId = id.trim();
-          const cleanSymbol = symbol.toUpperCase().trim();
-
-          dhanScripMap.set(cleanSymbol, cleanId);
-          const compact = cleanSymbol.replace(/\s+/g, "");
-          dhanScripMap.set(compact, cleanId);
-          dhanScripMap.set(`NSE:${compact}`, cleanId);
-          dhanScripMap.set(`NSE:${compact}-EQ`, cleanId);
-
-          // Capture equity underlying security IDs (for Option Chain API lookups)
-          if (instrument.includes("EQUITY") || instrument === "ES" || (segment.includes("NSE") && instrument.includes("EQ"))) {
-            dhanUnderlyingIdMap.set(compact, cleanId);
-          }
-
-          // Capture F&O lot size keyed by underlying
-          if (lotUnits > 0 && underlying) {
-            dhanLotSizeMap.set(underlying.replace(/\s+/g, ""), lotUnits);
-          }
-
-          successCount++;
-        }
-        index++;
-      } catch (lineErr: any) {
-        parseErrors++;
-        if (parseErrors < 5) console.warn(`[Dhan] Line ${index} parse error:`, lineErr.message);
-      }
-    }
-
-    isDhanScripLoaded = true;
-    console.log(`[Dhan] ✅ Scrip Master loaded: ${successCount} symbols, ${dhanLotSizeMap.size} lot-sizes, ${dhanUnderlyingIdMap.size} underlyings (${parseErrors} errors skipped)`);
-
-  } catch (err: any) {
-    console.error("[Dhan] ⚠️  CSV Download Failed:", err.message);
-
-    // EXPANDED: Fallback with comprehensive scrip list
-    const fallbackScrips: Record<string, string> = {
-      // Indices
-      "NIFTY50": "13", "NIFTY": "13", "BANKNIFTY": "25", "NIFTYBANK": "25", "INDIAVIX": "37",
-
-      // Large Cap
-      "RELIANCE": "11536", "HDFCBANK": "1333", "ICICIBANK": "4963", "SBIN": "3045",
-      "INFY": "1594", "TCS": "11532", "AXISBANK": "5900", "KOTAKBANK": "1922", "SUNPHARMA": "7263",
-      "WIPRO": "5885", "LT": "5991",
-
-      // Mid/Small Cap
-      "ASIANPAINT": "875", "MARUTI": "2675", "M&M": "2030",
-      "TATAMOTORS": "8718", "HEROMOTOCO": "5787", "TITAN": "7315", "CHOLAFIN": "3262",
-      "BAJAJ-AUTO": "8401", "EICHERMOT": "5356", "JINDALSTEL": "6280"
-    };
-
-    Object.entries(fallbackScrips).forEach(([k, v]) => {
-      dhanScripMap.set(k, v);
-      dhanScripMap.set(`NSE:${k}`, v);
-      dhanScripMap.set(`${k}-EQ`, v);
-      dhanScripMap.set(`NSE:${k}-EQ`, v);
-    });
-
-    isDhanScripLoaded = true;
-    console.log(`[Dhan] 📦 Using fallback scrip index (${Object.keys(fallbackScrips).length} symbols)`);
+  // Equity underlyings (for Option Chain lookups). Prefer NSE cash equities.
+  const isEquity = instrument.includes("EQUITY") || instrument === "EQ" || instrument === "ES";
+  if (isEquity && (exch === "" || exch === "NSE")) {
+    dhanUnderlyingIdMap.set(compact, cleanId);
   }
+  if (lotUnits > 0 && underlying) {
+    dhanLotSizeMap.set(underlying.replace(/\s+/g, ""), lotUnits);
+  }
+  return true;
+}
+
+// Stream a CSV response through a line reader and register rows. Returns count.
+async function streamParseScripCsv(stream: any, sourceLabel: string): Promise<number> {
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  let index = 0, headers: string[] = [], successCount = 0, parseErrors = 0;
+  for await (const line of rl) {
+    try {
+      if (index === 0) {
+        // Guard: a Cloudflare/HTML challenge page is not CSV.
+        if (/^\s*<(?:!doctype|html)/i.test(line)) {
+          rl.close();
+          throw new Error(`${sourceLabel} returned HTML, not CSV`);
+        }
+        headers = parseCsvLine(line);
+        console.log(`[Dhan] ${sourceLabel} headers: ${headers.slice(0, 6).join(", ")}...`);
+        index++;
+        continue;
+      }
+      const parts = parseCsvLine(line);
+      if (parts.length < 2) { index++; continue; }
+      const row: Record<string, string> = {};
+      headers.forEach((h, i) => { row[h] = parts[i] ?? ""; });
+      if (registerScripRow(row)) successCount++;
+      index++;
+    } catch (e: any) {
+      if (e.message?.includes("not CSV")) throw e;
+      parseErrors++;
+    }
+  }
+  console.log(`[Dhan] ${sourceLabel}: ${successCount} rows registered (${parseErrors} skipped)`);
+  return successCount;
+}
+
+// Lazy load Dhan scrip master from the most reliable available source.
+async function loadDhanScripMaster() {
+  const UA = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" };
+
+  // Source 1: Compact CDN CSV (its SEM_* headers match the parser). Reachable
+  // without auth. This is the normal path.
+  try {
+    console.log("[Dhan] 🔍 Loading compact scrip master from CDN...");
+    const res = await axios({
+      method: "get",
+      url: "https://images.dhan.co/api-data/api-scrip-master.csv",
+      responseType: "stream", timeout: 30000, maxRedirects: 5, headers: { ...UA, Accept: "text/csv,*/*" }
+    });
+    const count = await streamParseScripCsv(res.data, "compact-csv");
+    if (count > 0) {
+      isDhanScripLoaded = true;
+      console.log(`[Dhan] ✅ Scrip master ready: ${dhanScripMap.size} keys, ${dhanLotSizeMap.size} lot-sizes, ${dhanUnderlyingIdMap.size} underlyings`);
+      return;
+    }
+    console.warn("[Dhan] compact CSV parsed 0 rows — trying authenticated instrument API...");
+  } catch (e: any) {
+    console.warn("[Dhan] compact CSV failed:", e.message, "— trying authenticated instrument API...");
+  }
+
+  // Source 2: Authenticated per-segment instrument API on api.dhan.co (the host
+  // already proven to work with the token). Fetch equities + NSE F&O.
+  const token = process.env.DHAN_ACCESS_TOKEN, clientId = process.env.DHAN_CLIENT_ID;
+  if (token && clientId) {
+    let total = 0;
+    for (const seg of ["NSE_EQ", "NSE_FNO"]) {
+      try {
+        const res = await axios({
+          method: "get",
+          url: `https://api.dhan.co/v2/instrument/${seg}`,
+          responseType: "stream", timeout: 30000,
+          headers: { "access-token": token, "client-id": clientId, Accept: "text/csv,*/*" }
+        });
+        total += await streamParseScripCsv(res.data, `api-${seg}`);
+      } catch (e: any) {
+        console.warn(`[Dhan] instrument API ${seg} failed:`, e.response?.status, e.message);
+      }
+    }
+    if (total > 0) {
+      isDhanScripLoaded = true;
+      console.log(`[Dhan] ✅ Scrip master via API: ${dhanScripMap.size} keys, ${dhanLotSizeMap.size} lot-sizes, ${dhanUnderlyingIdMap.size} underlyings`);
+      return;
+    }
+  }
+
+  // Source 3: Embedded fallback (indices + most-liquid F&O equities) so the app
+  // still resolves common symbols if every network source fails.
+  const fallbackScrips: Record<string, string> = {
+    "NIFTY50": "13", "NIFTY": "13", "BANKNIFTY": "25", "NIFTYBANK": "25", "INDIAVIX": "37", "FINNIFTY": "27",
+    "RELIANCE": "11536", "HDFCBANK": "1333", "ICICIBANK": "4963", "SBIN": "3045",
+    "INFY": "1594", "TCS": "11532", "AXISBANK": "5900", "KOTAKBANK": "1922", "SUNPHARMA": "7263",
+    "WIPRO": "3787", "LT": "11483", "ASIANPAINT": "236", "MARUTI": "10999", "M&M": "2031",
+    "TATAMOTORS": "3456", "HEROMOTOCO": "1348", "TITAN": "3506", "CHOLAFIN": "685",
+    "BAJAJ-AUTO": "16669", "EICHERMOT": "910", "JINDALSTEL": "6733", "ITC": "1660",
+    "BHARTIARTL": "10604", "HINDUNILVR": "1394", "BAJFINANCE": "317", "HCLTECH": "7229",
+    "TATASTEEL": "3499", "ADANIENT": "25", "ADANIPORTS": "15083", "POWERGRID": "14977",
+    "NTPC": "11630", "ONGC": "2475", "COALINDIA": "20374", "ULTRACEMCO": "11532"
+  };
+  Object.entries(fallbackScrips).forEach(([k, v]) => {
+    dhanScripMap.set(k, v);
+    dhanScripMap.set(`NSE:${k}`, v);
+    dhanScripMap.set(`${k}-EQ`, v);
+    dhanScripMap.set(`NSE:${k}-EQ`, v);
+    if (!["NIFTY50", "NIFTY", "BANKNIFTY", "NIFTYBANK", "INDIAVIX", "FINNIFTY"].includes(k)) {
+      dhanUnderlyingIdMap.set(k, v);
+    }
+  });
+  isDhanScripLoaded = true;
+  console.warn(`[Dhan] ⚠️ Using embedded fallback scrip list (${Object.keys(fallbackScrips).length} symbols). Live universe limited until CSV/API loads.`);
 }
 
 // Regional/Global State for Market Context
@@ -1040,6 +1055,23 @@ async function startServer() {
     else out.verdict = "Partial: see individual checks.";
 
     res.json(out);
+  });
+
+  // Force a fresh scrip-master reload (clears maps, re-pulls from CSV/API).
+  app.post("/api/diagnostics/reload-scrip", async (req, res) => {
+    dhanScripMap.clear();
+    dhanLotSizeMap.clear();
+    dhanUnderlyingIdMap.clear();
+    isDhanScripLoaded = false;
+    await loadDhanScripMaster();
+    res.json({
+      reloaded: true,
+      scripCount: dhanScripMap.size,
+      lotSizeCount: dhanLotSizeMap.size,
+      underlyingCount: dhanUnderlyingIdMap.size,
+      sampleReliance: dhanScripMap.get("RELIANCE") || null,
+      sampleUnderlyingReliance: dhanUnderlyingIdMap.get("RELIANCE") || null
+    });
   });
 
   // Cache map for quotes to prevent rate limits
