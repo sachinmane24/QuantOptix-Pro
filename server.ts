@@ -987,6 +987,61 @@ async function startServer() {
     });
   });
 
+  // DIAGNOSTICS — tests each Dhan API live and reports the exact error.
+  // Visit /api/diagnostics/dhan in a browser to see why data may be simulated.
+  app.get("/api/diagnostics/dhan", async (req, res) => {
+    const token = process.env.DHAN_ACCESS_TOKEN;
+    const clientId = process.env.DHAN_CLIENT_ID;
+    const out: any = {
+      tokenPresent: !!token,
+      clientIdPresent: !!clientId,
+      scripMasterLoaded: isDhanScripLoaded,
+      scripCount: dhanScripMap.size,
+      underlyingCount: dhanUnderlyingIdMap.size,
+      usingFallbackScrip: dhanScripMap.size < 100,
+      checks: {} as Record<string, any>,
+      verdict: ""
+    };
+    const H = { "access-token": token || "", "client-id": clientId || "", "Content-Type": "application/json" };
+
+    // 1) Auth / trading API (works on basic token)
+    try {
+      const r = await axios.get("https://api.dhan.co/v2/fundlimit", { headers: H, timeout: 5000 });
+      out.checks.auth_fundlimit = { ok: true, status: r.status };
+    } catch (e: any) {
+      out.checks.auth_fundlimit = { ok: false, status: e.response?.status, error: e.response?.data?.errorMessage || e.response?.data?.errorValue || e.message };
+    }
+
+    // 2) Market Quote (DATA API — needs Data subscription)
+    try {
+      const r = await axios.post("https://api.dhan.co/v2/marketfeed/quote", { NSE_EQ: [1333] }, { headers: H, timeout: 6000 }); // 1333 = HDFCBANK
+      out.checks.market_quote = { ok: r.data?.status?.toLowerCase?.() === "success", status: r.status, dhanStatus: r.data?.status };
+    } catch (e: any) {
+      out.checks.market_quote = { ok: false, status: e.response?.status, error: e.response?.data?.errorMessage || e.response?.data?.errorValue || JSON.stringify(e.response?.data) || e.message };
+    }
+
+    // 3) Option Chain expiry list (DATA API — needs Data subscription)
+    try {
+      const r = await axios.post("https://api.dhan.co/v2/optionchain/expirylist", { UnderlyingScrip: 1333, UnderlyingSeg: "NSE_EQ" }, { headers: H, timeout: 6000 });
+      out.checks.option_chain = { ok: Array.isArray(r.data?.data), status: r.status, expiries: (r.data?.data || []).slice(0, 3) };
+    } catch (e: any) {
+      out.checks.option_chain = { ok: false, status: e.response?.status, error: e.response?.data?.errorMessage || e.response?.data?.errorValue || JSON.stringify(e.response?.data) || e.message };
+    }
+
+    // Verdict
+    const auth = out.checks.auth_fundlimit?.ok;
+    const quote = out.checks.market_quote?.ok;
+    const chain = out.checks.option_chain?.ok;
+    if (!token || !clientId) out.verdict = "Not connected: missing access token or client id.";
+    else if (!auth) out.verdict = "Token/clientId rejected even by the trading API — regenerate the token at web.dhan.co (valid 24h).";
+    else if (auth && !quote && !chain) out.verdict = "Auth works but DATA APIs are blocked. Enable the DhanHQ Data API subscription (Dhan web → Profile → DhanHQ APIs / Data Subscription). This is why quotes & option chain are simulated.";
+    else if (out.usingFallbackScrip) out.verdict = "Data APIs reachable but the scrip master CSV did not load (using small fallback list), so most F&O symbols can't be resolved. Check container egress to images.dhan.co.";
+    else if (quote && chain) out.verdict = "All systems live. If the screen still shows simulated values, re-run a scan during market hours (09:15–15:30 IST on a trading day).";
+    else out.verdict = "Partial: see individual checks.";
+
+    res.json(out);
+  });
+
   // Cache map for quotes to prevent rate limits
   const quotesCache = new Map<string, { timestamp: number; data: any }>();
   const CACHE_TTL = 3000;
