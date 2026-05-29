@@ -43,6 +43,7 @@ let isDhanScripLoaded = false;
 const dhanScripMap = new Map<string, string>(); // Ticker/Option -> securityId
 const dhanLotSizeMap = new Map<string, number>(); // Underlying symbol -> F&O lot size
 const dhanUnderlyingIdMap = new Map<string, string>(); // Equity underlying -> NSE_EQ securityId (for option chain)
+const unresolvedWarnAt = new Map<string, number>(); // symbol -> last "no securityId" warn time
 
 // Robust CSV line splitter: respects double-quoted fields that contain commas.
 // Dhan's scrip master has commas inside SEM_CUSTOM_SYMBOL, which a naive split() corrupts.
@@ -147,7 +148,17 @@ async function streamParseScripCsv(stream: any, sourceLabel: string): Promise<nu
 }
 
 // Lazy load Dhan scrip master from the most reliable available source.
-async function loadDhanScripMaster() {
+// Single-flight: concurrent callers share one in-flight load (the logs showed
+// 5+ simultaneous CDN downloads racing at cold start).
+let scripLoadInFlight: Promise<void> | null = null;
+function loadDhanScripMaster(): Promise<void> {
+  if (isDhanScripLoaded && dhanScripMap.size > 1000) return Promise.resolve();
+  if (scripLoadInFlight) return scripLoadInFlight;
+  scripLoadInFlight = _loadScripMasterImpl().finally(() => { scripLoadInFlight = null; });
+  return scripLoadInFlight;
+}
+
+async function _loadScripMasterImpl() {
   const UA = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" };
 
   // Source 1: Compact CDN CSV (its SEM_* headers match the parser). Reachable
@@ -472,16 +483,32 @@ async function placeDhanOrder(o: DhanOrderRequest): Promise<DhanOrderResult> {
 const optionChainCache = new Map<string, { ts: number; data: any }>();
 const expiryCache = new Map<string, { ts: number; data: string[] }>();
 
+// Global throttle: Dhan rate-limits the option-chain family to ~1 request / 3s.
+// Serialize ALL option-chain + expiry calls with >=3.1s spacing so resolving
+// many legs doesn't trip 429s (which previously forced most legs to simulation).
+let ocGate: Promise<any> = Promise.resolve();
+let ocLastTs = 0;
+function ocThrottle<T>(fn: () => Promise<T>): Promise<T> {
+  const run = ocGate.then(async () => {
+    const wait = 3100 - (Date.now() - ocLastTs);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    try { return await fn(); } finally { ocLastTs = Date.now(); }
+  });
+  ocGate = run.then(() => {}, () => {});
+  return run as Promise<T>;
+}
+
 async function getDhanExpiryList(underlyingScrip: number, underlyingSeg: string): Promise<string[]> {
   const token = process.env.DHAN_ACCESS_TOKEN, clientId = process.env.DHAN_CLIENT_ID;
   if (!token || !clientId) return [];
   const key = `${underlyingScrip}:${underlyingSeg}`;
   const cached = expiryCache.get(key);
-  if (cached && Date.now() - cached.ts < 60000) return cached.data;
+  // Expiries change ~weekly — cache for 30 min to save rate-limited calls.
+  if (cached && Date.now() - cached.ts < 1800000) return cached.data;
   try {
-    const resp = await axios.post("https://api.dhan.co/v2/optionchain/expirylist",
+    const resp = await ocThrottle(() => axios.post("https://api.dhan.co/v2/optionchain/expirylist",
       { UnderlyingScrip: underlyingScrip, UnderlyingSeg: underlyingSeg },
-      { headers: { "access-token": token, "client-id": clientId, "Content-Type": "application/json" }, timeout: 7000 });
+      { headers: { "access-token": token, "client-id": clientId, "Content-Type": "application/json" }, timeout: 7000 }));
     const list: string[] = resp.data?.data || [];
     expiryCache.set(key, { ts: Date.now(), data: list });
     return list;
@@ -496,12 +523,12 @@ async function getDhanOptionChain(underlyingScrip: number, underlyingSeg: string
   if (!token || !clientId) return null;
   const key = `${underlyingScrip}:${underlyingSeg}:${expiry}`;
   const cached = optionChainCache.get(key);
-  // Dhan rate-limits this API to 1 unique request / 3s — serve cached within that window.
+  // Serve cached within the rate-limit window.
   if (cached && Date.now() - cached.ts < 3500) return cached.data;
   try {
-    const resp = await axios.post("https://api.dhan.co/v2/optionchain",
+    const resp = await ocThrottle(() => axios.post("https://api.dhan.co/v2/optionchain",
       { UnderlyingScrip: underlyingScrip, UnderlyingSeg: underlyingSeg, Expiry: expiry },
-      { headers: { "access-token": token, "client-id": clientId, "Content-Type": "application/json" }, timeout: 8000 });
+      { headers: { "access-token": token, "client-id": clientId, "Content-Type": "application/json" }, timeout: 8000 }));
     const data = resp.data?.data || null;
     if (data) optionChainCache.set(key, { ts: Date.now(), data });
     return data;
@@ -1305,7 +1332,14 @@ async function startServer() {
         if (!securityId) {
           // Never substitute a guessed ID — that returns the wrong instrument's
           // data. Skip; the response builder will mark it unresolved/mock.
-          console.warn(`[Quotes] ⚠️  No securityId for: ${sym} (skipping)`);
+          // Skip unresolved symbols (synthetic option legs, etc.). Throttle the
+          // warning to once per symbol / 5 min so it can't spam the logs.
+          const now = Date.now();
+          const last = unresolvedWarnAt.get(sym) || 0;
+          if (now - last > 300000) {
+            console.warn(`[Quotes] ⚠️  No securityId for: ${sym} (skipping)`);
+            unresolvedWarnAt.set(sym, now);
+          }
           return;
         }
 
